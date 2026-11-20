@@ -624,11 +624,11 @@ export class Renderer {
       if (d.id === 'interceptor' && (v.siren || v.role === 'cop')) {
         const blue = Math.floor(game.time * 6) % 2 === 0;
         const rgb = blue ? '70,130,255' : '255,70,80';
-        const g = ctx.createRadialGradient(v.x, v.y, 6, v.x, v.y, 130);
-        g.addColorStop(0, `rgba(${rgb},0.4)`);
+        const g = ctx.createRadialGradient(v.x, v.y, 6, v.x, v.y, 105);
+        g.addColorStop(0, `rgba(${rgb},0.3)`);
         g.addColorStop(1, `rgba(${rgb},0)`);
         ctx.fillStyle = g;
-        ctx.beginPath(); ctx.arc(v.x, v.y, 130, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.arc(v.x, v.y, 105, 0, TAU); ctx.fill();
       }
       // Burning cars throw firelight.
       if (v.dead) {
@@ -690,10 +690,20 @@ export class Renderer {
     for (const pt of game.fx.pool) {
       if (!pt.active || pt.kind === 'smoke' || pt.kind === 'blood') continue;
       const a = clamp(pt.life / pt.max, 0, 1);
+      if (pt.kind === 'flash') {
+        const size = pt.size * (1.3 - a * 0.3);
+        const rgb = hexRGB('#ffdf9e');
+        const gf = ctx.createRadialGradient(pt.x, pt.y, 2, pt.x, pt.y, size);
+        gf.addColorStop(0, `rgba(255,244,214,${0.85 * a})`);
+        gf.addColorStop(0.4, `rgba(${rgb},${0.4 * a})`);
+        gf.addColorStop(1, `rgba(${rgb},0)`);
+        ctx.fillStyle = gf;
+        ctx.beginPath(); ctx.arc(pt.x, pt.y, size, 0, TAU); ctx.fill();
+        continue;
+      }
       ctx.globalAlpha = a;
       ctx.fillStyle = pt.color;
-      const size = pt.kind === 'flash' ? pt.size * (1 + (1 - a)) : pt.size;
-      ctx.beginPath(); ctx.arc(pt.x, pt.y, size, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.size, 0, TAU); ctx.fill();
     }
     ctx.globalAlpha = 1;
     ctx.restore();

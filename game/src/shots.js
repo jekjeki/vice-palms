@@ -6,6 +6,7 @@
 import { PITCH, BLOCKS } from './config.js';
 import { createRandom } from './random.js';
 import { Vehicle } from './entities/vehicle.js';
+import { MISSIONS, GIVERS } from './systems/missions.js';
 
 const SCRIPT = { axis: () => ({ x: 0, y: -1 }), held: () => false, hit: () => false, endFrame() {} };
 
@@ -13,6 +14,12 @@ export function stageShot(name, game, ui, seed) {
   const rand = createRandom(seed);
   const realRandom = Math.random;
   Math.random = rand; // deterministic traffic spawning during staging
+
+  if (name === 'chaos') {
+    stageChaos(game, ui, rand);
+    Math.random = realRandom;
+    return;
+  }
 
   if (name === 'start') {
     ui.uiState = 'title';
@@ -81,19 +88,65 @@ export function stageShot(name, game, ui, seed) {
     return;
   }
 
-  // end: mission-complete beat at the plaza.
+  // end: the finale beat — Rico races the police up the oceanfront road toward the marina gate.
   ui.uiState = 'play';
-  const plaza = { x: 19.5 * PITCH, y: 20.5 * PITCH };
-  game.player.x = plaza.x;
-  game.player.y = plaza.y + 30;
-  const car = game.spawnVehicle(1, plaza.x + 120, plaza.y - 40, 0);
-  car.role = 'parked';
-  const cab = game.spawnVehicle(5, plaza.x - 160, plaza.y + 80, Math.PI);
-  cab.role = 'traffic';
-  cab.axis = 'x'; cab.dir = -1; cab.lane = plaza.y + 80; cab.speed = 100;
-  game.missions.banner('MISSION COMPLETE', 'Marisol: “Clean work, Rico.”  +$700', 30, '#7dffa4');
-  for (let n = 0; n < 8; n++) game.fx.cash(plaza.x, plaza.y);
-  for (let n = 0; n < 60; n++) game.update(1 / 60, SCRIPT);
+  game.missions.index = MISSIONS.length - 1;
+  const giver = GIVERS[game.missions.index];
+  game.player.inCar = null;
+  game.player.x = giver.x;
+  game.player.y = giver.y;
+  for (let n = 0; n < 30; n++) game.update(1 / 60, SCRIPT); // the Last Ride brief plays, 3 stars on
+  game.player.inCar = null;
+  const ride = game.spawnVehicle(1, 40 * PITCH - 24, 9.2 * PITCH, -Math.PI / 2);
+  ride.role = 'player';
+  ride.speed = 260;
+  game.player.inCar = ride;
+  game.player.x = ride.x; game.player.y = ride.y;
+  for (let k = 0; k < 3; k++) {
+    const cop = game.spawnVehicle(-1, 40 * PITCH + (k % 2 ? 24 : -24), 9.2 * PITCH + 650 + k * 170, -Math.PI / 2);
+    cop.role = 'cop';
+    cop.siren = true;
+    game.police.cars.push(cop);
+  }
+  game.wanted.stars = 4;
+  for (let n = 0; n < 100; n++) game.update(1 / 60, SCRIPT);
   ui.freeze = true;
   Math.random = realRandom;
+}
+
+/** chaos: a wreck burning in an intersection, a roadblock up the street, five stars.
+ *  Runs as the real Smoke Break mission (index 4) so the HUD objective stays honest. */
+function stageChaos(game, ui, rand) {
+  ui.uiState = 'play';
+  game.missions.index = 4;
+  const giver = GIVERS[4];
+  game.player.inCar = null;
+  game.player.x = giver.x;
+  game.player.y = giver.y;
+  for (let n = 0; n < 30; n++) game.update(1 / 60, SCRIPT); // the mission starts; vans spawn at the depot
+  const vans = game.vehicles.filter((v) => v.tag === 'target');
+  const cx = 14 * PITCH, cy = 18 * PITCH;
+  if (vans[0]) { vans[0].x = cx - 40; vans[0].y = cy - 30; vans[0].ang = 0.4; vans[0].hp = 0; vans[0].dead = true; vans[0].burnT = 1.4; }
+  if (vans[1]) { vans[1].x = cx + 30; vans[1].y = cy + 90; vans[1].ang = Math.PI / 2; vans[1].hp = vans[1].def.hp * 0.2; }
+  if (game.missions.active) game.missions.active.destroyed = 2;
+  game.player.x = cx + 180;
+  game.player.y = cy + 60;
+  game.player.heading = Math.PI;
+  const parked = game.spawnVehicle(6, cx - 150, cy + 100, -Math.PI / 2);
+  parked.role = 'parked';
+  for (let k = 0; k < 2; k++) {
+    const cop = game.spawnVehicle(-1, cx + 60 + k * 50, cy - 260 - k * 60, Math.PI / 2);
+    cop.role = 'cop';
+    cop.siren = true;
+    game.police.cars.push(cop);
+  }
+  game.police.spawnFootCop(cx + 80, cy - 200);
+  game.police.spawnFootCop(cx + 120, cy - 210);
+  game.wanted.stars = 5;
+  game.player.ammo = 18;
+  game.player.weapon = 'pistol';
+  for (let n = 0; n < 50; n++) game.update(1 / 60, SCRIPT);
+  for (let n = 0; n < 5; n++) game.fx.fire(vans[0].x + (rand() - 0.5) * 30, vans[0].y + (rand() - 0.5) * 30, 3);
+  game.fx.explosion(cx - 90, cy - 110);
+  ui.freeze = true;
 }

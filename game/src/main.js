@@ -62,7 +62,7 @@ function newGame(fromSave) {
 }
 
 function titleItems() {
-  return ['NEW GAME', ...(ui.hasSave ? ['CONTINUE'] : []), ui.soundLabel ?? 'SOUND: ON'];
+  return ['NEW GAME', ...(ui.hasSave ? ['CONTINUE'] : []), `SOUND: ${game ? (game.audio.enabled ? 'ON' : 'OFF') : 'ON'}`];
 }
 ui.titleItems = titleItems();
 
@@ -78,8 +78,8 @@ function activateTitleItem(i) {
     newGame(loadSave());
     ui.uiState = 'play';
   } else if (label.startsWith('SOUND')) {
-    ui.soundLabel = label === 'SOUND: ON' ? 'SOUND: OFF' : 'SOUND: ON';
-    if (game) { game.audio.ensure(); game.audio.setEnabled(label === 'SOUND: OFF' ? false : true); }
+    const on = !(game ? game.audio.enabled : true);
+    if (game) { game.audio.ensure(); game.audio.setEnabled(on); }
     ui.titleItems = titleItems();
   }
 }
@@ -87,7 +87,7 @@ function activateTitleItem(i) {
 function openPause() {
   const items = ['RESUME'];
   if (game.missions.active) items.push('RESTART MISSION');
-  items.push(game.audio.enabled ? 'SOUND: OFF' : 'SOUND: ON', 'SAVE GAME', 'QUIT TO TITLE');
+  items.push(`SOUND: ${game.audio.enabled ? 'ON' : 'OFF'}`, 'SAVE GAME', 'QUIT TO TITLE');
   ui.pauseItems = items;
   ui.uiState = 'pause';
   ui.menuIndex = 0;
@@ -98,9 +98,8 @@ function activatePauseItem(i) {
   const label = ui.pauseItems[i];
   if (label === 'RESUME') ui.uiState = 'play';
   else if (label === 'RESTART MISSION') { game.missions.fail('RESTARTED'); ui.uiState = 'play'; }
-  else if (label === 'SOUND: OFF' || label === 'SOUND: ON') {
-    const on = label === 'SOUND: ON';
-    game.audio.setEnabled(on);
+  else if (label.startsWith('SOUND')) {
+    game.audio.setEnabled(!game.audio.enabled);
     openPause();
   } else if (label === 'SAVE GAME') { game.save(); ui.uiState = 'play'; }
   else if (label === 'QUIT TO TITLE') {
