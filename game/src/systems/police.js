@@ -123,6 +123,20 @@ export class Police {
       x, y, isCop: true, shirt: '#2e4a7a', skin: '#c99a72',
       speed: 105, state: 'chase', phase: 0, hp: 40,
       shootT: 1, dead: false, downT: 0, ang: 0,
+      update(dt) { if (this.state !== 'down') this.phase += dt * 7; },
+      hurt(game, dmg, fromX, fromY) {
+        if (this.state === 'down') return false;
+        this.hp -= dmg;
+        game.fx.blood(this.x, this.y, 3);
+        if (this.hp <= 0) {
+          this.state = 'down';
+          this.downT = 10;
+          this.dead = true;
+          return true;
+        }
+        return false;
+      },
+      flee() { /* cops do not flee */ },
     };
     this.footCops.push(cop);
     game.peds.push(cop);

@@ -1,0 +1,4 @@
+[    9946ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:8080/favicon.ico:1
+[   10323ms] TypeError: ped.update is not a function
+    at Game.update (http://localhost:8080/src/game.js:106:38)
+    at frame (http://localhost:8080/src/main.js:161:14)

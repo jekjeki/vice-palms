@@ -1,9 +1,9 @@
 // The player: Rico on foot and behind the wheel. Foot movement with sprint, melee, the
 // pistol, car entering/stealing, and the health/armor model the police and explosions use.
 
-import { WALK_SPEED, SPRINT_SPEED } from '../config.js';
-import { clamp, dist2 } from '../util.js';
-import { collideCircle } from '../world/city.js';
+import { WALK_SPEED, SPRINT_SPEED } from './config.js';
+import { clamp, dist2 } from './util.js';
+import { collideCircle } from './world/city.js';
 
 export class Player {
   constructor(game, x, y) {

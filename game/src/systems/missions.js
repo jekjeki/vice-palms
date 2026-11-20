@@ -2,25 +2,32 @@
 // with world markers, a minimap flag, fail/retry and cash rewards. Later missions unlock as
 // earlier ones pay out.
 
-import { BLOCKS, PITCH, ROAD_W } from '../config.js';
+import { BLOCKS, PITCH, ROAD_W, SIDEWALK } from '../config.js';
+import { blockCenter } from '../world/city.js';
 import { dist2 } from '../util.js';
 
-export function blockCenter(i, j) {
-  return { x: (i + 0.5) * PITCH, y: (j + 0.5) * PITCH };
+/** A point on the road grid: always reachable on foot or by car. */
+function roadPoint(i, j) {
+  return { x: i * PITCH, y: j * PITCH };
 }
 
-const GARAGE = blockCenter(12, 26);
-const PLAZA = blockCenter(19, 20);
-const PAWN = blockCenter(24, 7);
+/** A point on the south sidewalk of block (i, j), where contacts stand. */
+function sidePoint(i, j) {
+  return { x: (i + 0.5) * PITCH, y: (j + 1) * PITCH - ROAD_W / 2 - SIDEWALK / 2 };
+}
+
+const GARAGE = sidePoint(12, 26);
+const PLAZA = sidePoint(19, 20);
+const PAWN = sidePoint(24, 7);
 const MARINA = { x: BLOCKS * PITCH - 46, y: 6.5 * PITCH };
 
 export const GIVERS = [
-  { name: 'Rosa', x: GARAGE.x, y: GARAGE.y - 60 },
-  { name: 'Rosa', x: GARAGE.x, y: GARAGE.y - 60 },
-  { name: 'Rosa', x: GARAGE.x, y: GARAGE.y - 60 },
-  { name: 'Serge', x: PAWN.x, y: PAWN.y - 40 },
-  { name: 'Serge', x: PAWN.x, y: PAWN.y - 40 },
-  { name: 'Marisol', x: PLAZA.x + 90, y: PLAZA.y - 90 },
+  { name: 'Rosa', x: GARAGE.x, y: GARAGE.y },
+  { name: 'Rosa', x: GARAGE.x, y: GARAGE.y },
+  { name: 'Rosa', x: GARAGE.x, y: GARAGE.y },
+  { name: 'Serge', x: PAWN.x, y: PAWN.y },
+  { name: 'Serge', x: PAWN.x, y: PAWN.y },
+  { name: 'Marisol', x: PLAZA.x, y: PLAZA.y },
 ];
 
 export const MISSIONS = [
@@ -37,7 +44,7 @@ export const MISSIONS = [
     outro: "Rosa: “Told you it would still be there. People here trust nobody, and I trust that.”",
     reward: 500,
     stages: [
-      { type: 'steal', x: 27.5 * PITCH, y: 14.5 * PITCH, r: 70, text: 'Steal the marked Tempest GT', vehicle: 2 },
+      { type: 'steal', x: 27 * PITCH, y: 14 * PITCH, r: 70, text: 'Steal the marked Tempest GT', vehicle: 2 },
       { type: 'goto-vehicle', x: GARAGE.x, y: GARAGE.y, r: 60, text: 'Deliver it to the garage', vehicleTag: 'mission' },
     ],
   },
@@ -57,7 +64,7 @@ export const MISSIONS = [
     outro: "Serge: “Now the numbers only embarrass me. Much better.”",
     reward: 900,
     stages: [
-      { type: 'collect', text: 'Collect the briefcases', points: [blockCenter(8, 9), blockCenter(30, 10), blockCenter(22, 33)] },
+      { type: 'collect', text: 'Collect the briefcases', points: [roadPoint(8, 9), roadPoint(30, 10), roadPoint(22, 33)] },
     ],
   },
   {
@@ -66,7 +73,7 @@ export const MISSIONS = [
     outro: "Serge: “Beautiful. Terrible, but beautiful. Here, and don’t spend it on smoke.”",
     reward: 1400,
     stages: [
-      { type: 'destroy', x: 33.5 * PITCH, y: 29.5 * PITCH, r: 90, text: 'Destroy the three Coachline vans', vehicle: 4, count: 3 },
+      { type: 'destroy', x: 33 * PITCH, y: 29 * PITCH, r: 90, text: 'Destroy the three Coachline vans', vehicle: 4, count: 3 },
     ],
   },
   {
@@ -173,7 +180,7 @@ export class Missions {
   spawnTargetVans(st) {
     const game = this.game;
     for (let k = 0; k < st.count; k++) {
-      const v = game.spawnVehicle(st.vehicle, st.x + (k - 1) * 110, st.y + (k % 2 ? 60 : -40), k % 2 ? Math.PI / 2 : -Math.PI / 2);
+      const v = game.spawnVehicle(st.vehicle, st.x + (k - 1) * 46, st.y + (k - 1) * 90, k % 2 ? Math.PI / 2 : -Math.PI / 2);
       v.tag = 'target';
     }
   }
@@ -255,7 +262,7 @@ export class Missions {
   complete() {
     const game = this.game;
     const a = this.active;
-    game.money += a.def.reward;
+    game.player.money += a.def.reward;
     this.finished = this.index === MISSIONS.length - 1;
     this.index = Math.min(this.index + 1, MISSIONS.length);
     this.banner('MISSION COMPLETE', `${a.def.outro}  +$${a.def.reward}`, 6.5, '#7dffa4');

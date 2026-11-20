@@ -25,9 +25,10 @@ export class Traffic {
 
   update(dt, player) {
     const game = this.game;
-    // Cull far cars.
+    // Cull far cars and drop any car the player has taken over (it drives itself now).
     for (let i = this.cars.length - 1; i >= 0; i--) {
       const c = this.cars[i];
+      if (c.role !== 'traffic') { this.cars.splice(i, 1); continue; }
       if (dist2(c.x, c.y, player.x, player.y) > DESPAWN * DESPAWN || (c.dead && c.exploded && c.wreckT < -14)) {
         game.vehicles.splice(game.vehicles.indexOf(c), 1);
         this.cars.splice(i, 1);
@@ -103,6 +104,11 @@ export class Traffic {
     // Turn decision at intersection centre.
     if (!c.turning && this.passedCenter(c, alongNow, alongNext, nextCross)) {
       this.decideTurn(c, nextCross);
+    }
+    // Map edge: turn around onto the boundary road instead of driving into the sea.
+    const edge = c.dir > 0 ? BLOCKS * PITCH : 0;
+    if (!c.turning && Math.abs(edge - alongNext) < 60 && Math.abs(edge - alongNow) >= 60) {
+      this.decideTurn(c, edge);
     }
     if (c.turning) {
       c.turnT -= dt;

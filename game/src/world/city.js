@@ -3,8 +3,8 @@
 // parking lot, and the east edge is the beach strip with palms and neon hotels. Everything
 // is generated from one seed so ?shot= replays the same city.
 
-import { BLOCKS, PITCH, ROAD_W, SIDEWALK, BEACH_W, NIGHT, derive } from '../config.js';
-import { createRandom } from '../random.js';
+import { BLOCKS, PITCH, ROAD_W, SIDEWALK, BEACH_W, NIGHT } from '../config.js';
+import { createRandom, derive } from '../random.js';
 import { clamp, circlePush } from '../util.js';
 
 const WALL_COLORS = ['#4d3f63', '#3f4d6e', '#6e3f5c', '#3f6e64', '#6e5c3f', '#54486e', '#2f4a55', '#5c4a4a'];
@@ -23,6 +23,11 @@ const NEON = [
 ];
 
 export const CELL_BEACH = BLOCKS; // block column index holding the sand strip
+
+/** Centre of the land part of block (i, j) — the shared anchor for spawns and markers. */
+export function blockCenter(i, j) {
+  return { x: (i + 0.5) * PITCH, y: (j + 0.5) * PITCH };
+}
 
 /** Land rect of block (i, j): the area between two roads minus nothing; sidewalks live inside. */
 export function blockRect(i, j) {
@@ -122,6 +127,12 @@ export function generateCity(seed) {
             const sx = west ? bx - 3 : bx + (bw - sw) / 2;
             const sy = south ? by + bh - 3 : by + (bh - sh) / 2;
             block.signs.push({ x: sx, y: sy, w: sw, h: sh, color: def.color, text: def.text, vertical: west && strip, flicker: rand() < 0.25, seed: rand() * 6.28 });
+          }
+          // Strip hotels also hang a big marquee sign facing the beach road (south wall).
+          if (strip && rand() < 0.7) {
+            const def = NEON[rand() * NEON.length | 0];
+            const sw = Math.min(bw * 0.8, 110);
+            block.signs.push({ x: bx + (bw - sw) / 2, y: by + bh - 3, w: sw, h: 13, color: def.color, text: def.text, vertical: false, flicker: rand() < 0.25, seed: rand() * 6.28 });
           }
         }
       }

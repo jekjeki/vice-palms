@@ -13,7 +13,7 @@ export const WORLD_W = WORLD + BEACH_W + SEA_W; // full canvas width of the worl
 
 // Night palette. The light map multiplies the scene, so base colours are drawn slightly bright.
 export const NIGHT = {
-  ambient: [74, 78, 118],            // the unlit night colour of the light map
+  ambient: [122, 124, 162],          // the unlit night colour of the light map
   sky: '#0d1022',
   asphalt: '#26282f',
   asphaltSide: '#2c2e36',

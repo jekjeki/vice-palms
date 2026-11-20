@@ -16,8 +16,8 @@ import { writeSave } from './systems/save.js';
 import { dist2, clamp } from './util.js';
 import { createRandom, derive } from './random.js';
 
-export const HOSPITAL = blockCenter(17, 24);
-export const STATION = blockCenter(9, 12);
+export const HOSPITAL = { x: 17 * PITCH, y: 24 * PITCH };
+export const STATION = { x: 9 * PITCH, y: 12 * PITCH };
 
 export class Game {
   constructor(seed, opts = {}) {
@@ -374,6 +374,7 @@ export class Game {
     if (this.shotMode) return;
     const p = this.player;
     writeSave({
+      seed: this.seed,
       money: p.money,
       missionIndex: this.missions.index,
       x: p.x, y: p.y,
