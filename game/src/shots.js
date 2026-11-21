@@ -30,24 +30,31 @@ export function stageShot(name, game, ui, seed) {
       if (score > best) { best = score; bestJ = j; }
     }
     const y = (bestJ + 0.5) * PITCH;
-    ui.cameraOverride = { x: GRID * PITCH - 240, y: y - 60, zoom: 0.85 };
+    ui.cameraOverride = { x: GRID * PITCH + 80, y: y - 30, zoom: 0.78 };
     game.player.x = GRID * PITCH - 100;
     game.player.y = y + 120;
-    // Parked cars along the oceanfront road and a little traffic on the strip.
+    // Parked shoulder cars along the oceanfront road.
     for (let k = 0; k < 5; k++) {
       const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH - (rand() < 0.5 ? 24 : -24), y - 420 + k * 210, rand() < 0.5 ? 0 : Math.PI);
       v.role = 'parked';
     }
-    for (let k = 0; k < 4; k++) {
-      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH - 68, y + 300 + k * 260, -Math.PI / 2);
+    // Proper lanes: two-way traffic rolling the strip, headlights burning.
+    for (let k = 0; k < 3; k++) {
+      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH + 22, y - 760 + k * 480, Math.PI / 2);
       v.role = 'traffic';
-      v.axis = 'y'; v.dir = -1; v.lane = GRID * PITCH - 68;
-      v.fwd = 120;
+      v.axis = 'y'; v.dir = 1; v.lane = GRID * PITCH + 22;
+      v.fwd = 130;
+    }
+    for (let k = 0; k < 3; k++) {
+      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH - 22, y + 240 + k * 480, -Math.PI / 2);
+      v.role = 'traffic';
+      v.axis = 'y'; v.dir = -1; v.lane = GRID * PITCH - 22;
+      v.fwd = 130;
     }
     // A patrol cruiser rolls the strip far from the camera, sirens quiet.
-    const cop = game.spawnCar(-1, GRID * PITCH - 68, y - 900, Math.PI / 2);
+    const cop = game.spawnCar(-1, GRID * PITCH + 22, y - 1400, Math.PI / 2);
     cop.role = 'traffic';
-    cop.axis = 'y'; cop.dir = 1; cop.lane = GRID * PITCH - 68; cop.cruise = 150; cop.fwd = 150;
+    cop.axis = 'y'; cop.dir = 1; cop.lane = GRID * PITCH + 22; cop.cruise = 150; cop.fwd = 150;
     // A few strollers share the sidewalk with the hero.
     for (let n = 0; n < 6; n++) {
       game.people.push(new Person(GRID * PITCH - 90 + (n % 2) * 40, y + 40 + n * 90, n * 31 + 5));
@@ -150,5 +157,10 @@ function chaosScene(game, ui) {
   for (let n = 0; n < 50; n++) game.update(1 / 60, SCRIPT);
   for (let n = 0; n < 5; n++) game.fx.fire(vans[0].x + (rand() - 0.5) * 30, vans[0].y + (rand() - 0.5) * 30, 3);
   game.fx.blast(cx - 90, cy - 110);
+  // Rico just fired on the van: a hot muzzle beat and a blast wash that the frozen
+  // frame keeps at full strength, since no further update runs to decay them.
+  game.fx.muzzle(game.player.x + Math.cos(game.player.heading) * 16, game.player.y + Math.sin(game.player.heading) * 16, game.player.heading);
+  game.fx.sparks(game.player.x + Math.cos(game.player.heading) * 60, game.player.y + Math.sin(game.player.heading) * 60, 6);
+  game.flash = 0.4;
   ui.freeze = true;
 }

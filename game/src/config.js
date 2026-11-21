@@ -23,7 +23,7 @@ export const LIGHT = {
   paving: '#2f323d',
   curb: '#4b4f60',
   grass: '#1c3524',
-  sand: '#b2915e',
+  sand: '#c2a468',
   sandWet: '#6f5c40',
   water: '#0d1e31',
   foam: 'rgba(140,190,225,0.20)',
