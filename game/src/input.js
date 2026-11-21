@@ -1,28 +1,35 @@
-// Keyboard state. Movement reads a held-key map; discrete actions (enter car, horn, pause, shoot)
-// read pressed-this-frame edges that the game clears after consuming them.
+// Keys and mouse. Held keys drive movement; single-press edges (steal a car, punch, pause)
+// are consumed by the frame that reads them.
 
 export class Input {
   constructor() {
-    this.down = new Set();
-    this.pressed = new Set();
-    this.mouseX = 0;
-    this.mouseY = 0;
-    this.mouseDown = false;
+    this.heldKeys = new Set();
+    this.taps = new Set();
+    this.pointerX = 0;
+    this.pointerY = 0;
+    this.pointerDown = false;
     window.addEventListener('keydown', (e) => {
-      if (e.repeat) return;
-      this.down.add(e.code);
-      this.pressed.add(e.code);
       if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
+      if (e.repeat) return;
+      this.heldKeys.add(e.code);
+      this.taps.add(e.code);
     });
-    window.addEventListener('keyup', (e) => { this.down.delete(e.code); });
-    window.addEventListener('blur', () => { this.down.clear(); });
+    window.addEventListener('keyup', (e) => this.heldKeys.delete(e.code));
+    window.addEventListener('blur', () => { this.heldKeys.clear(); });
+    window.addEventListener('mousemove', (e) => { this.pointerX = e.clientX; this.pointerY = e.clientY; });
+    window.addEventListener('mousedown', (e) => { if (e.button === 0) this.taps.add('MouseLeft'); });
   }
+
+  /** Normalised walk/drive axis from WASD or the arrows. */
   axis() {
-    const x = (this.down.has('KeyD') || this.down.has('ArrowRight') ? 1 : 0) - (this.down.has('KeyA') || this.down.has('ArrowLeft') ? 1 : 0);
-    const y = (this.down.has('KeyS') || this.down.has('ArrowDown') ? 1 : 0) - (this.down.has('KeyW') || this.down.has('ArrowUp') ? 1 : 0);
-    return { x, y };
+    const right = this.held('KeyD') || this.held('ArrowRight');
+    const left = this.held('KeyA') || this.held('ArrowLeft');
+    const down = this.held('KeyS') || this.held('ArrowDown');
+    const up = this.held('KeyW') || this.held('ArrowUp');
+    return { x: (right ? 1 : 0) - (left ? 1 : 0), y: (down ? 1 : 0) - (up ? 1 : 0) };
   }
-  held(code) { return this.down.has(code); }
-  hit(code) { return this.pressed.has(code); }
-  endFrame() { this.pressed.clear(); }
+
+  held(code) { return this.heldKeys.has(code); }
+  tap(code) { return this.taps.has(code); }
+  endFrame() { this.taps.clear(); }
 }

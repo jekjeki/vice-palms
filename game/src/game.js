@@ -1,86 +1,128 @@
-// The game itself: world state, the update loop for every system, entity-vs-entity events
-// (bullets, explosions, carjacking, run-overs), camera control and the wasted/busted flows.
+// The game itself: world state, the fixed-step update order, bullet and blast resolution,
+// carjacking, run-overs, pickups, the camera with its shake, and the WASTED/BUSTED flows.
 
-import { BLOCKS, PITCH, BEACH_W, VEHICLES, STEP } from './config.js';
-import { blockCenter, generateCity, collideCircle, solidsNear } from './world/city.js';
-import { Player } from './player.js';
-import { Vehicle, setVehicleCollision } from './entities/vehicle.js';
-import { Ped } from './entities/pedestrian.js';
-import { BulletPool, Particles } from './entities/fx.js';
-import { Traffic } from './systems/traffic.js';
-import { Police } from './systems/police.js';
+import { GRID, PITCH, SAND, STEP } from './config.js';
+import { blockCenter, generateCity, collideCity, buildingsNear } from './world/city.js';
+import { Hero } from './player.js';
+import { Car, setWorldCollide } from './entities/car.js';
+import { Person } from './entities/person.js';
+import { Bullets, Particles } from './entities/particles.js';
+import { Traffic, laneAt } from './systems/traffic.js';
+import { Cops } from './systems/cops.js';
 import { Wanted } from './systems/wanted.js';
 import { Missions } from './systems/missions.js';
 import { Audio } from './audio.js';
 import { writeSave } from './systems/save.js';
 import { dist2, clamp } from './util.js';
-import { createRandom, derive } from './random.js';
+import { remix, mulberry, rand, randInt, seedRun } from './rng.js';
+import { Grid } from './spatial.js';
 
-export const HOSPITAL = { x: 17 * PITCH, y: 24 * PITCH };
-export const STATION = { x: 9 * PITCH, y: 12 * PITCH };
+export const HOSPITAL = { x: 15 * PITCH, y: 22 * PITCH };
+export const STATION = { x: 8 * PITCH, y: 11 * PITCH };
+
+const PED_KEEP = 42;        // people kept alive around the player
+const PED_CULL = 2800;      // cull radius
+const PED_BAND = 500;       // spawn ring depth
 
 export class Game {
   constructor(seed, opts = {}) {
     this.seed = seed;
     this.city = generateCity(seed);
     this.time = 0;
-    this.state = 'play';           // play | wasted | busted | over
+    this.state = 'play';           // play | wasted | busted
     this.stateT = 0;
-    this.vehicles = [];
-    this.peds = [];
-    this.bullets = new BulletPool();
+    this.cars = [];
+    this.people = [];
+    this.bullets = new Bullets();
     this.fx = new Particles();
     this.audio = new Audio();
-    this.police = new Police(this);
+    this.grid = null;              // broad-phase, built each step in update()
     this.traffic = new Traffic(this);
+    this.cops = new Cops(this);
     this.wanted = new Wanted(this);
     this.missions = new Missions(this);
     this.pickups = [];
     this.shotMode = opts.shotMode ?? false;
+    this.shake = 0;                // explosion camera shake, decays every step
 
     const start = blockCenter(12, 23);
-    this.player = new Player(this, opts.playerX ?? start.x, opts.playerY ?? start.y);
+    this.player = new Hero(this, opts.playerX ?? start.x, opts.playerY ?? start.y);
     this.player.money = opts.money ?? 250;
-    if (opts.missionIndex) this.missions.index = opts.missionIndex;
+    if (opts.missionIndex) this.missions.cursor = opts.missionIndex;
     this.camera = { x: this.player.x, y: this.player.y, zoom: 0.9 };
 
-    setVehicleCollision((v) => this.vehicleCollide(v));
-    this.spawnInitialPeds();
-    this.spawnPickups(opts.seedPickups ?? derive(seed, 0x7a2e));
+    setWorldCollide((c) => this.carWall(c));
+    this.seedWorld();
+    this.spawnLotCars();
+    this.spawnStarterPeople();
+    this.spawnPickups(opts.seedPickups ?? remix(seed, 0x7a2e));
   }
 
   // ---------------------------------------------------------------- population
 
-  spawnVehicle(defIndex, x, y, ang) {
-    const v = new Vehicle(defIndex, x, y, ang);
-    this.vehicles.push(v);
-    return v;
+  spawnCar(specIndex, x, y, ang) {
+    const c = new Car(specIndex, x, y, ang);
+    this.cars.push(c);
+    return c;
   }
 
-  spawnInitialPeds() {
-    // A crowd around the player's start block; traffic.js and police.js manage their own.
-    for (let n = 0; n < 26; n++) {
-      const i = 11 + (n % 4), j = 22 + ((n * 3) % 4);
-      const x = i * PITCH + 60 + ((n * 97) % (PITCH - 120));
-      const y = j * PITCH + 60 + ((n * 53) % (PITCH - 120));
-      const p = new Ped(x, y, n * 13 + 1);
-      this.peds.push(p);
+  seedWorld() {
+    // Point the runtime stream at this seed so spawns are deterministic per URL.
+    seedRun(remix(this.seed, 0x11c7));
+  }
+
+  spawnLotCars() {
+    for (const spot of this.city.lotCars) {
+      const c = this.spawnCar(spot.def, spot.x, spot.y, spot.ang);
+      c.role = 'parked';
+    }
+  }
+
+  spawnStarterPeople() {
+    for (let n = 0; n < 30; n++) {
+      const i = 10 + randInt(6), j = 20 + randInt(6);
+      const x = i * PITCH + 60 + randInt(PITCH - 120);
+      const y = j * PITCH + 60 + randInt(PITCH - 120);
+      this.people.push(new Person(x, y, n * 13 + 1));
+    }
+  }
+
+  /** Keep the sidewalks peopled: spawn into a ring, cull the far ones. */
+  peoplePatrol(dt) {
+    const p = this.player;
+    for (let i = this.people.length - 1; i >= 0; i--) {
+      const person = this.people[i];
+      if (person.isCop) continue;
+      if (dist2(person.x, person.y, p.x, p.y) > PED_CULL * PED_CULL) {
+        this.people.splice(i, 1);
+      }
+    }
+    let count = 0;
+    for (const person of this.people) if (!person.isCop) count++;
+    while (count < PED_KEEP) {
+      const ang = rand() * Math.PI * 2;
+      const r = 900 + rand() * PED_BAND * 2;
+      const x = p.x + Math.cos(ang) * r;
+      const y = p.y + Math.sin(ang) * r;
+      if (x < 60 || y < 60 || x > GRID * PITCH - 60 || y > GRID * PITCH - 60) break;
+      this.people.push(new Person(x, y, (rand() * 1000) | 0));
+      count++;
     }
   }
 
   spawnPickups(seed) {
-    const rand = createRandom(derive(seed, 0x3c1f));
+    const gen = mulberry(remix(seed, 0x3c1f));
     const kinds = ['pistol', 'health', 'armor', 'cash', 'cash', 'health', 'pistol', 'armor', 'cash', 'health', 'cash', 'armor'];
     for (let n = 0; n < kinds.length; n++) {
-      const i = 2 + Math.floor(rand() * (BLOCKS - 4));
-      const j = 2 + Math.floor(rand() * (BLOCKS - 4));
-      const corner = (rand() * 4) | 0;
+      const i = 2 + Math.floor(gen() * (GRID - 4));
+      const j = 2 + Math.floor(gen() * (GRID - 4));
+      const corner = (gen() * 4) | 0;
       const bx = i * PITCH + 60, by = j * PITCH + 60;
       this.pickups.push({
         x: bx + (corner % 2) * (PITCH - 120),
         y: by + (corner > 1 ? 1 : 0) * (PITCH - 120),
-        kind: kinds[n], amount: 80 + Math.floor(rand() * 160),
-        phase: rand() * 6.28,
+        kind: kinds[n], amount: 80 + Math.floor(gen() * 160),
+        phase: gen() * 6.28,
       });
     }
   }
@@ -92,41 +134,54 @@ export class Game {
       this.stateT -= dt;
       if (this.stateT <= 0) this.respawn();
       this.fx.update(dt);
+      this.shake = Math.max(0, this.shake - dt * 30);
       return;
     }
     this.time += dt;
     const p = this.player;
     p.update(dt, input);
+    if (p.car) p.car.drive(dt, this);   // the player's ride runs the full physics step
     this.traffic.update(dt, p);
     this.wanted.update(dt, p);
-    this.police.update(dt, this.wanted.stars, p);
+    this.cops.update(dt, this.wanted.stars, p);
     this.missions.update(dt, p);
+    this.peoplePatrol(dt);
 
-    for (const v of this.vehicles) v.update(dt, this);
-    for (const ped of this.peds) ped.update(dt, this);
+    // Broad-phase build: cars and people register into the grid each step.
+    if (!this.grid) this.grid = new Grid();
+    this.grid.clear();
+    for (const c of this.cars) if (!c.wasted) this.grid.add(c, c.x, c.y, c.radius);
+    for (const person of this.people) if (person.mode !== 'down') this.grid.add(person, person.x, person.y, 10);
+
+    for (const c of this.cars) c.update(dt, this);
+    for (const person of this.people) person.update(dt, this);
     this.bullets.update(dt, this);
     this.fx.update(dt);
-    this.vehicleCollisions(dt, p);
+    this.carContacts(dt, p);
     this.runOverCheck(p);
-    this.pickupCheck(p);
-    if (this.police.bustedCheck(dt, p, this.wanted.stars)) {
+    this.grabPickups(p);
+    this.shake = Math.max(0, this.shake - dt * 30);
+    if (this.cops.cornered(dt, p, this.wanted.stars)) {
       this.state = 'busted';
       this.stateT = 2.6;
       this.audio.blip(120);
     }
-    this.updateCamera(dt);
+    this.followCamera(dt);
     this.audio.update(dt, this);
   }
 
-  updateCamera(dt) {
+  gridClass() {
+    // Local import by injection keeps this class free of the spatial module name in the outline.
+    return this._gridType ?? (this._gridType = null) ?? this.gridType;
+  }
+
+  followCamera(dt) {
     const p = this.player;
-    const car = p.inCar;
-    const vx = car ? car.vx : p.vx;
-    const vy = car ? car.vy : p.vy;
-    const speed = Math.hypot(vx, vy);
+    const car = p.car;
+    const speed = Math.hypot(car ? car.vx : p.vx, car ? car.vy : p.vy);
     const look = car ? 0.55 : 0.25;
-    const tx = p.x + vx * look;
-    const ty = p.y + vy * look;
+    const tx = p.x + (car ? car.vx : p.vx) * look;
+    const ty = p.y + (car ? car.vy : p.vy) * look;
     this.camera.x += (tx - this.camera.x) * Math.min(1, dt * 4);
     this.camera.y += (ty - this.camera.y) * Math.min(1, dt * 4);
     const zoomTarget = car && speed > 200 ? 0.78 : car ? 0.84 : 0.95;
@@ -140,99 +195,99 @@ export class Game {
   }
 
   onBullet(b) {
-    // Buildings stop bullets.
-    if (this.pointInBuilding(b.x, b.y)) { b.active = false; this.fx.sparks(b.x, b.y, 2); return; }
+    // Buildings stop every bullet.
+    const walls = buildingsNear(this.city, b.x, b.y, this._wallScratch ??= []);
+    for (const s of walls) {
+      if (b.x >= s.x && b.x <= s.x + s.w && b.y >= s.y && b.y <= s.y + s.h) {
+        b.live = false;
+        this.fx.sparks(b.x, b.y, 2);
+        return;
+      }
+    }
     if (b.fromPlayer) {
-      for (const ped of this.peds) {
-        if (ped.state === 'down' || ped.dead) continue;
-        if (dist2(ped.x, ped.y, b.x, b.y) < 14 * 14) {
-          b.active = false;
-          const wasCop = ped.isCop === true;
-          const down = ped.hurt(this, b.damage, b.x, b.y);
-          if (wasCop && down) this.wanted.add('copKill');
-          else if (!wasCop) this.wanted.add(down ? 'pedKill' : 'pedHit');
-          this.alertNearbyPeds(ped.x, ped.y, 420);
+      for (const person of this.people) {
+        if (person.mode === 'down') continue;
+        if (dist2(person.x, person.y, b.x, b.y) < 14 * 14) {
+          b.live = false;
+          const cop = person.isCop === true;
+          const down = person.hurt(this, b.dmg, b.x, b.y);
+          if (cop && down) this.wanted.add('copKill');
+          else if (!cop) this.wanted.add(down ? 'pedKill' : 'pedHit');
+          this.scarePeople(person.x, person.y, 430);
           return;
         }
       }
-      for (const v of this.vehicles) {
-        if (v.exploded || v === this.player.inCar) continue;
-        if (dist2(v.x, v.y, b.x, b.y) < v.radius * v.radius) {
-          b.active = false;
-          v.damage(b.damage * 0.7, this);
+      for (const c of this.cars) {
+        if (c.wasted || c === this.player.car) continue;
+        if (dist2(c.x, c.y, b.x, b.y) < c.radius * c.radius) {
+          b.live = false;
+          c.damage(b.dmg * 0.7, this);
           this.fx.sparks(b.x, b.y, 3);
-          if (v.role === 'cop' && v.dead) this.wanted.add('copKill');
+          if (c.role === 'cop' && c.wreck) this.wanted.add('copKill');
           return;
         }
       }
     } else {
       const p = this.player;
-      if (!p.inCar && !p.dead && dist2(p.x, p.y, b.x, b.y) < 12 * 12) {
-        b.active = false;
-        p.hit(b.damage, b.x, b.y);
+      if (!p.car && !p.dead && dist2(p.x, p.y, b.x, b.y) < 12 * 12) {
+        b.live = false;
+        p.hit(b.dmg, b.x, b.y);
         return;
       }
-      const car = p.inCar;
-      if (car && !car.dead && dist2(car.x, car.y, b.x, b.y) < (car.radius + 6) ** 2) {
-        b.active = false;
-        car.damage(b.damage * 0.6, this);
+      const car = p.car;
+      if (car && !car.wreck && dist2(car.x, car.y, b.x, b.y) < (car.radius + 6) ** 2) {
+        b.live = false;
+        car.damage(b.dmg * 0.6, this);
         this.fx.sparks(b.x, b.y, 3);
       }
     }
   }
 
-  pointInBuilding(x, y) {
-    const solids = solidsNear(this.city, x, y, []);
-    for (let i = 0; i < solids.length; i++) {
-      const s = solids[i];
-      if (x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h) return true;
-    }
-    return false;
-  }
-
-  onExplosion(v) {
-    // Blast damages everything nearby, including the player's own ride and bystanders.
-    const R = 190;
-    for (const other of this.vehicles) {
-      if (other === v || other.exploded) continue;
+  onBlast(v) {
+    // The blast tears into everything nearby — other cars, people, the player's own ride.
+    const R = 195;
+    for (const other of this.cars) {
+      if (other === v || other.wasted) continue;
       const d = Math.hypot(other.x - v.x, other.y - v.y);
       if (d < R) other.damage((1 - d / R) * 120, this);
     }
-    for (const ped of this.peds) {
-      if (ped.state === 'down' || ped.dead) continue;
-      const d = Math.hypot(ped.x - v.x, ped.y - v.y);
+    for (const person of this.people) {
+      if (person.mode === 'down') continue;
+      const d = Math.hypot(person.x - v.x, person.y - v.y);
       if (d < R) {
-        const wasCop = ped.isCop === true;
-        const down = ped.hurt(this, (1 - d / R) * 90, v.x, v.y);
-        if (!wasCop && down) this.wanted.add('pedKill');
-        if (wasCop && down) this.wanted.add('copKill');
+        const cop = person.isCop === true;
+        const down = person.hurt(this, (1 - d / R) * 90, v.x, v.y);
+        if (!cop && down) this.wanted.add('pedKill');
+        if (cop && down) this.wanted.add('copKill');
       }
     }
-    if (!this.player.inCar) {
+    if (!this.player.car) {
       const d = Math.hypot(this.player.x - v.x, this.player.y - v.y);
       if (d < R) this.player.hit((1 - d / R) * 80, v.x, v.y);
     }
-    this.alertNearbyPeds(v.x, v.y, 700);
-    this.missions.notifyVehicleDestroyed(v);
+    this.scarePeople(v.x, v.y, 720);
+    this.missions.vehicleGone(v);
     if (v.role === 'cop') this.wanted.add('copKill');
+    // Camera shake scaled by how close the blast was.
+    this.shake = Math.min(18, this.shake + 16 * this.proximity(v.x, v.y) + 3);
   }
 
-  onPedKilled(ped) {
-    this.alertNearbyPeds(ped.x, ped.y, 500);
+  onPersonDown(person) {
+    this.scarePeople(person.x, person.y, 520);
   }
 
-  onWantedStart() { /* hook for police surge */ }
-  onWantedClear() { this.police.spawnT = 0; }
+  onWantedBegin() { /* hook for the police surge */ }
+  onWantedClear() { this.cops.spawnT = 0; }
 
-  onPlayerVehicleBurning(car) {
-    // Bail out of a burning car automatically; the player gets two seconds of grace.
-    if (this.player.inCar === car) this.exitVehicle(true);
+  onPlayerCarBurning(car) {
+    // Bail out of a burning ride automatically; the walk away is the grace period.
+    if (this.player.car === car) this.leaveCar(true);
   }
 
-  onPlayerWasted() {
+  onHeroDown() {
     this.state = 'wasted';
     this.stateT = 3.0;
-    this.audio.explosion(0.4);
+    this.audio.boom(0.4);
   }
 
   respawn() {
@@ -246,7 +301,7 @@ export class Game {
     p.health = 100;
     p.armor = 0;
     p.dead = false;
-    p.inCar = null;
+    p.car = null;
     p.ammo = Math.floor(p.ammo / 2);
     this.wanted.clear();
     this.state = 'play';
@@ -256,73 +311,74 @@ export class Game {
 
   // ---------------------------------------------------------------- interactions
 
-  tryEnterVehicle() {
+  tryCar() {
     const p = this.player;
-    if (p.inCar) return;
-    let best = null, bestD = 80 * 80;
-    for (const v of this.vehicles) {
-      if (v.dead || v.exploded) continue;
-      const d = dist2(v.x, v.y, p.x, p.y);
-      if (d < bestD) { best = v; bestD = d; }
+    if (p.car) return;
+    let best = null, bestD = 82 * 82;
+    for (const c of this.cars) {
+      if (c.wreck || c.wasted) continue;
+      const d = dist2(c.x, c.y, p.x, p.y);
+      if (d < bestD) { best = c; bestD = d; }
     }
     if (!best) return;
     if (best.role === 'traffic' || best.role === 'cop') {
-      // Carjack: the driver bails and runs.
-      const ped = new Ped(best.x + 30, best.y + 20, (Math.random() * 999) | 0);
-      ped.flee(p.x, p.y);
-      this.peds.push(ped);
+      // Carjack: the driver bails out the side and runs.
+      const driver = new Person(best.x - Math.sin(best.ang) * 34, best.y + Math.cos(best.ang) * 34, (rand() * 999) | 0);
+      driver.graceT = 1.5;
+      driver.bolt(p.x, p.y);
+      this.people.push(driver);
       this.wanted.add(best.role === 'cop' ? 'copKill' : 'carjack');
       if (best.role === 'cop') this.wanted.stars = Math.max(this.wanted.stars, 2);
-      this.alertNearbyPeds(best.x, best.y, 380);
+      this.scarePeople(best.x, best.y, 380);
     }
     best.role = 'player';
     best.siren = false;
-    p.inCar = best;
+    p.car = best;
     this.audio.ensure();
     this.audio.blip(330);
   }
 
-  exitVehicle(force = false) {
+  leaveCar(force = false) {
     const p = this.player;
-    const car = p.inCar;
+    const car = p.car;
     if (!car) return;
-    if (!force && Math.abs(car.speed) > 140) return; // too fast to jump out
-    car.role = force ? 'parked' : 'parked';
-    car.throttle = 0; car.brake = 0; car.steer = 0; car.handbrake = false;
-    const side = car.def.wid / 2 + 16;
+    if (!force && Math.abs(car.fwd) > 140) return; // too fast to jump
+    car.role = 'parked';
+    car.gas = 0; car.brake = 0; car.steer = 0; car.slide = false;
+    const side = car.spec.wid / 2 + 16;
     p.x = car.x - Math.sin(car.ang) * side;
     p.y = car.y + Math.cos(car.ang) * side;
-    p.inCar = null;
+    p.car = null;
   }
 
   honk(car) {
-    this.alertNearbyPeds(car.x + Math.cos(car.ang) * 60, car.y + Math.sin(car.ang) * 60, 260);
+    this.scarePeople(car.x + Math.cos(car.ang) * 60, car.y + Math.sin(car.ang) * 60, 260);
   }
 
-  alertNearbyPeds(x, y, r) {
-    for (const ped of this.peds) {
-      if (ped.state === 'down' || ped.isCop) continue;
-      if (dist2(ped.x, ped.y, x, y) < r * r) ped.flee(x, y);
+  scarePeople(x, y, r) {
+    for (const person of this.people) {
+      if (person.mode === 'down' || person.isCop) continue;
+      if (dist2(person.x, person.y, x, y) < r * r) person.bolt(x, y);
     }
   }
 
   // ---------------------------------------------------------------- collisions
 
-  vehicleCollide(v) {
-    const res = collideCircle(this.city, v.x, v.y, v.radius);
-    if (!res.hit) return null;
-    // Approximate the wall normal from the push direction.
-    const dx = res.x - v.x, dy = res.y - v.y;
+  carWall(c) {
+    const res = collideCity(this.city, c.x, c.y, c.radius);
+    if (!res.bumped) return null;
+    const dx = res.x - c.x, dy = res.y - c.y;
     const len = Math.hypot(dx, dy) || 1;
     return { nx: -dx / len, ny: -dy / len };
   }
 
-  vehicleCollisions(dt, p) {
-    // The player's car against every other vehicle nearby.
-    const car = p.inCar;
-    if (!car || car.dead) return;
-    for (const other of this.vehicles) {
-      if (other === car || other.exploded) continue;
+  carContacts(dt, p) {
+    // The player's car against everything else nearby; both sides take damage.
+    const car = p.car;
+    if (!car || car.wreck) return;
+    const near = this.grid ? this.grid.near(car.x, car.y, 200, []) : [];
+    for (const other of near) {
+      if (!(other instanceof Car) || other === car || other.wasted) continue;
       const d = Math.hypot(other.x - car.x, other.y - car.y);
       const min = other.radius + car.radius;
       if (d >= min || d < 0.001) continue;
@@ -336,29 +392,29 @@ export class Game {
         if (other.role === 'traffic') this.traffic.ram(other, car.x, car.y, impact, this);
         else other.damage((impact - 100) * 0.08, this);
         this.fx.sparks((car.x + other.x) / 2, (car.y + other.y) / 2, 5);
-        this.audio.crash(Math.min(1, impact / 420));
+        this.audio.crash(Math.min(1, impact / 430));
       }
     }
   }
 
   runOverCheck(p) {
-    const car = p.inCar;
-    if (!car || car.dead) return;
-    const speed = Math.hypot(car.vx, car.vy);
-    if (speed < 60) return;
-    for (const ped of this.peds) {
-      if (ped.state === 'down' || ped.dead) continue;
-      if (dist2(ped.x, ped.y, car.x, car.y) < (car.radius + 8) ** 2) {
-        const wasCop = ped.isCop === true;
-        const down = ped.hurt(this, speed * 0.4, car.x, car.y);
+    const car = p.car;
+    if (!car || car.wreck) return;
+    if (Math.hypot(car.vx, car.vy) < 60) return;
+    const near = this.grid ? this.grid.near(car.x, car.y, 120, []) : [];
+    for (const person of near) {
+      if (person instanceof Car || person.mode === 'down' || person.graceT > 0) continue;
+      if (dist2(person.x, person.y, car.x, car.y) < (car.radius + 8) ** 2) {
+        const cop = person.isCop === true;
+        const down = person.hurt(this, Math.hypot(car.vx, car.vy) * 0.4, car.x, car.y);
         this.wanted.add(down ? 'pedKill' : 'pedHit');
-        this.fx.blood(ped.x, ped.y, 5);
-        if (wasCop && down) this.wanted.add('copKill');
+        this.fx.blood(person.x, person.y, 5);
+        if (cop && down) this.wanted.add('copKill');
       }
     }
   }
 
-  pickupCheck(p) {
+  grabPickups(p) {
     for (let i = this.pickups.length - 1; i >= 0; i--) {
       const pk = this.pickups[i];
       if (dist2(pk.x, pk.y, p.x, p.y) < 34 * 34) {
@@ -376,7 +432,7 @@ export class Game {
     writeSave({
       seed: this.seed,
       money: p.money,
-      missionIndex: this.missions.index,
+      missionIndex: this.missions.cursor,
       x: p.x, y: p.y,
       health: p.health, armor: p.armor, ammo: p.ammo, weapon: p.weapon,
       sound: this.audio.enabled,

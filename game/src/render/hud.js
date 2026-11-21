@@ -1,54 +1,53 @@
-// The HUD: circular minimap with pre-rendered road network, health and armor bars, money,
-// wanted stars, mission subtitles and objective, and a speedometer while driving.
+// The HUD: a circular minimap over a pre-rendered city map, health and armor bars, a money
+// counter, the wanted star row, weapon readout, mission objective and subtitles, and a
+// speedometer gauge while driving. Every element is drawn on one canvas pass.
 
-import { BLOCKS, PITCH, BEACH_W, WORLD_W } from '../config.js';
+import { GRID, PITCH, SAND } from '../config.js';
 import { clamp, TAU } from '../util.js';
 
-const MINI_SIZE = 720;
-const MINI_SPAN = 1500; // world units across the minimap circle
+const MAP_PX = 760;
+const MAP_SPAN = 1500;   // world units shown across the minimap circle
 
 export class Hud {
   constructor() {
-    this.map = this.prerenderMap();
+    this.underlay = this.bakeMap();
   }
 
-  prerenderMap() {
+  /** Pre-render the static city map once: land, parks, lots, plaza, beach, roads. */
+  bakeMap() {
     const c = document.createElement('canvas');
-    c.width = MINI_SIZE; c.height = MINI_SIZE;
+    c.width = MAP_PX; c.height = MAP_PX;
     const g = c.getContext('2d');
-    const world = BLOCKS * PITCH + BEACH_W;
-    const m = MINI_SIZE / world;
+    const span = GRID * PITCH + SAND;
+    const k = MAP_PX / span;
     g.fillStyle = '#0c1020';
-    g.fillRect(0, 0, MINI_SIZE, MINI_SIZE);
-    // Water and sand
+    g.fillRect(0, 0, MAP_PX, MAP_PX);
     g.fillStyle = '#12273e';
-    g.fillRect(BLOCKS * PITCH * m, 0, (BEACH_W + 2000) * m, MINI_SIZE);
+    g.fillRect(GRID * PITCH * k, 0, (SAND + 2000) * k, MAP_PX);
     g.fillStyle = '#8a744c';
-    g.fillRect(BLOCKS * PITCH * m, 0, BEACH_W * m, MINI_SIZE);
+    g.fillRect(GRID * PITCH * k, 0, SAND * k, MAP_PX);
     return c;
   }
 
+  /** Stamp block kinds and roads onto the baked map for the freshly generated city. */
   attach(game) {
-    // Paint block types onto the prerendered minimap once the city exists.
-    const world = BLOCKS * PITCH + BEACH_W;
-    const m = MINI_SIZE / world;
-    const g = this.map.getContext('2d');
+    const span = GRID * PITCH + SAND;
+    const k = MAP_PX / span;
+    const g = this.underlay.getContext('2d');
     for (const block of game.city.blocks) {
-      const x = block.i * PITCH * m, y = block.j * PITCH * m;
-      const s = PITCH * m;
-      if (block.type === 'park') g.fillStyle = '#1d4a2c';
-      else if (block.type === 'plaza') g.fillStyle = '#3d4358';
-      else if (block.type === 'lot') g.fillStyle = '#23262e';
-      else g.fillStyle = '#2b2f3c';
+      const x = block.i * PITCH * k, y = block.j * PITCH * k, s = PITCH * k;
+      g.fillStyle = block.kind === 'park' ? '#1d4a2c'
+        : block.kind === 'plaza' ? '#3d4358'
+        : block.kind === 'lot' ? '#23262e'
+        : '#2b2f3c';
       g.fillRect(x, y, s, s);
     }
-    // Roads over the blocks.
     g.strokeStyle = '#8d93a8';
-    g.lineWidth = Math.max(1, 90 * m * 0.8);
+    g.lineWidth = Math.max(1, 90 * k * 0.8);
     g.beginPath();
-    for (let i = 0; i <= BLOCKS; i++) {
-      g.moveTo(i * PITCH * m, 0); g.lineTo(i * PITCH * m, BLOCKS * PITCH * m);
-      g.moveTo(0, i * PITCH * m); g.lineTo(BLOCKS * PITCH * m, i * PITCH * m);
+    for (let i = 0; i <= GRID; i++) {
+      g.moveTo(i * PITCH * k, 0); g.lineTo(i * PITCH * k, GRID * PITCH * k);
+      g.moveTo(0, i * PITCH * k); g.lineTo(GRID * PITCH * k, i * PITCH * k);
     }
     g.stroke();
   }
@@ -56,163 +55,207 @@ export class Hud {
   draw(ctx, game, W, H) {
     const p = game.player;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.minimap(ctx, game, p, H);
+    this.vitals(ctx, game, p);
+    this.money(ctx, p, W);
+    this.stars(ctx, game, W);
+    this.weapon(ctx, p);
+    this.speedo(ctx, p, W, H);
+    this.objective(ctx, game, W, H);
+    this.banner(ctx, game, W, H);
+    this.endState(ctx, game, p, W, H);
+  }
 
-    // ---- minimap (bottom-left) ----
-    const mr = 88;
-    const mx = 24 + mr, my = H - 24 - mr;
+  minimap(ctx, game, p, H) {
+    const r = 90;
+    const mx = 26 + r, my = H - 26 - r;
+    const span = GRID * PITCH + SAND;
+    const k = MAP_PX / span;
     ctx.save();
     ctx.beginPath();
-    ctx.arc(mx, my, mr, 0, TAU);
+    ctx.arc(mx, my, r, 0, TAU);
     ctx.clip();
     ctx.fillStyle = '#0a0e1a';
-    ctx.fillRect(mx - mr, my - mr, mr * 2, mr * 2);
-    const world = BLOCKS * PITCH + BEACH_W;
-    const m = MINI_SIZE / world;
-    const srcSpan = MINI_SPAN * m;
-    const sx = clamp(p.x * m - srcSpan / 2, 0, MINI_SIZE - srcSpan);
-    const sy = clamp(p.y * m - srcSpan / 2, 0, MINI_SIZE - srcSpan);
+    ctx.fillRect(mx - r, my - r, r * 2, r * 2);
+    const viewPx = MAP_SPAN * k;
+    const sx = clamp(p.x * k - viewPx / 2, 0, MAP_PX - viewPx);
+    const sy = clamp(p.y * k - viewPx / 2, 0, MAP_PX - viewPx);
     ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(this.map, sx, sy, srcSpan, srcSpan, mx - mr, my - mr, mr * 2, mr * 2);
-    const toMini = (wx, wy) => {
-      const dx = (wx * m - sx) / srcSpan * mr * 2 - mr;
-      const dy = (wy * m - sy) / srcSpan * mr * 2 - mr;
-      return [mx + dx, my + dy];
-    };
-    // Mission marker
+    ctx.drawImage(this.underlay, sx, sy, viewPx, viewPx, mx - r, my - r, r * 2, r * 2);
+    const toMini = (wx, wy) => [mx + ((wx * k - sx) / viewPx) * r * 2 - r, my + ((wy * k - sy) / viewPx) * r * 2 - r];
+
+    // Mission marker, clamped to the rim so off-screen goals still show direction.
     const marker = game.missions.marker();
     if (marker) {
       const [ax, ay] = toMini(marker.x, marker.y);
-      const cx = clamp(ax, mx - mr + 10, mx + mr - 10);
-      const cy = clamp(ay, my - mr + 10, my + mr - 10);
+      const cx = clamp(ax, mx - r + 10, mx + r - 10);
+      const cy = clamp(ay, my - r + 10, my + r - 10);
       ctx.fillStyle = marker.color;
       ctx.beginPath(); ctx.arc(cx, cy, 5, 0, TAU); ctx.fill();
-      ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
     }
-    // Police blips
-    for (const c of game.police.cars) {
-      if (c.dead || c.exploded) continue;
+    // Police blips.
+    for (const c of game.cops.cruisers) {
+      if (c.wreck || c.wasted) continue;
       const [bx, by] = toMini(c.x, c.y);
-      if (Math.hypot(bx - mx, by - my) < mr - 6) {
+      if (Math.hypot(bx - mx, by - my) < r - 6) {
         ctx.fillStyle = Math.floor(game.time * 6) % 2 ? '#4a7dff' : '#ff4a55';
         ctx.beginPath(); ctx.arc(bx, by, 4, 0, TAU); ctx.fill();
       }
     }
-    // Player arrow
-    const heading = p.heading;
+    // Player arrow, pointing along the heading.
     ctx.save();
     ctx.translate(mx, my);
-    ctx.rotate(heading + Math.PI / 2);
+    ctx.rotate(p.heading + Math.PI / 2);
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
     ctx.moveTo(0, -8); ctx.lineTo(6, 7); ctx.lineTo(0, 4); ctx.lineTo(-6, 7);
     ctx.closePath(); ctx.fill();
     ctx.restore();
     ctx.restore();
-    // Ring
-    ctx.strokeStyle = 'rgba(255,220,160,0.75)';
+    // Double ring: warm inner glow, dark rim.
+    ctx.strokeStyle = 'rgba(255,222,160,0.8)';
     ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(mx, my, mr, 0, TAU); ctx.stroke();
+    ctx.beginPath(); ctx.arc(mx, my, r, 0, TAU); ctx.stroke();
     ctx.strokeStyle = 'rgba(0,0,0,0.55)';
     ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(mx, my, mr + 2.5, 0, TAU); ctx.stroke();
+    ctx.beginPath(); ctx.arc(mx, my, r + 2.5, 0, TAU); ctx.stroke();
 
-    // ---- health + armor bars (above the minimap) ----
-    this.bar(ctx, mx - mr, my - mr - 26, mr * 2, 12, p.health / 100, '#3dff7a', '#173a22');
-    if (p.armor > 0) this.bar(ctx, mx - mr, my - mr - 44, mr * 2, 12, p.armor / 100, '#5db3ff', '#16303f');
-
-    // ---- money (top-right) ----
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 26px Consolas, "Courier New", monospace';
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillText(`$${p.money.toLocaleString()}`, W - 26 + 2, 44 + 2);
-    ctx.fillStyle = '#9dffb0';
-    ctx.fillText(`$${p.money.toLocaleString()}`, W - 26, 44);
-
-    // ---- wanted stars (below money) ----
-    const stars = game.wanted.stars;
-    for (let s = 0; s < 5; s++) {
-      const x = W - 42 - s * 30, y = 74;
-      this.star(ctx, x, y, 11, s < stars, s < stars && Math.floor(game.time * 4) % 2 === 0);
-    }
-
-    // ---- ammo / weapon (top-left) ----
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 20px Consolas, "Courier New", monospace';
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillText(p.weapon === 'pistol' ? `PISTOL ${p.ammo}` : 'FISTS', 28 + 2, 42 + 2);
-    ctx.fillStyle = '#ffe9a3';
-    ctx.fillText(p.weapon === 'pistol' ? `PISTOL ${p.ammo}` : 'FISTS', 28, 42);
-
-    // ---- speedometer (bottom-right, while driving) ----
-    const car = p.inCar;
-    if (car) {
-      const kmh = Math.abs(car.speed) * 0.42 | 0;
-      const cx = W - 110, cy = H - 96, r = 56;
-      ctx.strokeStyle = 'rgba(10,14,24,0.75)';
-      ctx.lineWidth = 12;
-      ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * 0.75, Math.PI * 2.25); ctx.stroke();
-      const frac = clamp(Math.abs(car.speed) / car.def.top, 0, 1);
-      ctx.strokeStyle = frac > 0.85 ? '#ff5f4a' : frac > 0.6 ? '#ffd24a' : '#59e0ff';
-      ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * 0.75, Math.PI * 0.75 + Math.PI * 1.5 * frac); ctx.stroke();
-      ctx.textAlign = 'center';
-      ctx.font = 'bold 24px Consolas, "Courier New", monospace';
-      ctx.fillStyle = '#e8ecf4';
-      ctx.fillText(`${kmh}`, cx, cy + 8);
-      ctx.font = '12px Consolas, "Courier New", monospace';
-      ctx.fillStyle = '#9aa3b8';
-      ctx.fillText('KM/H', cx, cy + 26);
-      ctx.font = 'bold 13px Consolas, "Courier New", monospace';
-      ctx.fillStyle = '#c8cede';
-      ctx.fillText(car.def.name.toUpperCase(), cx, cy - r - 12);
-    }
-
-    // ---- objective + subtitles (bottom-center) ----
-    const obj = game.missions.objectiveText();
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 17px Consolas, "Courier New", monospace';
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillText(obj, W / 2 + 1, H - 33 + 1);
-    ctx.fillStyle = '#ffd977';
-    ctx.fillText(obj, W / 2, H - 33);
-
-    // Mission banner
-    const msn = game.missions;
-    if (msn.bannerT > 0) {
-      const a = clamp(msn.bannerT, 0, 1);
-      ctx.globalAlpha = a;
-      ctx.font = 'bold 44px Consolas, "Courier New", monospace';
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillText(msn.bannerText, W / 2 + 2, H * 0.2 + 2);
-      ctx.fillStyle = msn.bannerColor;
-      ctx.fillText(msn.bannerText, W / 2, H * 0.2);
-      ctx.font = '18px Consolas, "Courier New", monospace';
-      ctx.fillStyle = '#dfe4ee';
-      wrapText(ctx, msn.bannerSub ?? '', W / 2, H * 0.2 + 40, W * 0.7, 24);
-      ctx.globalAlpha = 1;
-    }
-
-    // Wasted / busted state text
-    if (game.state === 'wasted' || game.state === 'busted') {
-      ctx.fillStyle = game.state === 'wasted' ? 'rgba(90,8,16,0.45)' : 'rgba(10,20,80,0.45)';
-      ctx.fillRect(0, 0, W, H);
-      ctx.font = 'bold 84px Consolas, "Courier New", monospace';
-      ctx.fillStyle = game.state === 'wasted' ? '#ff5a5a' : '#7aa2ff';
-      ctx.fillText(game.state === 'wasted' ? 'WASTED' : 'BUSTED', W / 2, H / 2);
-      ctx.font = '20px Consolas, "Courier New", monospace';
-      ctx.fillStyle = '#e8ecf4';
-      const fee = Math.max(50, Math.floor(p.money * (game.state === 'busted' ? 0.2 : 0.15)));
-      ctx.fillText(game.state === 'wasted' ? `Hospital bill: -$${fee}` : `Bail: -$${fee}`, W / 2, H / 2 + 44);
-    }
+    // Health and armor sit above the minimap.
+    this.bar(ctx, mx - r, my - r - 28, r * 2, 13, p.health / 100, '#3dff7a', '#173a22');
+    if (p.armor > 0) this.bar(ctx, mx - r, my - r - 46, r * 2, 13, p.armor / 100, '#5db3ff', '#16303f');
   }
+
+  vitals(ctx, game, p) { /* drawn inside minimap() above the map ring */ }
 
   bar(ctx, x, y, w, h, f, color, back) {
     ctx.fillStyle = back;
-    ctx.fillRect(x, y, w, h);
+    this.rounded(ctx, x, y, w, h, 4);
+    ctx.fill();
     ctx.fillStyle = color;
-    ctx.fillRect(x + 2, y + 2, (w - 4) * clamp(f, 0, 1), h - 4);
+    if (f > 0.02) { this.rounded(ctx, x + 2, y + 2, Math.max(6, (w - 4) * clamp(f, 0, 1)), h - 4, 3); ctx.fill(); }
     ctx.strokeStyle = 'rgba(0,0,0,0.6)';
     ctx.lineWidth = 1.5;
-    ctx.strokeRect(x, y, w, h);
+    this.rounded(ctx, x, y, w, h, 4);
+    ctx.stroke();
+  }
+
+  rounded(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  money(ctx, p, W) {
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 27px Consolas, "Courier New", monospace';
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillText(`$${p.money.toLocaleString()}`, W - 27 + 2, 45 + 2);
+    ctx.fillStyle = '#9dffb0';
+    ctx.fillText(`$${p.money.toLocaleString()}`, W - 27, 45);
+  }
+
+  stars(ctx, game, W) {
+    const lit = game.wanted.stars;
+    for (let s = 0; s < 5; s++) {
+      const x = W - 43 - s * 31, y = 76;
+      this.star(ctx, x, y, 11, s < lit, s < lit && Math.floor(game.time * 4) % 2 === 0);
+    }
+  }
+
+  weapon(ctx, p) {
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 20px Consolas, "Courier New", monospace';
+    const label = p.weapon === 'pistol' ? `PISTOL ${p.ammo}` : 'FISTS';
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillText(label, 29, 43);
+    ctx.fillStyle = '#ffe9a3';
+    ctx.fillText(label, 27, 41);
+  }
+
+  speedo(ctx, p, W, H) {
+    const car = p.car;
+    if (!car) return;
+    const kmh = (Math.abs(car.fwd) * 0.42) | 0;
+    const cx = W - 112, cy = H - 98, r = 58;
+    ctx.strokeStyle = 'rgba(10,14,24,0.75)';
+    ctx.lineWidth = 13;
+    ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * 0.75, Math.PI * 2.25); ctx.stroke();
+    const f = clamp(Math.abs(car.fwd) / car.spec.top, 0, 1);
+    ctx.strokeStyle = f > 0.85 ? '#ff5f4a' : f > 0.6 ? '#ffd24a' : '#59e0ff';
+    ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * 0.75, Math.PI * 0.75 + Math.PI * 1.5 * f); ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 25px Consolas, "Courier New", monospace';
+    ctx.fillStyle = '#e8ecf4';
+    ctx.fillText(`${kmh}`, cx, cy + 9);
+    ctx.font = '12px Consolas, "Courier New", monospace';
+    ctx.fillStyle = '#9aa3b8';
+    ctx.fillText('KM/H', cx, cy + 27);
+    ctx.font = 'bold 13px Consolas, "Courier New", monospace';
+    ctx.fillStyle = '#c8cede';
+    ctx.fillText(car.spec.name.toUpperCase(), cx, cy - r - 13);
+  }
+
+  objective(ctx, game, W, H) {
+    const text = game.missions.objectiveText();
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 17px Consolas, "Courier New", monospace';
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillText(text, W / 2 + 1, H - 34 + 1);
+    ctx.fillStyle = '#ffd977';
+    ctx.fillText(text, W / 2, H - 34);
+  }
+
+  banner(ctx, game, W, H) {
+    const m = game.missions;
+    if (m.bannerT <= 0) return;
+    const a = clamp(m.bannerT, 0, 1);
+    ctx.globalAlpha = a;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 46px Consolas, "Courier New", monospace';
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillText(m.bannerText, W / 2 + 2, H * 0.2 + 2);
+    ctx.fillStyle = m.bannerColor;
+    ctx.fillText(m.bannerText, W / 2, H * 0.2);
+    ctx.font = '18px Consolas, "Courier New", monospace';
+    ctx.fillStyle = '#dfe4ee';
+    this.wrap(ctx, m.bannerSub ?? '', W / 2, H * 0.2 + 42, W * 0.7, 24);
+    ctx.globalAlpha = 1;
+  }
+
+  endState(ctx, game, p, W, H) {
+    if (game.state !== 'wasted' && game.state !== 'busted') return;
+    ctx.fillStyle = game.state === 'wasted' ? 'rgba(90,8,16,0.45)' : 'rgba(10,20,80,0.45)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 86px Consolas, "Courier New", monospace';
+    ctx.fillStyle = game.state === 'wasted' ? '#ff5a5a' : '#7aa2ff';
+    ctx.fillText(game.state === 'wasted' ? 'WASTED' : 'BUSTED', W / 2, H / 2);
+    const fee = Math.max(50, Math.floor(p.money * (game.state === 'busted' ? 0.2 : 0.15)));
+    ctx.font = '20px Consolas, "Courier New", monospace';
+    ctx.fillStyle = '#e8ecf4';
+    ctx.fillText(game.state === 'wasted' ? `Hospital bill: -$${fee}` : `Bail: -$${fee}`, W / 2, H / 2 + 46);
+  }
+
+  wrap(ctx, text, x, y, maxW, lineH) {
+    const words = text.split(' ');
+    let line = '';
+    let yy = y;
+    for (const w of words) {
+      const test = line ? line + ' ' + w : w;
+      if (ctx.measureText(test).width > maxW) {
+        ctx.fillText(line, x, yy);
+        line = w; yy += lineH;
+      } else line = test;
+    }
+    if (line) ctx.fillText(line, x, yy);
   }
 
   star(ctx, x, y, r, on, blink) {
@@ -221,7 +264,7 @@ export class Hud {
       const a = -Math.PI / 2 + (k * Math.PI) / 5;
       const rad = k % 2 === 0 ? r : r * 0.44;
       const px = x + Math.cos(a) * rad, py = y + Math.sin(a) * rad;
-      k === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
     }
     ctx.closePath();
     if (on) {
@@ -236,18 +279,4 @@ export class Hud {
       ctx.stroke();
     }
   }
-}
-
-function wrapText(ctx, text, x, y, maxW, lineH) {
-  const words = text.split(' ');
-  let line = '';
-  let yy = y;
-  for (const w of words) {
-    const test = line ? line + ' ' + w : w;
-    if (ctx.measureText(test).width > maxW) {
-      ctx.fillText(line, x, yy);
-      line = w; yy += lineH;
-    } else line = test;
-  }
-  if (line) ctx.fillText(line, x, yy);
 }

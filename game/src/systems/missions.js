@@ -1,25 +1,22 @@
-// Missions and story: six chained jobs for Rico's old contacts, each a small stage machine
-// with world markers, a minimap flag, fail/retry and cash rewards. Later missions unlock as
-// earlier ones pay out.
+// The story: six chained jobs for Rico's old contacts. Each is a small stage machine with a
+// world marker, a minimap flag, fail/retry and a cash payout; the next job only shows its
+// marker once the previous one pays out.
 
-import { BLOCKS, PITCH, ROAD_W, SIDEWALK } from '../config.js';
-import { blockCenter } from '../world/city.js';
+import { GRID, PITCH, ROAD, WALK, SAND } from '../config.js';
 import { dist2 } from '../util.js';
 
-/** A point on the road grid: always reachable on foot or by car. */
-function roadPoint(i, j) {
-  return { x: i * PITCH, y: j * PITCH };
+/** A point on the street grid — always reachable on foot or by car. */
+function street(i, j) { return { x: i * PITCH, y: j * PITCH }; }
+
+/** A spot on the south sidewalk of block (i, j), where contacts wait. */
+function stoop(i, j) {
+  return { x: (i + 0.5) * PITCH, y: (j + 1) * PITCH - ROAD / 2 - WALK / 2 };
 }
 
-/** A point on the south sidewalk of block (i, j), where contacts stand. */
-function sidePoint(i, j) {
-  return { x: (i + 0.5) * PITCH, y: (j + 1) * PITCH - ROAD_W / 2 - SIDEWALK / 2 };
-}
-
-const GARAGE = sidePoint(12, 26);
-const PLAZA = sidePoint(19, 20);
-const PAWN = sidePoint(24, 7);
-const MARINA = { x: BLOCKS * PITCH - 46, y: 6.5 * PITCH };
+const GARAGE = stoop(12, 26);
+const PLAZA = stoop(19, 20);
+const PAWN = stoop(24, 7);
+const MARINA = { x: GRID * PITCH - 46, y: 6.5 * PITCH };
 
 export const GIVERS = [
   { name: 'Rosa', x: GARAGE.x, y: GARAGE.y },
@@ -30,59 +27,59 @@ export const GIVERS = [
   { name: 'Marisol', x: PLAZA.x, y: PLAZA.y },
 ];
 
-export const MISSIONS = [
+export const JOBS = [
   {
     title: 'Back in Town',
-    brief: "Rosa: “Rico? After six years? Don't hug me, the cops still ask about you. Get to my garage — we talk there.”",
-    outro: "Rosa: “Still drives like a tourist. Good. I have work.”",
+    brief: 'Rosa: “Six years, Rico. Six years, and not one postcard. Walk to my garage before the night gets ideas about you.”',
+    outro: 'Rosa: “Still walking like you own the sidewalk. Good. I have work.”',
     reward: 300,
     stages: [{ type: 'goto', x: GARAGE.x, y: GARAGE.y, r: 46, text: 'Reach Rosa’s garage' }],
   },
   {
-    title: 'Repossession',
-    brief: "Rosa: “A client skipped three payments on a Tempest GT. It parks at the Sunset lot. Bring it here — in one shape.”",
-    outro: "Rosa: “Told you it would still be there. People here trust nobody, and I trust that.”",
+    title: 'Repo Run',
+    brief: 'Rosa: “A client stopped paying on a Vanta GT. It still sits at the Sunset lot. Bring it here — and bring it in one shape.”',
+    outro: 'Rosa: “Knew it would still be there. Nobody in this city trusts anybody. I count on that.”',
     reward: 500,
     stages: [
-      { type: 'steal', x: 27 * PITCH, y: 14 * PITCH, r: 70, text: 'Steal the marked Tempest GT', vehicle: 2 },
-      { type: 'goto-vehicle', x: GARAGE.x, y: GARAGE.y, r: 60, text: 'Deliver it to the garage', vehicleTag: 'mission' },
+      { type: 'steal', x: 27 * PITCH, y: 14 * PITCH, r: 70, text: 'Steal the marked Vanta GT', vehicle: 1 },
+      { type: 'deliver', x: GARAGE.x, y: GARAGE.y, r: 60, text: 'Drive it to the garage' },
     ],
   },
   {
     title: 'The Night Run',
-    brief: "Rosa: “A package sits in my garage. The buyer waits at the plaza. One hundred seconds, Rico. Don’t open it.”",
-    outro: "Buyer: “Clean. Rosa sends her best people and her worst apologies.”",
+    brief: 'Rosa: “A case waits in my garage. The buyer waits at the plaza. Ninety seconds, Rico. And don’t open it.”',
+    outro: 'Buyer: “Clean work. Rosa sends her best people and her worst apologies.”',
     reward: 700,
     stages: [
-      { type: 'goto', x: GARAGE.x, y: GARAGE.y, r: 46, text: 'Pick up the package at the garage' },
-      { type: 'goto-timed', x: PLAZA.x, y: PLAZA.y, r: 60, text: 'Deliver to the buyer at the plaza', time: 100 },
+      { type: 'goto', x: GARAGE.x, y: GARAGE.y, r: 46, text: 'Pick up the case at the garage' },
+      { type: 'timed', x: PLAZA.x, y: PLAZA.y, r: 60, text: 'Deliver to the buyer at the plaza', time: 90 },
     ],
   },
   {
-    title: 'Clean Up the Books',
-    brief: "Serge: “My ledger is in three briefcases my former partners forgot to steal. Collect them before somebody honest does.”",
-    outro: "Serge: “Now the numbers only embarrass me. Much better.”",
+    title: 'Paper Trail',
+    brief: 'Serge: “My ledger is in three cases my ex-partners were too lazy to steal. Collect them before somebody honest does.”',
+    outro: 'Serge: “Now the numbers only embarrass me. Much better.”',
     reward: 900,
     stages: [
-      { type: 'collect', text: 'Collect the briefcases', points: [roadPoint(8, 9), roadPoint(30, 10), roadPoint(22, 33)] },
+      { type: 'collect', text: 'Collect the ledger cases', points: [street(8, 9), street(30, 10), street(22, 33)] },
     ],
   },
   {
-    title: 'Smoke Break',
-    brief: "Serge: “Three Coachline vans at the Coral Yard carry what owes me. Turn them into what the fire marshal writes up.”",
-    outro: "Serge: “Beautiful. Terrible, but beautiful. Here, and don’t spend it on smoke.”",
+    title: 'Torch Song',
+    brief: 'Serge: “Three Tramline vans in the Coral Yard carry what owes me. Turn them into what the fire marshal writes up.”',
+    outro: 'Serge: “Beautiful. Terrible, but beautiful. Here — and don’t spend it on smoke.”',
     reward: 1400,
     stages: [
-      { type: 'destroy', x: 33 * PITCH, y: 29 * PITCH, r: 90, text: 'Destroy the three Coachline vans', vehicle: 4, count: 3 },
+      { type: 'destroy', x: 33 * PITCH, y: 29 * PITCH, r: 90, text: 'Destroy the three Tramline vans', vehicle: 7, count: 3 },
     ],
   },
   {
     title: 'The Last Ride',
-    brief: "Marisol: “The department has a file with your name in wet ink. Every car they have is coming. Reach the marina gate — the boat won’t wait and neither will I.”",
-    outro: "Marisol: “Welcome to the water, Rico. Vice Palms never changes — that’s why we love it.”",
+    brief: 'Marisol: “There’s a warrant with your name in fresh ink, and every cruiser in the city is out. The boat at the marina gate leaves at dawn — don’t be late for dawn.”',
+    outro: 'Marisol: “Welcome to the water, Rico. Vice Palms never changes — that’s why we love it.”',
     reward: 2500,
     stages: [
-      { type: 'escape', x: MARINA.x, y: MARINA.y, r: 60, text: 'Lose them or outrun them — reach the marina gate', stars: 3 },
+      { type: 'escape', x: MARINA.x, y: MARINA.y, r: 60, text: 'Reach the marina gate', stars: 3 },
     ],
   },
 ];
@@ -90,105 +87,105 @@ export const MISSIONS = [
 export class Missions {
   constructor(game) {
     this.game = game;
-    this.index = 0;             // next mission to offer
-    this.active = null;         // { def, stage, collected, destroyed, timer, tag }
-    this.finished = false;
+    this.cursor = 0;        // index of the next job on the board
+    this.active = null;     // { def, stage, collected, torched, timer, index }
+    this.done = false;
     this.bannerT = 0;
     this.bannerText = '';
     this.bannerColor = '#ffd977';
+    this.jobCar = null;
   }
 
-  /** Where the current marker points: giver when idle, objective when active. */
+  /** Where the current marker points: the giver when idle, the objective when running. */
   marker() {
-    if (this.active) {
-      const st = this.currentStage();
+    const a = this.active;
+    if (a) {
+      const st = a.def.stages[a.stage];
       if (!st) return null;
       if (st.type === 'collect') {
-        const pt = st.points[this.active.collected];
+        const pt = st.points[a.collected];
         return pt ? { x: pt.x, y: pt.y, color: '#7dffa4' } : null;
       }
       if (st.type === 'destroy') return { x: st.x, y: st.y, color: '#ff6b5f' };
       return { x: st.x, y: st.y, color: '#ffd977' };
     }
-    if (this.finished || this.index >= MISSIONS.length) return null;
-    const g = GIVERS[this.index];
+    if (this.done || this.cursor >= JOBS.length) return null;
+    const g = GIVERS[this.cursor];
     return { x: g.x, y: g.y, color: '#ffd977' };
   }
 
   objectiveText() {
     if (!this.active) {
-      if (this.finished || this.index >= MISSIONS.length) return 'Vice Palms is yours now. Free roam.';
-      return `Meet ${GIVERS[this.index].name} for the next job`;
+      if (this.done || this.cursor >= JOBS.length) return 'Vice Palms is yours. Free roam.';
+      return `Meet ${GIVERS[this.cursor].name} for the next job`;
     }
     const st = this.currentStage();
     if (!st) return 'Job done — get paid';
     let text = st.text;
     if (st.type === 'collect') text += ` (${this.active.collected}/${st.points.length})`;
-    if (st.type === 'destroy') text += ` (${this.active.destroyed}/${st.count})`;
-    if (st.type === 'goto-timed' && this.active.timer != null) text += ` — ${Math.ceil(this.active.timer)}s`;
-    if (st.type === 'escape') text += ` — keep the stars up`;
+    if (st.type === 'destroy') text += ` (${this.active.torched}/${st.count})`;
+    if (st.type === 'timed' && this.active.timer != null) text += ` — ${Math.ceil(this.active.timer)}s`;
+    if (st.type === 'escape') text += ' — lose nobody, stop for nobody';
     return text;
   }
 
   currentStage() {
     const a = this.active;
-    if (!a) return null;
-    return a.def.stages[a.stage] ?? null;
+    return a ? a.def.stages[a.stage] ?? null : null;
   }
 
-  /** Player walked into the idle giver marker. */
-  tryStart(player) {
-    if (this.active || this.finished || this.index >= MISSIONS.length) return;
-    const g = GIVERS[this.index];
-    if (dist2(player.x, player.y, g.x, g.y) < 55 * 55) this.start(this.index);
+  /** The player walked into the idle giver marker. */
+  offerCheck(player) {
+    if (this.active || this.done || this.cursor >= JOBS.length) return;
+    const g = GIVERS[this.cursor];
+    if (dist2(player.x, player.y, g.x, g.y) < 55 * 55) this.begin(this.cursor);
   }
 
-  start(index) {
+  begin(index) {
     const game = this.game;
-    const def = MISSIONS[index];
-    this.active = { def, stage: 0, collected: 0, destroyed: 0, timer: null, index };
-    const st = def.stages[0];
-    if (st.type === 'steal') this.spawnMissionVehicle(st);
-    if (st.type === 'destroy') this.spawnTargetVans(st);
-    if (st.type === 'goto-timed' || st.type === 'escape') { /* timers set on stage entry */ }
+    const def = JOBS[index];
+    this.active = { def, stage: 0, collected: 0, torched: 0, timer: null, index };
     this.enterStage(0);
     this.banner(def.title, def.brief, 6.5, '#ffd977');
-    game.audio.blip(520);
+    game.audio.blip(525);
   }
 
-  enterStage(stageIdx) {
+  enterStage(idx) {
     const game = this.game;
     const a = this.active;
-    a.stage = stageIdx;
-    const st = a.def.stages[stageIdx];
-    if (!st) { this.complete(); return; }
-    if (st.type === 'steal') this.spawnMissionVehicle(st);
-    if (st.type === 'destroy') this.spawnTargetVans(st);
-    if (st.type === 'goto-timed') a.timer = st.time;
-    if (st.type === 'escape') { game.wanted.stars = Math.max(game.wanted.stars, st.stars); game.onWantedStart(); }
+    a.stage = idx;
+    const st = a.def.stages[idx];
+    if (!st) { this.payout(); return; }
+    if (st.type === 'steal') this.spawnJobCar(st);
+    if (st.type === 'destroy') this.spawnVans(st);
+    if (st.type === 'timed') a.timer = st.time;
+    if (st.type === 'escape') {
+      game.wanted.stars = Math.max(game.wanted.stars, st.stars);
+      game.onWantedBegin();
+    }
   }
 
-  spawnMissionVehicle(st) {
+  spawnJobCar(st) {
     const game = this.game;
-    if (this.missionVehicle && !this.missionVehicle.exploded) return;
-    const v = game.spawnVehicle(st.vehicle, st.x, st.y, -Math.PI / 2);
-    v.tag = 'mission';
+    if (this.jobCar && !this.jobCar.wasted) return;
+    const v = game.spawnCar(st.vehicle, st.x, st.y, -Math.PI / 2);
+    v.tag = 'job';
     v.role = 'parked';
-    this.missionVehicle = v;
+    this.jobCar = v;
   }
 
-  spawnTargetVans(st) {
+  spawnVans(st) {
     const game = this.game;
     for (let k = 0; k < st.count; k++) {
-      const v = game.spawnVehicle(st.vehicle, st.x + (k - 1) * 46, st.y + (k - 1) * 90, k % 2 ? Math.PI / 2 : -Math.PI / 2);
-      v.tag = 'target';
+      const v = game.spawnCar(st.vehicle, st.x + (k - 1) * 46, st.y + (k - 1) * 90, k % 2 ? Math.PI / 2 : -Math.PI / 2);
+      v.tag = 'van';
     }
   }
 
   update(dt, player) {
     const game = this.game;
     this.bannerT -= dt;
-    this.tryStart(player);
+    this.offerCheck(player);
     const a = this.active;
     if (!a) return;
     const st = this.currentStage();
@@ -197,30 +194,29 @@ export class Missions {
       a.timer -= dt;
       if (a.timer <= 0) { this.fail('OUT OF TIME'); return; }
     }
-
     switch (st.type) {
       case 'goto':
-      case 'goto-timed':
+      case 'timed':
         if (dist2(player.x, player.y, st.x, st.y) < st.r * st.r) {
           a.timer = null;
           this.enterStage(a.stage + 1);
         }
         break;
       case 'steal': {
-        const v = this.missionVehicle;
-        if (!v || v.exploded || v.dead) { this.fail('THE TEMPEST IS SCRAP'); return; }
+        const v = this.jobCar;
+        if (!v || v.wasted || v.wreck) { this.fail('THE VANTA IS SCRAP'); return; }
         if (v.role === 'player') {
           game.wanted.add('carjack');
           this.enterStage(a.stage + 1);
         }
         break;
       }
-      case 'goto-vehicle': {
-        const v = this.missionVehicle;
-        if (!v || v.exploded || v.dead) { this.fail('THE TEMPEST IS SCRAP'); return; }
+      case 'deliver': {
+        const v = this.jobCar;
+        if (!v || v.wasted || v.wreck) { this.fail('THE VANTA IS SCRAP'); return; }
         if (v.role === 'player' && dist2(v.x, v.y, st.x, st.y) < st.r * st.r) {
           v.role = 'parked';
-          if (player.inCar === v) game.exitVehicle();
+          if (player.car === v) game.leaveCar();
           this.enterStage(a.stage + 1);
         }
         break;
@@ -228,48 +224,45 @@ export class Missions {
       case 'collect':
         if (dist2(player.x, player.y, st.points[a.collected].x, st.points[a.collected].y) < 42 * 42) {
           a.collected++;
-          game.audio.blip(660);
+          game.audio.blip(665);
           game.fx.cash(player.x, player.y);
           if (a.collected >= st.points.length) this.enterStage(a.stage + 1);
         }
         break;
-      case 'destroy': {
-        // Count tagged vans that are gone; fail is impossible except by leaving them all.
-        if (a.destroyed >= st.count) this.enterStage(a.stage + 1);
+      case 'destroy':
+        if (a.torched >= st.count) this.enterStage(a.stage + 1);
         break;
-      }
       case 'escape':
-        if (game.wanted.stars < 2) { game.wanted.stars = 3; game.onWantedStart(); }
-        if (dist2(player.x, player.y, st.x, st.y) < st.r * st.r) this.complete();
+        if (game.wanted.stars < 2) { game.wanted.stars = 3; game.onWantedBegin(); }
+        if (dist2(player.x, player.y, st.x, st.y) < st.r * st.r) this.payout();
         break;
     }
   }
 
-  notifyVehicleDestroyed(v) {
+  /** Hook from game.onBlast: count tagged vans, fail if the job car burns. */
+  vehicleGone(v) {
     const a = this.active;
     if (!a) return;
     const st = this.currentStage();
     if (!st) return;
-    if (st.type === 'destroy' && v.tag === 'target') {
-      a.destroyed++;
+    if (st.type === 'destroy' && v.tag === 'van') {
+      a.torched++;
       this.game.audio.blip(300);
     }
-    if (this.missionVehicle === v && (st.type === 'steal' || st.type === 'goto-vehicle')) {
-      this.fail('THE TEMPEST IS SCRAP');
-    }
+    if (this.jobCar === v) this.fail('THE VANTA IS SCRAP');
   }
 
-  complete() {
+  payout() {
     const game = this.game;
     const a = this.active;
     game.player.money += a.def.reward;
-    this.finished = this.index === MISSIONS.length - 1;
-    this.index = Math.min(this.index + 1, MISSIONS.length);
-    this.banner('MISSION COMPLETE', `${a.def.outro}  +$${a.def.reward}`, 6.5, '#7dffa4');
+    this.done = this.cursor === JOBS.length - 1;
+    this.cursor = Math.min(this.cursor + 1, JOBS.length);
+    this.banner('MISSION PASSED', `${a.def.outro}  +$${a.def.reward}`, 6.5, '#7dffa4');
     game.fx.cash(game.player.x, game.player.y);
     game.audio.blip(880);
     this.active = null;
-    this.missionVehicle = null;
+    this.jobCar = null;
     game.save();
   }
 
@@ -277,14 +270,14 @@ export class Missions {
     const game = this.game;
     this.banner('MISSION FAILED', reason, 5, '#ff6b5f');
     this.active = null;
-    this.missionVehicle = null;
+    this.jobCar = null;
     game.audio.blip(140);
   }
 
-  banner(text, sub, seconds, color) {
+  banner(text, sub, secs, color) {
     this.bannerText = text;
     this.bannerSub = sub;
-    this.bannerT = seconds;
+    this.bannerT = secs;
     this.bannerColor = color;
   }
 }

@@ -1,13 +1,13 @@
-// Vice Palms — bootstrap: canvas setup, the main loop, menus (title / pause) and the
-// ?shot= staged-screenshot mode. Everything else lives in its own module under src/.
+// Vice Palms — bootstrap: the canvas, the fixed-step loop, the title and pause menus, and the
+// ?shot= staged-screenshot mode. Every system lives in its own module under src/.
 
 import { Game } from './game.js';
-import { Renderer } from './render/renderer.js';
+import { Painter } from './render/paint.js';
 import { Hud } from './render/hud.js';
-import { Screens } from './render/screens.js';
+import { Menus } from './render/menus.js';
 import { Input } from './input.js';
 import { stageShot } from './shots.js';
-import { hasSave, loadSave } from './systems/save.js';
+import { hasSave, readSave } from './systems/save.js';
 import { clamp } from './util.js';
 
 const params = new URLSearchParams(location.search);
@@ -18,11 +18,11 @@ const canvas = document.getElementById('game');
 function resize() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
-  renderer.resize();
+  painter.resize();
 }
 window.addEventListener('resize', resize);
 
-const renderer = new Renderer(canvas);
+const painter = new Painter(canvas);
 const input = new Input();
 const hud = new Hud();
 const ui = {
@@ -32,20 +32,19 @@ const ui = {
   cameraOverride: null,
   freeze: false,
 };
+const menus = new Menus(ui);
 
-const screens = new Screens(ui);
 let game = null;
 let gameSeed = seed;
 
 function newGame(fromSave) {
   const opts = { seed: gameSeed };
   if (fromSave) {
-    const s = fromSave;
-    opts.money = s.money;
-    opts.missionIndex = s.missionIndex;
-    opts.playerX = s.x;
-    opts.playerY = s.y;
-    if (s.seed) gameSeed = s.seed;
+    opts.money = fromSave.money;
+    opts.missionIndex = fromSave.missionIndex;
+    opts.playerX = fromSave.x;
+    opts.playerY = fromSave.y;
+    if (fromSave.seed) gameSeed = fromSave.seed;
   }
   game = new Game(gameSeed, opts);
   if (fromSave) {
@@ -58,7 +57,7 @@ function newGame(fromSave) {
   }
   hud.attach(game);
   ui.cameraOverride = null;
-  window.__game = game; // debug/play-test handle
+  window.__game = game; // debug and play-test handle
 }
 
 function titleItems() {
@@ -66,16 +65,15 @@ function titleItems() {
 }
 ui.titleItems = titleItems();
 
-function activateTitleItem(i) {
-  const items = titleItems();
-  const label = items[i];
+function activateTitle(i) {
+  const label = titleItems()[i];
   game?.audio.ensure();
   if (label === 'NEW GAME') {
     gameSeed = seed;
     newGame(null);
     ui.uiState = 'play';
   } else if (label === 'CONTINUE') {
-    newGame(loadSave());
+    newGame(readSave());
     ui.uiState = 'play';
   } else if (label.startsWith('SOUND')) {
     const on = !(game ? game.audio.enabled : true);
@@ -86,7 +84,7 @@ function activateTitleItem(i) {
 
 function openPause() {
   const items = ['RESUME'];
-  if (game.missions.active) items.push('RESTART MISSION');
+  if (game.missions.active) items.push('RESTART JOB');
   items.push(`SOUND: ${game.audio.enabled ? 'ON' : 'OFF'}`, 'SAVE GAME', 'QUIT TO TITLE');
   ui.pauseItems = items;
   ui.uiState = 'pause';
@@ -94,10 +92,10 @@ function openPause() {
   game.save();
 }
 
-function activatePauseItem(i) {
+function activatePause(i) {
   const label = ui.pauseItems[i];
   if (label === 'RESUME') ui.uiState = 'play';
-  else if (label === 'RESTART MISSION') { game.missions.fail('RESTARTED'); ui.uiState = 'play'; }
+  else if (label === 'RESTART JOB') { game.missions.fail('RESTARTED'); ui.uiState = 'play'; }
   else if (label.startsWith('SOUND')) {
     game.audio.setEnabled(!game.audio.enabled);
     openPause();
@@ -111,7 +109,7 @@ function activatePauseItem(i) {
   }
 }
 
-// Staged screenshot mode: build the scene and hold the frame.
+// Staged screenshot mode: build the scene, arrange the actors, freeze one frame.
 let shotMode = false;
 if (shotName) {
   shotMode = true;
@@ -119,9 +117,10 @@ if (shotName) {
   game = new Game(gameSeed, { shotMode: true });
   hud.attach(game);
   stageShot(shotName, game, ui, seed);
+  window.__game = game; // debug and play-test handle in shot mode too
 }
 
-// A slow drift along the neon strip for the title vista.
+// The title vista: a slow drift along the neon strip.
 function titleCamera(t) {
   const y = 3200 + ((t * 46) % 11000);
   return { x: 40 * 420 - 150, y, zoom: 0.8 };
@@ -137,23 +136,22 @@ function frame(now) {
   menuCooldown -= dt;
 
   if (ui.uiState === 'title') {
-    // Menu input
     const items = ui.titleItems;
     if (menuCooldown <= 0) {
-      if (input.hit('ArrowUp') || input.hit('KeyW')) { ui.menuIndex = (ui.menuIndex - 1 + items.length) % items.length; menuCooldown = 0.18; game?.audio.blip(400); }
-      if (input.hit('ArrowDown') || input.hit('KeyS')) { ui.menuIndex = (ui.menuIndex + 1) % items.length; menuCooldown = 0.18; game?.audio.blip(400); }
-      if (input.hit('Enter') || input.hit('Space')) { activateTitleItem(ui.menuIndex); menuCooldown = 0.3; }
+      if (input.tap('ArrowUp') || input.tap('KeyW')) { ui.menuIndex = (ui.menuIndex - 1 + items.length) % items.length; menuCooldown = 0.18; game?.audio.blip(400); }
+      if (input.tap('ArrowDown') || input.tap('KeyS')) { ui.menuIndex = (ui.menuIndex + 1) % items.length; menuCooldown = 0.18; game?.audio.blip(400); }
+      if (input.tap('Enter') || input.tap('Space')) { activateTitle(ui.menuIndex); menuCooldown = 0.3; }
     }
   } else if (ui.uiState === 'pause') {
     const items = ui.pauseItems;
-    if (input.hit('Escape')) { ui.uiState = 'play'; }
+    if (input.tap('Escape')) ui.uiState = 'play';
     else if (menuCooldown <= 0) {
-      if (input.hit('ArrowUp') || input.hit('KeyW')) { ui.menuIndex = (ui.menuIndex - 1 + items.length) % items.length; menuCooldown = 0.18; game?.audio.blip(400); }
-      if (input.hit('ArrowDown') || input.hit('KeyS')) { ui.menuIndex = (ui.menuIndex + 1) % items.length; menuCooldown = 0.18; game?.audio.blip(400); }
-      if (input.hit('Enter') || input.hit('Space')) { activatePauseItem(ui.menuIndex); menuCooldown = 0.3; }
+      if (input.tap('ArrowUp') || input.tap('KeyW')) { ui.menuIndex = (ui.menuIndex - 1 + items.length) % items.length; menuCooldown = 0.18; game?.audio.blip(400); }
+      if (input.tap('ArrowDown') || input.tap('KeyS')) { ui.menuIndex = (ui.menuIndex + 1) % items.length; menuCooldown = 0.18; game?.audio.blip(400); }
+      if (input.tap('Enter') || input.tap('Space')) { activatePause(ui.menuIndex); menuCooldown = 0.3; }
     }
   } else if (ui.uiState === 'play') {
-    if (input.hit('Escape') && game && game.state === 'play') openPause();
+    if (input.tap('Escape') && game && game.state === 'play') openPause();
     else if (game && !ui.freeze) {
       acc += dt;
       while (acc >= 1 / 60) {
@@ -166,28 +164,24 @@ function frame(now) {
 
   const cam = ui.cameraOverride ?? (ui.uiState === 'title' ? titleCamera(now / 1000) : null);
   if (game) {
-    renderer.render(game, { cameraOverride: cam });
+    painter.render(game, { cameraOverride: cam });
     if (ui.uiState !== 'title') hud.draw(canvas.getContext('2d'), game, canvas.width, canvas.height);
-    screens.draw(canvas.getContext('2d'), game, ui, canvas.width, canvas.height);
+    menus.draw(canvas.getContext('2d'), game, ui, canvas.width, canvas.height, dt);
   } else {
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#0d1022';
+    ctx.fillStyle = '#0b0e1e';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-  }
-
-  if (game && game.missions.finished && ui.uiState === 'play') {
-    // Finale keeps playing in free roam; nothing more to do.
   }
 
   requestAnimationFrame(frame);
 }
 
-window.addEventListener('keydown', () => { game?.audio.ensure(); }, { once: false });
+window.addEventListener('keydown', () => { game?.audio.ensure(); });
 
 resize();
 requestAnimationFrame(frame);
 
-// Title screen with no game yet: build a vista world so the strip glows behind the menu.
+// A world for the title vista to drift across, built even before the menu is used.
 if (!shotMode && !game) {
   game = new Game(seed, { shotMode: true });
   hud.attach(game);

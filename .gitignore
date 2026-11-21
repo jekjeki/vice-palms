@@ -1,2 +1,5 @@
-.playwright-mcp/
+# build scratch
 out/
+.playwright-mcp/
+.superpowers/
+node_modules/
