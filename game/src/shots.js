@@ -5,7 +5,6 @@
 
 import { GRID, PITCH } from './config.js';
 import { seedRun, freeRun, rand } from './rng.js';
-import { Car } from './entities/car.js';
 import { JOBS, GIVERS } from './systems/missions.js';
 
 const SCRIPT = { axis: () => ({ x: 0, y: -1 }), held: () => false, tap: () => false, endFrame() {} };

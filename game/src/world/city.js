@@ -21,11 +21,6 @@ export function blockRect(i, j) {
   return { x: i * PITCH + ROAD / 2, y: j * PITCH + ROAD / 2, w: PITCH - ROAD, h: PITCH - ROAD };
 }
 
-/** Traffic-light phase at intersection (ix, iy): 0 = north/south green, 1 = east/west. */
-export function signalPhase(ix, iy, t) {
-  return (ix + iy + Math.floor(t / 9)) % 2;
-}
-
 export function generateCity(seed) {
   const gen = mulberry(remix(seed, 0x51f3));
   const blocks = new Array(GRID * GRID);
