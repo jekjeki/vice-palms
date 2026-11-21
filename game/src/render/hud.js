@@ -56,7 +56,6 @@ export class Hud {
     const p = game.player;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.minimap(ctx, game, p, H);
-    this.vitals(ctx, game, p);
     this.money(ctx, p, W);
     this.stars(ctx, game, W);
     this.weapon(ctx, p);
@@ -115,20 +114,28 @@ export class Hud {
     ctx.closePath(); ctx.fill();
     ctx.restore();
     ctx.restore();
-    // Double ring: warm inner glow, dark rim.
-    ctx.strokeStyle = 'rgba(255,222,160,0.8)';
-    ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(mx, my, r, 0, TAU); ctx.stroke();
+    // Double ring: warm inner glow, cool outer halo, dark rim.
     ctx.strokeStyle = 'rgba(0,0,0,0.55)';
     ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.arc(mx, my, r + 2.5, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,222,160,0.8)';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(mx, my, r, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = 'rgba(64,196,255,0.22)';
+    ctx.lineWidth = 7;
+    ctx.beginPath(); ctx.arc(mx, my, r + 6, 0, TAU); ctx.stroke();
+    // North tick so the map reads at a glance.
+    ctx.fillStyle = '#ffd977';
+    ctx.font = 'bold 12px Consolas, "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('N', mx, my - r - 8);
 
     // Health and armor sit above the minimap.
     this.bar(ctx, mx - r, my - r - 28, r * 2, 13, p.health / 100, '#3dff7a', '#173a22');
     if (p.armor > 0) this.bar(ctx, mx - r, my - r - 46, r * 2, 13, p.armor / 100, '#5db3ff', '#16303f');
   }
 
-  vitals(ctx, game, p) { /* drawn inside minimap() above the map ring */ }
+  vitals(ctx, game, p) { /* folded into minimap(): the bars ride above the ring */ }
 
   bar(ctx, x, y, w, h, f, color, back) {
     ctx.fillStyle = back;
@@ -198,15 +205,21 @@ export class Hud {
     ctx.font = '12px Consolas, "Courier New", monospace';
     ctx.fillStyle = '#9aa3b8';
     ctx.fillText('KM/H', cx, cy + 27);
+    const gear = car.fwd < -6 ? 'R' : String(1 + Math.min(4, Math.floor((Math.abs(car.fwd) / car.spec.top) * 5)));
     ctx.font = 'bold 13px Consolas, "Courier New", monospace';
     ctx.fillStyle = '#c8cede';
-    ctx.fillText(car.spec.name.toUpperCase(), cx, cy - r - 13);
+    ctx.fillText(`${car.spec.name.toUpperCase()} · ${gear}`, cx, cy - r - 13);
   }
 
   objective(ctx, game, W, H) {
     const text = game.missions.objectiveText();
-    ctx.textAlign = 'center';
     ctx.font = 'bold 17px Consolas, "Courier New", monospace';
+    // Backing plate keeps the objective readable over neon spill and smoke.
+    const w = ctx.measureText(text).width;
+    ctx.fillStyle = 'rgba(5,7,15,0.62)';
+    this.rounded(ctx, W / 2 - w / 2 - 14, H - 52, w + 28, 30, 8);
+    ctx.fill();
+    ctx.textAlign = 'center';
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
     ctx.fillText(text, W / 2 + 1, H - 34 + 1);
     ctx.fillStyle = '#ffd977';
@@ -219,11 +232,13 @@ export class Hud {
     const a = clamp(m.bannerT, 0, 1);
     ctx.globalAlpha = a;
     ctx.textAlign = 'center';
+    ctx.letterSpacing = '3px';
     ctx.font = 'bold 46px Consolas, "Courier New", monospace';
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
     ctx.fillText(m.bannerText, W / 2 + 2, H * 0.2 + 2);
     ctx.fillStyle = m.bannerColor;
     ctx.fillText(m.bannerText, W / 2, H * 0.2);
+    ctx.letterSpacing = '0px';
     ctx.font = '18px Consolas, "Courier New", monospace';
     ctx.fillStyle = '#dfe4ee';
     this.wrap(ctx, m.bannerSub ?? '', W / 2, H * 0.2 + 42, W * 0.7, 24);

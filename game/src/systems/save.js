@@ -1,5 +1,6 @@
 // localStorage saves under one key: the seed, money, mission progress, the player's vitals and
-// the sound toggle. Everything is best-effort — private browsing may refuse storage.
+// the sound toggle. Everything is best-effort — private browsing may refuse storage, and a
+// tampered or truncated save falls back to sane defaults instead of crashing the boot.
 
 import { SAVE_KEY } from '../config.js';
 
@@ -7,10 +8,19 @@ export function hasSave() {
   try { return localStorage.getItem(SAVE_KEY) !== null; } catch { return false; }
 }
 
+/** Parsed-and-clamped save, or null when nothing usable is stored. */
 export function readSave() {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    if (typeof s !== 'object' || s === null || !Number.isFinite(s.x) || !Number.isFinite(s.y)) return null;
+    s.money = Math.max(0, Math.floor(s.money) || 0);
+    s.missionIndex = Math.min(6, Math.max(0, Math.floor(s.missionIndex) || 0));
+    s.health = Math.min(100, Math.max(1, Math.floor(s.health) || 100));
+    s.armor = Math.min(100, Math.max(0, Math.floor(s.armor) || 0));
+    s.ammo = Math.max(0, Math.floor(s.ammo) || 0);
+    return s;
   } catch { return null; }
 }
 

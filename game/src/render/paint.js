@@ -70,6 +70,12 @@ export class Painter {
     ctx.drawImage(this.lightMap, 0, 0);
     ctx.globalCompositeOperation = 'lighter';
     this.glow(game, cam, W, H);
+    // Blast flash: one additive wash that fades as game.flash decays.
+    if (game.flash > 0.01) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = `rgba(255,176,96,${(game.flash * 0.55).toFixed(3)})`;
+      ctx.fillRect(0, 0, W, H);
+    }
     ctx.globalCompositeOperation = 'source-over';
     if (this.overlay) ctx.drawImage(this.overlay, 0, 0);
   }
@@ -708,37 +714,58 @@ export class Painter {
     }
 
     // Cars: headlight cones with a hot core, road pool, tail glow, sirens, firelight.
+    // Parked cars sit dark — only moving vehicles burn headlights.
     for (const v of game.cars) {
       if (v.x < x0 || v.x > x1 || v.y < y0 || v.y > y1 || v.wasted) continue;
       const s = v.spec;
+      const moving = v.role === 'player' || v.role === 'cop' || v.role === 'traffic' || Math.abs(v.fwd) > 6;
       ctx.save();
       ctx.translate(v.x, v.y);
       ctx.rotate(v.ang);
-      const cone = 320;
-      for (const side of [-1, 1]) {
-        const g = ctx.createLinearGradient(s.len / 2, 0, s.len / 2 + cone, side * s.wid * 0.55);
-        g.addColorStop(0, 'rgba(255,240,200,0.5)');
-        g.addColorStop(0.35, 'rgba(255,228,172,0.2)');
-        g.addColorStop(1, 'rgba(255,222,160,0)');
-        ctx.fillStyle = g;
-        ctx.beginPath();
-        ctx.moveTo(s.len / 2 - 4, side * (s.wid / 2 - 9));
-        ctx.lineTo(s.len / 2 + cone, side * s.wid * 1.6);
-        ctx.lineTo(s.len / 2 + cone, side * s.wid * 0.16);
-        ctx.closePath();
-        ctx.fill();
-        ctx.fillStyle = 'rgba(255,252,232,0.95)';
-        ctx.fillRect(s.len / 2 - 5, side * (s.wid / 2 - 12), 5, 7);
+      if (moving) {
+        const cone = 320;
+        for (const side of [-1, 1]) {
+          const g = ctx.createLinearGradient(s.len / 2, 0, s.len / 2 + cone, side * s.wid * 0.55);
+          g.addColorStop(0, 'rgba(255,240,200,0.55)');
+          g.addColorStop(0.35, 'rgba(255,228,172,0.22)');
+          g.addColorStop(1, 'rgba(255,222,160,0)');
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.moveTo(s.len / 2 - 4, side * (s.wid / 2 - 9));
+          ctx.lineTo(s.len / 2 + cone, side * s.wid * 1.6);
+          ctx.lineTo(s.len / 2 + cone, side * s.wid * 0.16);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = 'rgba(255,252,232,0.95)';
+          ctx.fillRect(s.len / 2 - 5, side * (s.wid / 2 - 12), 5, 7);
+        }
+        const pool = ctx.createRadialGradient(s.len / 2 + 74, 0, 8, s.len / 2 + 74, 0, 100);
+        pool.addColorStop(0, 'rgba(255,234,192,0.38)');
+        pool.addColorStop(1, 'rgba(255,234,192,0)');
+        ctx.fillStyle = pool;
+        ctx.beginPath(); ctx.arc(s.len / 2 + 74, 0, 100, 0, TAU); ctx.fill();
       }
-      const pool = ctx.createRadialGradient(s.len / 2 + 74, 0, 8, s.len / 2 + 74, 0, 100);
-      pool.addColorStop(0, 'rgba(255,234,192,0.38)');
-      pool.addColorStop(1, 'rgba(255,234,192,0)');
-      ctx.fillStyle = pool;
-      ctx.beginPath(); ctx.arc(s.len / 2 + 74, 0, 100, 0, TAU); ctx.fill();
       ctx.fillStyle = 'rgba(255,72,60,0.85)';
       ctx.fillRect(-s.len / 2, -s.wid / 2 + 5, 3, 7);
       ctx.fillRect(-s.len / 2, s.wid / 2 - 12, 3, 7);
       ctx.restore();
+
+      // Wet-road throw: the headlights stretch into a streak ahead of a fast car.
+      if (moving && Math.abs(v.fwd) > 120) {
+        const nx = Math.cos(v.ang), ny = Math.sin(v.ang);
+        const sx = v.x + nx * (s.len / 2 + 34), sy = v.y + ny * (s.len / 2 + 34);
+        ctx.save();
+        ctx.globalAlpha = Math.min(0.3, Math.abs(v.fwd) / s.top * 0.34);
+        ctx.translate(sx, sy);
+        ctx.rotate(v.ang);
+        ctx.scale(3.4, 0.5);
+        const st = ctx.createRadialGradient(0, 0, 4, 0, 0, 70);
+        st.addColorStop(0, 'rgba(255,238,196,0.5)');
+        st.addColorStop(1, 'rgba(255,238,196,0)');
+        ctx.fillStyle = st;
+        ctx.beginPath(); ctx.arc(0, 0, 70, 0, TAU); ctx.fill();
+        ctx.restore();
+      }
 
       if (s.id === 'warden' && (v.siren || v.role === 'cop')) {
         const blue = Math.floor(game.time * 6) % 2 === 0;
@@ -782,7 +809,7 @@ export class Painter {
     ctx.fillStyle = gh;
     ctx.beginPath(); ctx.arc(hero.x, hero.y, 84, 0, TAU); ctx.fill();
 
-    // Mission marker beam.
+    // Mission marker beam: a pool on the ground and a soft pillar standing in the sky.
     const marker = game.missions.marker();
     if (marker && marker.x > x0 && marker.x < x1 && marker.y > y0 && marker.y < y1) {
       const gm = ctx.createRadialGradient(marker.x, marker.y, 6, marker.x, marker.y, 88);
@@ -790,6 +817,13 @@ export class Painter {
       gm.addColorStop(1, this.hexA(marker.color, 0));
       ctx.fillStyle = gm;
       ctx.beginPath(); ctx.arc(marker.x, marker.y, 88, 0, TAU); ctx.fill();
+      ctx.save();
+      ctx.globalAlpha = 0.16;
+      ctx.translate(marker.x, marker.y);
+      ctx.scale(0.42, 4.2);
+      ctx.fillStyle = this.hexA(marker.color, 0.3);
+      ctx.beginPath(); ctx.arc(0, 0, 52, 0, TAU); ctx.fill();
+      ctx.restore();
     }
 
     // Pickups shimmer.

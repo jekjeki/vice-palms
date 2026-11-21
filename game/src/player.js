@@ -91,7 +91,7 @@ export class Hero {
 
   punch() {
     if (this.punchT > 0) return;
-    this.punchT = 0.42;
+    this.punchT = 0.38;
     const game = this.game;
     const rx = this.x + Math.cos(this.heading) * 26;
     const ry = this.y + Math.sin(this.heading) * 26;
@@ -117,7 +117,7 @@ export class Hero {
 
   shoot() {
     const game = this.game;
-    this.shootT = 0.28;
+    this.shootT = 0.24;
     this.ammo--;
     game.audio.shot(1);
     game.wanted.gunshot();

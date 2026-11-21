@@ -1,8 +1,9 @@
 // Seeded randomness. The city, the spawns and the screenshot staging all draw from streams
 // rooted in one seed, so ?shot=&seed=N rebuilds an identical frame, and free play feels varied
-// without ever touching the global Math.random.
+// without ever touching the global Math.random. Even the pre-seed default stream is a fixed
+// mulberry run, so a page that somehow draws before seedRun() is still reproducible.
 
-let stream = Math.random;
+let stream = mulberry(0x0a11ce);
 
 /** mulberry32 — small, fast, good enough distribution for a city. */
 export function mulberry(seed) {
@@ -20,9 +21,8 @@ export function remix(seed, salt) {
   return (Math.imul(seed ^ salt, 0x9e3779b9) ^ (seed >>> 15)) | 0;
 }
 
-/** Point the global runtime stream at a deterministic generator (or back to Math.random). */
+/** Point the global runtime stream at a deterministic generator (or back to the fixed default). */
 export function seedRun(seed) { stream = mulberry(seed); }
-export function freeRun() { stream = Math.random; }
+export function freeRun() { stream = mulberry(0x0a11ce); }
 export function rand() { return stream(); }
 export function randInt(n) { return Math.floor(stream() * n); }
-export function pick(list) { return list[Math.floor(stream() * list.length)]; }

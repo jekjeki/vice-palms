@@ -44,6 +44,7 @@ export class Game {
     this.pickups = [];
     this.shotMode = opts.shotMode ?? false;
     this.shake = 0;                // explosion camera shake, decays every step
+    this.flash = 0;                // blast screen flash, decays every step
 
     const start = blockCenter(12, 23);
     this.player = new Hero(this, opts.playerX ?? start.x, opts.playerY ?? start.y);
@@ -87,12 +88,14 @@ export class Game {
     }
   }
 
-  /** Keep the sidewalks peopled: spawn into a ring, cull the far ones. */
+  /** Keep the sidewalks peopled: spawn into a ring, cull the far and the long-fallen. */
   peoplePatrol(dt) {
     const p = this.player;
     for (let i = this.people.length - 1; i >= 0; i--) {
       const person = this.people[i];
       if (person.isCop) continue;
+      // The downed stay as evidence a while, then the street forgets them.
+      if (person.mode === 'down' && person.downT <= 0) { this.people.splice(i, 1); continue; }
       if (dist2(person.x, person.y, p.x, p.y) > PED_CULL * PED_CULL) {
         this.people.splice(i, 1);
       }
@@ -134,7 +137,7 @@ export class Game {
       this.stateT -= dt;
       if (this.stateT <= 0) this.respawn();
       this.fx.update(dt);
-      this.shake = Math.max(0, this.shake - dt * 30);
+      this.decayShake(dt);
       return;
     }
     this.time += dt;
@@ -160,7 +163,7 @@ export class Game {
     this.carContacts(dt, p);
     this.runOverCheck(p);
     this.grabPickups(p);
-    this.shake = Math.max(0, this.shake - dt * 30);
+    this.decayShake(dt);
     if (this.cops.cornered(dt, p, this.wanted.stars)) {
       this.state = 'busted';
       this.stateT = 2.6;
@@ -170,9 +173,9 @@ export class Game {
     this.audio.update(dt, this);
   }
 
-  gridClass() {
-    // Local import by injection keeps this class free of the spatial module name in the outline.
-    return this._gridType ?? (this._gridType = null) ?? this.gridType;
+  decayShake(dt) {
+    this.shake = Math.max(0, this.shake - dt * 30);
+    this.flash = Math.max(0, this.flash - dt * 2.6);
   }
 
   followCamera(dt) {
@@ -268,8 +271,9 @@ export class Game {
     this.scarePeople(v.x, v.y, 720);
     this.missions.vehicleGone(v);
     if (v.role === 'cop') this.wanted.add('copKill');
-    // Camera shake scaled by how close the blast was.
+    // Camera shake scaled by how close the blast was; the flash washes the frame.
     this.shake = Math.min(18, this.shake + 16 * this.proximity(v.x, v.y) + 3);
+    this.flash = Math.min(0.9, this.flash + 0.45 + 0.45 * this.proximity(v.x, v.y));
   }
 
   onPersonDown(person) {
@@ -393,6 +397,8 @@ export class Game {
         else other.damage((impact - 100) * 0.08, this);
         this.fx.sparks((car.x + other.x) / 2, (car.y + other.y) / 2, 5);
         this.audio.crash(Math.min(1, impact / 430));
+        // A hard hit shoves the camera: shake with the crunch.
+        if (impact > 260) this.shake = Math.min(10, this.shake + (impact - 260) / 44);
       }
     }
   }

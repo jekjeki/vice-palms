@@ -57,14 +57,19 @@ export class Cops {
     }
   }
 
+  /** Cruisers arrive biased down the road the player is driving: the chase meets you. */
   birthCruiser(player) {
+    const mvx = player.vx ?? 0, mvy = player.vy ?? 0;
+    const mv = Math.hypot(mvx, mvy);
     for (let tries = 0; tries < 10; tries++) {
-      const vertical = rand() < 0.5;
+      const vertical = mv < 40 ? rand() < 0.5 : Math.abs(mvy) >= Math.abs(mvx);
       const line = randInt(GRID + 1);
       const center = line * PITCH;
       const dir = rand() < 0.5 ? 1 : -1;
       const band = 950 + rand() * 750;
-      const along = (vertical ? player.y : player.x) + band * (rand() < 0.5 ? 1 : -1);
+      // Moving player: place the ring ahead along travel; idle: all around.
+      const ahead = mv > 40 ? band * 0.75 * Math.sign(vertical ? mvy : mvx) : band * (rand() < 0.5 ? 1 : -1);
+      const along = (vertical ? player.y : player.x) + ahead;
       if (along < 260 || along > GRID * PITCH - 260) continue;
       const x = vertical ? laneAt('y', center, dir) : along;
       const y = vertical ? along : laneAt('x', center, dir);

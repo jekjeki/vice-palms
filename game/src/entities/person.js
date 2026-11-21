@@ -27,6 +27,7 @@ export class Person {
     this.speed = PED_SPEED * (0.75 + (seed % 47) / 95);
     this.mode = 'stroll';          // stroll | bolt | down
     this.tx = x; this.ty = y;
+    this.hp = 30;
     this.boltT = 0; this.downT = 0;
     this.phone = seed % 7 === 3;
     this.phase = (seed % 628) / 100;
@@ -62,7 +63,7 @@ export class Person {
   /** Returns true when this hit is fatal. */
   hurt(game, dmg, fromX, fromY) {
     if (this.mode === 'down') return false;
-    this.hp = (this.hp ?? 30) - dmg;
+    this.hp -= dmg;
     if (this.hp <= 0) {
       this.mode = 'down';
       this.downT = 12;

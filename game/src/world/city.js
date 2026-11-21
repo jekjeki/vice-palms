@@ -41,8 +41,9 @@ export function generateCity(seed) {
       const iw = r.w - WALK * 2, ih = r.h - WALK * 2;
       const strip = i === STRIP_COL;
 
-      // Corner street lamps sit just outside each block on the sidewalk.
+      // Street lamps sit just outside each block on all four sidewalk corners.
       block.lamps.push({ x: r.x - 4, y: r.y - 4 }, { x: r.x + r.w + 4, y: r.y + r.h + 4 });
+      if ((i + j) % 2 === 0) block.lamps.push({ x: r.x + r.w + 4, y: r.y - 4 }, { x: r.x - 4, y: r.y + r.h + 4 });
 
       if (block.kind === 'park') {
         const n = 6 + (gen() * 3 | 0);
@@ -116,7 +117,8 @@ export function generateCity(seed) {
             const sw = Math.min(bw * 0.8, 106);
             block.signs.push({ style: 'bar', x: bx + (bw - sw) / 2, y: by + bh - 3, w: sw, h: 13, color, text, flicker: flick, seed: gen() * 6.28, vertical: false });
           }
-          if (strip && b.floors >= 6 && gen() < 0.55) {
+          // Tall buildings anywhere crown themselves with a rooftop billboard.
+          if (b.floors >= 6 && gen() < (strip ? 0.55 : 0.4)) {
             const [color, text] = NEON[gen() * NEON.length | 0];
             const sw = Math.min(bw * 0.8, 104);
             block.signs.push({ style: 'board', x: bx + (bw - sw) / 2, y: by - 14, w: sw, h: 16, color, text, flicker: flick, seed: gen() * 6.28, vertical: false });

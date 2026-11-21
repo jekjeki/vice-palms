@@ -29,64 +29,89 @@ export class Menus {
     ctx.globalAlpha = 0.82;
     this.palm(ctx, W * 0.12, H * 0.74, 1.5, 0.5);
     this.palm(ctx, W * 0.88, H * 0.78, 1.95, -0.6);
+    this.palm(ctx, W * 0.06, H * 0.9, 1.05, 0.25);
+    this.palm(ctx, W * 0.95, H * 0.92, 1.25, -0.3);
     ctx.restore();
 
     // Horizon glow behind the wordmark.
     const hg = ctx.createRadialGradient(W / 2, H * 0.34, 10, W / 2, H * 0.34, W * 0.4);
-    hg.addColorStop(0, 'rgba(255,63,164,0.12)');
-    hg.addColorStop(0.6, 'rgba(51,231,255,0.06)');
+    hg.addColorStop(0, 'rgba(255,63,164,0.14)');
+    hg.addColorStop(0.6, 'rgba(51,231,255,0.07)');
     hg.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = hg;
     ctx.fillRect(W * 0.1, H * 0.1, W * 0.8, H * 0.45);
 
-    // Wordmark: pink VICE, cyan PALMS, layered glow and shimmer.
-    ctx.textAlign = 'center';
-    const cx = W / 2, cy = H * 0.34;
-    const size = Math.min(112, W / 10.5);
-    ctx.font = `bold ${size}px Consolas, "Courier New", monospace`;
-    const viceW = ctx.measureText('VICE ').width;
-    const palmsW = ctx.measureText('PALMS').width;
-    const total = viceW + palmsW;
-    const lx = cx - total / 2;
+    // Wordmark: each letter its own neon tube, bobbing on a wave, glow stacked under it.
     ctx.textAlign = 'left';
-    const shimmer = 0.24 + Math.sin(this.t * 2.2) * 0.08;
-    ctx.fillStyle = `rgba(255,63,164,${shimmer})`;
-    ctx.fillText('VICE PALMS', lx + 5, cy + 6);
-    ctx.fillStyle = `rgba(51,231,255,${shimmer * 0.9})`;
-    ctx.fillText('VICE PALMS', lx + 2, cy + 3);
-    ctx.fillStyle = '#ff3fa4';
-    ctx.fillText('VICE', lx, cy);
-    ctx.fillStyle = '#33e7ff';
-    ctx.fillText('PALMS', lx + viceW, cy);
+    const size = Math.min(118, W / 10);
+    ctx.font = `bold ${size}px Consolas, "Courier New", monospace`;
+    const word = 'VICE PALMS';
+    const widths = [...word].map((ch) => ctx.measureText(ch).width);
+    const total = widths.reduce((a, b) => a + b, 0);
+    let lx = W / 2 - total / 2;
+    const cy = H * 0.33;
+    for (let i = 0; i < word.length; i++) {
+      const ch = word[i];
+      if (ch === ' ') { lx += widths[i]; continue; }
+      const bob = Math.sin(this.t * 1.7 + i * 0.85) * 5;
+      const pink = i < 4;
+      const hue = pink ? '#ff3fa4' : '#33e7ff';
+      const glow = pink ? 'rgba(255,63,164,0.5)' : 'rgba(51,231,255,0.45)';
+      ctx.fillStyle = 'rgba(2,3,9,0.9)';
+      ctx.fillText(ch, lx + 6, cy + bob + 7);
+      ctx.fillStyle = glow;
+      ctx.fillText(ch, lx + 3, cy + bob + 4);
+      ctx.fillStyle = glow;
+      ctx.fillText(ch, lx + 1, cy + bob + 1);
+      ctx.fillStyle = hue;
+      ctx.fillText(ch, lx, cy + bob);
+      lx += widths[i];
+    }
+    // A light sweep drifts across the wordmark once every few seconds.
+    const sweep = ((this.t * 0.35) % 1.6) - 0.3;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.13;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(W / 2 - total / 2 + sweep * total * 1.6, cy - size, Math.min(W * 0.05, total * 0.1), size * 1.4);
+    ctx.restore();
     ctx.textAlign = 'center';
-    ctx.font = '20px Consolas, "Courier New", monospace';
+    ctx.font = 'bold 19px Consolas, "Courier New", monospace';
+    ctx.fillStyle = '#ffd977';
+    ctx.fillText('STEAL IT · DRIVE IT · OUTRUN THE NIGHT', W / 2, cy + 46);
+    ctx.font = '17px Consolas, "Courier New", monospace';
     ctx.fillStyle = '#c9cfe0';
-    ctx.fillText('AN OPEN-WORLD NIGHT IN THE PALM CITY', cx, cy + 42);
+    ctx.fillText('AN OPEN-WORLD NIGHT IN THE PALM CITY', W / 2, cy + 72);
 
-    // Menu with the highlighted row.
+    // Menu rows: the live one sits on a lit pill.
     const items = ui.titleItems;
     ctx.font = 'bold 27px Consolas, "Courier New", monospace';
     items.forEach((label, i) => {
-      const y = H * 0.58 + i * 46;
+      const y = H * 0.58 + i * 48;
       const on = i === ui.menuIndex;
-      ctx.fillStyle = on ? '#ffd977' : 'rgba(220,225,240,0.62)';
-      ctx.fillText((on ? '▸ ' : '') + label, cx, y);
+      const w = ctx.measureText(label).width;
       if (on) {
-        ctx.strokeStyle = 'rgba(255,217,119,0.45)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(cx - ctx.measureText(label).width / 2 - 8, y + 10);
-        ctx.lineTo(cx + ctx.measureText(label).width / 2 + 8, y + 10);
-        ctx.stroke();
+        ctx.fillStyle = 'rgba(255,217,119,0.13)';
+        this.pill(ctx, W / 2 - w / 2 - 26, y - 24, w + 52, 38);
+        ctx.fill();
       }
+      ctx.fillStyle = on ? '#ffd977' : 'rgba(220,225,240,0.62)';
+      ctx.fillText((on ? '▸ ' : '') + label, W / 2, y);
     });
 
     ctx.font = '14px Consolas, "Courier New", monospace';
     ctx.fillStyle = 'rgba(200,205,225,0.58)';
-    ctx.fillText('WASD / ARROWS move · SHIFT sprint · F steal or enter a car · SPACE handbrake / punch', cx, H - 46);
-    ctx.fillText('E or CLICK shoot · H horn · ESC pause', cx, H - 28);
+    ctx.fillText('WASD / ARROWS move · SHIFT sprint · F steal or enter a car · SPACE handbrake / punch', W / 2, H - 46);
+    ctx.fillText('E or CLICK shoot · H horn · ESC pause', W / 2, H - 28);
     ctx.fillStyle = 'rgba(160,166,190,0.4)';
-    ctx.fillText('a make.fun gta6-01 entry · every line of code, art and sound is original', cx, H - 8);
+    ctx.fillText('a make.fun gta6-01 entry · every line of code, art and sound is original', W / 2, H - 8);
+  }
+
+  pill(ctx, x, y, w, h) {
+    ctx.beginPath();
+    ctx.arc(x + h / 2, y + h / 2, h / 2, Math.PI / 2, Math.PI * 1.5);
+    ctx.arc(x + w - h / 2, y + h / 2, h / 2, Math.PI * 1.5, Math.PI / 2);
+    ctx.closePath();
   }
 
   palm(ctx, x, y, s, lean) {
@@ -116,6 +141,9 @@ export class Menus {
     ctx.fillStyle = 'rgba(4,6,16,0.74)';
     ctx.fillRect(0, 0, W, H);
     ctx.textAlign = 'center';
+    ctx.font = 'bold 20px Consolas, "Courier New", monospace';
+    ctx.fillStyle = 'rgba(255,63,164,0.8)';
+    ctx.fillText('VICE PALMS', W / 2, H * 0.3 - 52);
     ctx.font = 'bold 56px Consolas, "Courier New", monospace';
     ctx.fillStyle = '#33e7ff';
     ctx.fillText('PAUSED', W / 2, H * 0.3);

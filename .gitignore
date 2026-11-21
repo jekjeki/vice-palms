@@ -1,5 +1,6 @@
-# build scratch
+# build and session scratch — never part of the entry
 out/
 .playwright-mcp/
 .superpowers/
 node_modules/
+*.log

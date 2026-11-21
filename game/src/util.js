@@ -3,8 +3,6 @@
 export const TAU = Math.PI * 2;
 
 export function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
-export function lerp(a, b, t) { return a + (b - a) * t; }
-export function damp(cur, target, rate, dt) { return cur + (target - cur) * Math.min(1, rate * dt); }
 export function dist2(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
 export function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
 

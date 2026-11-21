@@ -5,9 +5,6 @@ export class Input {
   constructor() {
     this.heldKeys = new Set();
     this.taps = new Set();
-    this.pointerX = 0;
-    this.pointerY = 0;
-    this.pointerDown = false;
     window.addEventListener('keydown', (e) => {
       if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
       if (e.repeat) return;
@@ -16,7 +13,6 @@ export class Input {
     });
     window.addEventListener('keyup', (e) => this.heldKeys.delete(e.code));
     window.addEventListener('blur', () => { this.heldKeys.clear(); });
-    window.addEventListener('mousemove', (e) => { this.pointerX = e.clientX; this.pointerY = e.clientY; });
     window.addEventListener('mousedown', (e) => { if (e.button === 0) this.taps.add('MouseLeft'); });
   }
 

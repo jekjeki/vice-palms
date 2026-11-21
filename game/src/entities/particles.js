@@ -32,7 +32,7 @@ export class Bullets {
 }
 
 export class Particles {
-  constructor(cap = 950) {
+  constructor(cap = 1100) {
     this.pool = [];
     for (let i = 0; i < cap; i++) this.pool.push({ live: false });
     this.cursor = 0;

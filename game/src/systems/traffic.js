@@ -30,13 +30,14 @@ export class Traffic {
     for (let i = this.fleet.length - 1; i >= 0; i--) {
       const c = this.fleet[i];
       if (c.role !== 'traffic') { this.fleet.splice(i, 1); continue; }
+      if (c.wasted) c.wreckAge = (c.wreckAge ?? 0) - dt;
       if (dist2(c.x, c.y, player.x, player.y) > CULL * CULL || (c.wasted && c.wreckAge < -14)) {
         const at = game.cars.indexOf(c);
         if (at >= 0) game.cars.splice(at, 1);
         this.fleet.splice(i, 1);
         continue;
       }
-      if (c.wreck) { c.wreckAge = (c.wreckAge ?? 0) - dt; c.update(dt, game); continue; }
+      if (c.wreck) { c.update(dt, game); continue; }
       this.kinematic(c, dt, player);
       c.update(dt, game);
     }
@@ -106,7 +107,7 @@ export class Traffic {
     if (c.laneShift && c.blinker <= 0) { c.laneShift *= Math.max(0, 1 - dt * 2.5); if (Math.abs(c.laneShift) < 2) c.laneShift = 0; }
     c.blinker -= dt;
 
-    c.fwd += clamp(want - c.fwd, -460 * dt, 170 * dt);
+    c.fwd += clamp(want - c.fwd, -420 * dt, 205 * dt);
     if (c.fwd < 0) c.fwd = 0;
 
     const alongNext = alongNow + c.fwd * dt;

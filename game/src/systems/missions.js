@@ -37,7 +37,7 @@ export const JOBS = [
   },
   {
     title: 'Repo Run',
-    brief: 'Rosa: “A client stopped paying on a Vanta GT. It still sits at the Sunset lot. Bring it here — and bring it in one shape.”',
+    brief: 'Rosa: “A client stopped paying on a Vanta GT. It still sits at the Sunset lot, laughing. Bring it here — and bring it back in one shape.”',
     outro: 'Rosa: “Knew it would still be there. Nobody in this city trusts anybody. I count on that.”',
     reward: 500,
     stages: [
@@ -76,7 +76,7 @@ export const JOBS = [
   {
     title: 'The Last Ride',
     brief: 'Marisol: “There’s a warrant with your name in fresh ink, and every cruiser in the city is out. The boat at the marina gate leaves at dawn — don’t be late for dawn.”',
-    outro: 'Marisol: “Welcome to the water, Rico. Vice Palms never changes — that’s why we love it.”',
+    outro: 'Marisol: “Welcome to the water, Rico. Vice Palms never lets you go — that’s the trouble with loving it.”',
     reward: 2500,
     stages: [
       { type: 'escape', x: MARINA.x, y: MARINA.y, r: 60, text: 'Reach the marina gate', stars: 3 },

@@ -3,6 +3,7 @@
 // inside the frame budget.
 
 const CELL = 320;
+const CELL_INV = 1 / CELL;
 
 export class Grid {
   constructor() { this.cells = new Map(); this.epoch = 0; }
@@ -12,8 +13,8 @@ export class Grid {
   static key(cx, cy) { return cx * 8191 + cy; }
 
   add(obj, x, y, radius) {
-    const x0 = Math.floor((x - radius) / CELL), x1 = Math.floor((x + radius) / CELL);
-    const y0 = Math.floor((y - radius) / CELL), y1 = Math.floor((y + radius) / CELL);
+    const x0 = Math.floor((x - radius) * CELL_INV), x1 = Math.floor((x + radius) * CELL_INV);
+    const y0 = Math.floor((y - radius) * CELL_INV), y1 = Math.floor((y + radius) * CELL_INV);
     for (let cy = y0; cy <= y1; cy++) {
       for (let cx = x0; cx <= x1; cx++) {
         const k = Grid.key(cx, cy);
@@ -28,8 +29,8 @@ export class Grid {
   near(x, y, radius, out) {
     out.length = 0;
     const epoch = ++this.epoch;
-    const x0 = Math.floor((x - radius) / CELL), x1 = Math.floor((x + radius) / CELL);
-    const y0 = Math.floor((y - radius) / CELL), y1 = Math.floor((y + radius) / CELL);
+    const x0 = Math.floor((x - radius) * CELL_INV), x1 = Math.floor((x + radius) * CELL_INV);
+    const y0 = Math.floor((y - radius) * CELL_INV), y1 = Math.floor((y + radius) * CELL_INV);
     for (let cy = y0; cy <= y1; cy++) {
       for (let cx = x0; cx <= x1; cx++) {
         const bucket = this.cells.get(Grid.key(cx, cy));

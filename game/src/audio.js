@@ -74,7 +74,7 @@ export class Audio {
     if (!this.live || !this.enabled) return;
     const p = game.player;
     const car = p.car;
-    if (car && !car.dead && !car.wreck) {
+    if (car && !car.wreck && !car.wasted) {
       const f = Math.min(1, Math.abs(car.fwd) / car.spec.top);
       const hz = 58 + f * 195 + (Math.abs(car.fwd) > 4 ? 10 : 0);
       this.engine.saw.frequency.value = hz;
@@ -86,7 +86,7 @@ export class Audio {
     }
     let closeness = 1;
     for (const c of game.cops.cruisers) {
-      if (c.dead || c.wreck) continue;
+      if (c.wreck || c.wasted) continue;
       const d = Math.hypot(c.x - p.x, c.y - p.y);
       closeness = Math.min(closeness, Math.max(0, (d - 150) / 1150));
     }

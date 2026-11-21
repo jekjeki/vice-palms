@@ -5,6 +5,7 @@
 
 import { GRID, PITCH } from './config.js';
 import { seedRun, freeRun, rand } from './rng.js';
+import { Person } from './entities/person.js';
 import { JOBS, GIVERS } from './systems/missions.js';
 
 const SCRIPT = { axis: () => ({ x: 0, y: -1 }), held: () => false, tap: () => false, endFrame() {} };
@@ -33,15 +34,23 @@ export function stageShot(name, game, ui, seed) {
     game.player.x = GRID * PITCH - 100;
     game.player.y = y + 120;
     // Parked cars along the oceanfront road and a little traffic on the strip.
-    for (let k = 0; k < 4; k++) {
-      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH - (rand() < 0.5 ? 24 : -24), y - 400 + k * 220, rand() < 0.5 ? 0 : Math.PI);
+    for (let k = 0; k < 5; k++) {
+      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH - (rand() < 0.5 ? 24 : -24), y - 420 + k * 210, rand() < 0.5 ? 0 : Math.PI);
       v.role = 'parked';
     }
-    for (let k = 0; k < 3; k++) {
+    for (let k = 0; k < 4; k++) {
       const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH - 68, y + 300 + k * 260, -Math.PI / 2);
       v.role = 'traffic';
       v.axis = 'y'; v.dir = -1; v.lane = GRID * PITCH - 68;
       v.fwd = 120;
+    }
+    // A patrol cruiser rolls the strip far from the camera, sirens quiet.
+    const cop = game.spawnCar(-1, GRID * PITCH - 68, y - 900, Math.PI / 2);
+    cop.role = 'traffic';
+    cop.axis = 'y'; cop.dir = 1; cop.lane = GRID * PITCH - 68; cop.cruise = 150; cop.fwd = 150;
+    // A few strollers share the sidewalk with the hero.
+    for (let n = 0; n < 6; n++) {
+      game.people.push(new Person(GRID * PITCH - 90 + (n % 2) * 40, y + 40 + n * 90, n * 31 + 5));
     }
     for (let n = 0; n < 40; n++) game.update(1 / 60, SCRIPT);
     ui.freeze = true;

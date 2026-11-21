@@ -7,7 +7,7 @@ import { Hud } from './render/hud.js';
 import { Menus } from './render/menus.js';
 import { Input } from './input.js';
 import { stageShot } from './shots.js';
-import { hasSave, readSave } from './systems/save.js';
+import { hasSave, readSave, wipeSave } from './systems/save.js';
 import { clamp } from './util.js';
 
 const params = new URLSearchParams(location.search);
@@ -61,7 +61,9 @@ function newGame(fromSave) {
 }
 
 function titleItems() {
-  return ['NEW GAME', ...(ui.hasSave ? ['CONTINUE'] : []), `SOUND: ${game ? (game.audio.enabled ? 'ON' : 'OFF') : 'ON'}`];
+  const items = ['NEW GAME', ...(ui.hasSave ? ['CONTINUE'] : []), `SOUND: ${game ? (game.audio.enabled ? 'ON' : 'OFF') : 'ON'}`];
+  if (ui.hasSave) items.push(ui.deleteArm ? 'DELETE SAVE — SURE?' : 'DELETE SAVE');
+  return items;
 }
 ui.titleItems = titleItems();
 
@@ -70,15 +72,31 @@ function activateTitle(i) {
   game?.audio.ensure();
   if (label === 'NEW GAME') {
     gameSeed = seed;
+    ui.deleteArm = false;
     newGame(null);
     ui.uiState = 'play';
   } else if (label === 'CONTINUE') {
+    ui.deleteArm = false;
     newGame(readSave());
     ui.uiState = 'play';
   } else if (label.startsWith('SOUND')) {
     const on = !(game ? game.audio.enabled : true);
     if (game) { game.audio.ensure(); game.audio.setEnabled(on); }
     ui.titleItems = titleItems();
+  } else if (label.startsWith('DELETE SAVE')) {
+    // Two activations inside the arm window before the wipe actually lands.
+    if (!ui.deleteArm) {
+      ui.deleteArm = true;
+      setTimeout(() => { ui.deleteArm = false; ui.titleItems = titleItems(); }, 2600);
+      ui.titleItems = titleItems();
+      game?.audio.blip(300);
+    } else {
+      ui.deleteArm = false;
+      wipeSave();
+      ui.hasSave = hasSave();
+      ui.titleItems = titleItems();
+      game?.audio.blip(190);
+    }
   }
 }
 
@@ -177,6 +195,10 @@ function frame(now) {
 }
 
 window.addEventListener('keydown', () => { game?.audio.ensure(); });
+// Switching tabs mid-chase should not be a death sentence: park on the pause menu.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && ui.uiState === 'play' && game && game.state === 'play') openPause();
+});
 
 resize();
 requestAnimationFrame(frame);
