@@ -1,5 +1,6 @@
 // The game itself: world state, the fixed-step update order, bullet and blast resolution,
-// carjacking, run-overs, pickups, the camera with its shake, and the WASTED/BUSTED flows.
+// carjacking, run-overs, pickups (which respawn on a delay), the camera with its shake, and
+// the WASTED/BUSTED flows.
 
 import { GRID, PITCH, SAND, STEP } from './config.js';
 import { blockCenter, generateCity, collideCity, buildingsNear } from './world/city.js';
@@ -23,6 +24,7 @@ export const STATION = { x: 8 * PITCH, y: 11 * PITCH };
 const PED_KEEP = 42;        // people kept alive around the player
 const PED_CULL = 2800;      // cull radius
 const PED_BAND = 500;       // spawn ring depth
+const PICKUP_RESPAWN = 45;  // seconds before a taken pickup reappears
 
 export class Game {
   constructor(seed, opts = {}) {
@@ -126,6 +128,7 @@ export class Game {
         y: by + (corner > 1 ? 1 : 0) * (PITCH - 120),
         kind: kinds[n], amount: 80 + Math.floor(gen() * 160),
         phase: gen() * 6.28,
+        dead: false, respawnAt: 0,
       });
     }
   }
@@ -149,6 +152,7 @@ export class Game {
     this.cops.update(dt, this.wanted.stars, p);
     this.missions.update(dt, p);
     this.peoplePatrol(dt);
+    this.respawnPickups();
 
     // Broad-phase build: cars and people register into the grid each step.
     if (!this.grid) this.grid = new Grid();
@@ -171,6 +175,13 @@ export class Game {
     }
     this.followCamera(dt);
     this.audio.update(dt, this);
+  }
+
+  respawnPickups() {
+    // The street restocks itself: weapons stay gone, supplies and cash come back.
+    for (const pk of this.pickups) {
+      if (pk.dead && pk.kind !== 'pistol' && this.time >= pk.respawnAt) pk.dead = false;
+    }
   }
 
   decayShake(dt) {
@@ -281,7 +292,10 @@ export class Game {
     this.scarePeople(person.x, person.y, 520);
   }
 
-  onWantedBegin() { /* hook for the police surge */ }
+  onWantedBegin() {
+    // The moment heat begins, the next cruiser is already rolling out.
+    this.cops.spawnT = 0;
+  }
   onWantedClear() { this.cops.spawnT = 0; }
 
   onPlayerCarBurning(car) {
@@ -423,11 +437,12 @@ export class Game {
   }
 
   grabPickups(p) {
-    for (let i = this.pickups.length - 1; i >= 0; i--) {
-      const pk = this.pickups[i];
+    for (const pk of this.pickups) {
+      if (pk.dead) continue;
       if (dist2(pk.x, pk.y, p.x, p.y) < 34 * 34) {
         p.pickup(pk.kind, pk.amount);
-        this.pickups.splice(i, 1);
+        pk.dead = true;
+        pk.respawnAt = this.time + PICKUP_RESPAWN;
       }
     }
   }

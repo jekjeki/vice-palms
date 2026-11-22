@@ -6,7 +6,7 @@ import { BLOCK_HOLD, GRID, PITCH, LANE, COP_RANGE } from '../config.js';
 import { Car } from '../entities/car.js';
 import { Person } from '../entities/person.js';
 import { clamp, dist, dist2, turnDelta } from '../util.js';
-import { rand, randInt } from '../rng.js';
+import { rand, randRange, randInt } from '../rng.js';
 import { laneAt } from './traffic.js';
 
 export class Cops {
@@ -86,7 +86,7 @@ export class Cops {
     return null;
   }
 
-  /** Chase with a lead aim and, from four stars, a flank so pairs close from both sides. */
+  /** Chase with a lead aim and, from three stars, a flank so pairs close from both sides. */
   pursue(c, dt, player, stars) {
     const game = this.game;
     if (c.wreck || c.wasted) return;
@@ -109,8 +109,10 @@ export class Cops {
     if (stars >= 4 && range < 110) c.steer = clamp(c.steer + c.flank * 0.9, -1, 1);
     c.drive(dt, game);
     c.update(dt, game);
-    // Window fire from three stars on, when close and roughly nose-in.
-    if (stars >= 3 && range < COP_RANGE && Math.abs(turnDelta(c.ang, aim)) < 0.5 && rand() < dt * 0.9) {
+    // Window fire from three stars on, when close and roughly nose-in. The trigger gets
+    // lighter with every star: a five-star pursuit shoots like a firing squad.
+    const trigger = dt * (0.9 + stars * 0.18);
+    if (stars >= 3 && range < COP_RANGE && Math.abs(turnDelta(c.ang, aim)) < 0.5 && rand() < trigger) {
       game.bullets.fire(c.x + Math.cos(c.ang) * 32, c.y + Math.sin(c.ang) * 32, aim, 820, false, 7);
       game.fx.muzzle(c.x + Math.cos(c.ang) * 36, c.y + Math.sin(c.ang) * 36, c.ang);
       game.audio.shot(game.proximity(c.x, c.y) * 0.7);
@@ -163,15 +165,18 @@ export class Cops {
     if (f.mode === 'down') { f.downT -= dt; return; }
     const d = dist(f.x, f.y, player.x, player.y);
     f.ang = Math.atan2(player.y - f.y, player.x - f.x);
-    if (d > 250) {
-      f.x += Math.cos(f.ang) * f.speed * dt;
-      f.y += Math.sin(f.ang) * f.speed * dt;
+    // Foot officers give a wide berth to a car that is actively driving at them.
+    const onFootDanger = player.car && Math.hypot(player.vx ?? 0, player.vy ?? 0) > 160 && d < 140;
+    if (d > 250 || onFootDanger) {
+      const away = onFootDanger ? Math.atan2(f.y - player.y, f.x - player.x) : f.ang;
+      f.x += Math.cos(away) * f.speed * dt;
+      f.y += Math.sin(away) * f.speed * dt;
       f.phase += dt * 7;
     }
     if (stars >= 3 && d < COP_RANGE) {
       f.shootT -= dt;
       if (f.shootT <= 0) {
-        f.shootT = 0.9 + rand() * 0.5;
+        f.shootT = randRange(0.9, 1.4);
         game.bullets.fire(f.x, f.y, f.ang + (rand() - 0.5) * 0.15, 800, false, 6);
         game.fx.muzzle(f.x + Math.cos(f.ang) * 12, f.y + Math.sin(f.ang) * 12, f.ang);
         game.audio.shot(game.proximity(f.x, f.y) * 0.6);

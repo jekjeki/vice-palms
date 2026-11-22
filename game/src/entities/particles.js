@@ -86,6 +86,15 @@ export class Particles {
     }
   }
 
+  /** Dark chunks tossed out of a blast — painted under the glow layer like smoke. */
+  debris(x, y, n) {
+    for (let i = 0; i < n; i++) {
+      const a = rand() * 6.28, s = 90 + rand() * 220;
+      this.emit(x, y, Math.cos(a) * s, Math.sin(a) * s, 0.5 + rand() * 0.4,
+        2.5 + rand() * 3, rand() < 0.5 ? '#26262e' : '#3a3540', 'debris');
+    }
+  }
+
   muzzle(x, y, ang) {
     this.emit(x, y, Math.cos(ang) * 90, Math.sin(ang) * 90, 0.08, 7, '#ffe9a3', 'muzzle');
     // A hot core that reads even against neon spill.
@@ -108,6 +117,7 @@ export class Particles {
     this.fire(x, y, 26);
     this.smoke(x, y, 18, true);
     this.sparks(x, y, 20);
+    this.debris(x, y, 14);
   }
 
   carFire(v) {
@@ -127,6 +137,7 @@ export class Particles {
       p.y += p.vy * dt;
       if (p.kind === 'smoke') { p.vx *= 0.98; p.vy = p.vy * 0.98 - 12 * dt; p.size += 14 * dt; }
       else if (p.kind === 'spark' || p.kind === 'blood' || p.kind === 'cash') p.vy += 220 * dt;
+      else if (p.kind === 'debris') { p.vx *= 0.94; p.vy = p.vy * 0.94 + 320 * dt; }
       else if (p.kind === 'fire') { p.vx *= 0.9; p.vy *= 0.9; }
     }
   }

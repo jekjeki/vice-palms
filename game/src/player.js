@@ -33,6 +33,8 @@ export class Hero {
     }
     this.health -= d;
     this.game.fx.blood(this.x, this.y, 3);
+    // Every hit on Rico reads in the camera too, however small.
+    this.game.shake = Math.min(8, this.game.shake + 1.4);
     if (this.health <= 0) {
       this.health = 0;
       this.dead = true;
@@ -83,7 +85,7 @@ export class Hero {
     car.steer = ax.x;
     car.slide = input.held('Space');
     if (input.tap('KeyH')) {
-      game.audio.blip(180);
+      game.audio.horn?.();
       game.honk(car);
     }
     if (input.tap('KeyF')) game.leaveCar();
@@ -124,6 +126,8 @@ export class Hero {
     game.fx.muzzle(this.x + Math.cos(this.heading) * 16, this.y + Math.sin(this.heading) * 16, this.heading);
     game.bullets.fire(this.x + Math.cos(this.heading) * 18, this.y + Math.sin(this.heading) * 18, this.heading, 880, true, 16);
     game.scarePeople(this.x, this.y, 430);
+    // A shot rocks the frame a touch: the pistol should feel fired, not clicked.
+    game.shake = Math.min(10, game.shake + 1.6);
   }
 
   pickup(kind, amount) {

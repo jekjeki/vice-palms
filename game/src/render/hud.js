@@ -3,7 +3,7 @@
 // speedometer gauge while driving. Every element is drawn on one canvas pass.
 
 import { GRID, PITCH, SAND } from '../config.js';
-import { clamp, TAU } from '../util.js';
+import { clamp, dist, TAU } from '../util.js';
 
 const MAP_PX = 760;
 const MAP_SPAN = 1500;   // world units shown across the minimap circle
@@ -59,6 +59,7 @@ export class Hud {
   draw(ctx, game, W, H) {
     const p = game.player;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.hurtVignette(ctx, p, W, H);
     this.minimap(ctx, game, p, H);
     this.money(ctx, p, W);
     this.stars(ctx, game, W);
@@ -70,6 +71,18 @@ export class Hud {
     if (this.lastMoney !== null && p.money > this.lastMoney) this.moneyPulse = 1;
     this.lastMoney = p.money;
     this.moneyPulse = Math.max(0, this.moneyPulse - 0.016 * 2.2);
+  }
+
+  /** A red breath on the frame edges while Rico is close to flatlining. */
+  hurtVignette(ctx, p, W, H) {
+    const f = p.dead ? 1 : clamp(1 - p.health / 35, 0, 1);
+    if (f <= 0.01) return;
+    const pulse = 0.65 + 0.35 * Math.sin(p.dead ? 0 : performance.now() / 240);
+    const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32, W / 2, H / 2, Math.hypot(W, H) * 0.62);
+    g.addColorStop(0, 'rgba(140,10,20,0)');
+    g.addColorStop(1, `rgba(140,10,20,${(0.4 * f * pulse).toFixed(3)})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
   }
 
   minimap(ctx, game, p, H) {
@@ -215,6 +228,14 @@ export class Hud {
     const f = clamp(Math.abs(car.fwd) / car.spec.top, 0, 1);
     ctx.strokeStyle = f > 0.85 ? '#ff5f4a' : f > 0.6 ? '#ffd24a' : '#59e0ff';
     ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * 0.75, Math.PI * 0.75 + Math.PI * 1.5 * f); ctx.stroke();
+    // A needle rides the same sweep, tipped past the arc like a real dial.
+    const na = Math.PI * 0.75 + Math.PI * 1.5 * f;
+    ctx.strokeStyle = 'rgba(232,236,244,0.85)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(na) * (r - 16), cy + Math.sin(na) * (r - 16));
+    ctx.lineTo(cx + Math.cos(na) * (r + 9), cy + Math.sin(na) * (r + 9));
+    ctx.stroke();
     ctx.textAlign = 'center';
     ctx.font = 'bold 25px Consolas, "Courier New", monospace';
     ctx.fillStyle = '#e8ecf4';
@@ -229,7 +250,13 @@ export class Hud {
   }
 
   objective(ctx, game, W, H) {
-    const text = game.missions.objectiveText();
+    let text = game.missions.objectiveText();
+    // Off-screen goals get a metres readout — the plate doubles as a compass.
+    const marker = game.missions.marker();
+    if (marker) {
+      const m = Math.round(dist(game.player.x, game.player.y, marker.x, marker.y) / 8);
+      text += ` · ${m}m`;
+    }
     ctx.font = 'bold 17px Consolas, "Courier New", monospace';
     // Backing plate keeps the objective readable over neon spill and smoke; the thin gold
     // rim ties it to the marker colour without shouting.

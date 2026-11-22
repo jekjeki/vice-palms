@@ -1,8 +1,9 @@
 // A tiny static server for game/ (Node 22, standard library only), so an entry can be played
 // locally without a build step: `node serve.ts` serves game/ on http://localhost:8080.
 // It sends the MIME types a browser game needs, answers HEAD for tooling that only probes,
-// refuses any path outside game/, and otherwise does nothing clever: this is a development
-// convenience, not a web server for the internet.
+// rejects methods it cannot serve, refuses any path outside game/, reports a busy port instead
+// of dying silently, and shuts down cleanly on Ctrl+C: a development convenience, not a web
+// server for the internet.
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -38,7 +39,11 @@ const MIME: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
-createServer((request, response) => {
+const server = createServer((request, response) => {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    response.writeHead(405, { allow: 'GET, HEAD' }).end('method not allowed');
+    return;
+  }
   const url = new URL(request.url ?? '/', 'http://localhost');
   let pathname: string;
   try {
@@ -59,7 +64,7 @@ createServer((request, response) => {
     if (!stats.isFile()) throw new Error('not a file');
     size = stats.size;
   } catch {
-    response.writeHead(404).end('not found');
+    response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
     return;
   }
   response.writeHead(200, {
@@ -73,6 +78,21 @@ createServer((request, response) => {
     return;
   }
   createReadStream(file).pipe(response);
-}).listen(port, '127.0.0.1', () => {
+});
+
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`port ${port} is busy — try \`node serve.ts --port ${port + 1}\``);
+    process.exit(1);
+  }
+  throw err;
+});
+
+server.listen(port, '127.0.0.1', () => {
   console.log(`game/ is on http://localhost:${port}`);
+});
+
+process.on('SIGINT', () => {
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 400);
 });

@@ -28,3 +28,9 @@ export function rand() { return stream(); }
 export function randInt(n) { return Math.floor(stream() * n); }
 /** True `p` of the time — the readable spelling of `rand() < p`. */
 export function chance(p) { return stream() < p; }
+
+/** Uniform float in [lo, hi) — spawn rings and cruise-speed jitter read better spelled out. */
+export function randRange(lo, hi) { return lo + stream() * (hi - lo); }
+
+/** One element of an array, or null when it is empty. */
+export function pick(list) { return list.length ? list[randInt(list.length)] : null; }

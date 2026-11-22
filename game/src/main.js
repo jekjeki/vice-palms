@@ -60,6 +60,8 @@ function newGame(fromSave) {
   }
   hud.attach(game);
   ui.cameraOverride = null;
+  ui.freeze = false;
+  acc = 0;                    // no frame debt carried from the menu or a previous run
   window.__game = game; // debug and play-test handle
 }
 
@@ -203,6 +205,8 @@ window.addEventListener('keydown', () => { game?.audio.ensure(); });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && ui.uiState === 'play' && game && game.state === 'play') openPause();
 });
+// Closing the tab mid-night still banks the progress: autosave on the way out.
+window.addEventListener('pagehide', () => { if (game && !game.shotMode && game.state === 'play') game.save(); });
 
 resize();
 requestAnimationFrame(frame);

@@ -3,7 +3,7 @@
 // overtake stalled cars through the oncoming lane with a blinker, turn at intersections and
 // spawn/despawn in a ring around the player.
 
-import { GRID, PITCH, ROAD, LANE, STOP_GAP } from '../config.js';
+import { GRID, PITCH, ROAD, LANE, STOP_GAP, BLINKER_SECS } from '../config.js';
 import { Car } from '../entities/car.js';
 import { clamp, turnDelta, dist2 } from '../util.js';
 import { chance, rand, randInt } from '../rng.js';
@@ -102,7 +102,7 @@ export class Traffic {
     c.gearT += dt;
     if (want < 40 && c.gearT > 2.6 && Math.abs(c.laneShift ?? 0) < 1) {
       const open = this.oncomingClear(c, alongNow, laneNow);
-      if (open) { c.laneShift = -c.dir * (c.axis === 'x' ? 1 : -1) * LANE * 2; c.blinker = 2.2; c.gearT = 0; }
+      if (open) { c.laneShift = -c.dir * (c.axis === 'x' ? 1 : -1) * LANE * 2; c.blinker = BLINKER_SECS; c.gearT = 0; }
       else c.gearT = 1.2;
     }
     if (c.laneShift && c.blinker <= 0) { c.laneShift *= Math.max(0, 1 - dt * 2.5); if (Math.abs(c.laneShift) < 2) c.laneShift = 0; }
@@ -134,6 +134,12 @@ export class Traffic {
     else c.ang += turnDelta(c.ang, c.aimAng) * Math.min(1, dt * 10);
     c.vx = Math.cos(c.ang) * c.fwd;
     c.vy = Math.sin(c.ang) * c.fwd;
+
+    // A long wait in a jam earns an indignant horn — city noise the streets should have.
+    if (c.stopped && c.fwd < 20 && c.gearT > 4 && chance(dt * 0.06)) {
+      c.gearT = 2;
+      game.audio.horn?.();
+    }
   }
 
   crossedCenter(c, a0, a1, center) {

@@ -25,7 +25,7 @@ export class Person {
     this.skin = SKINS[(seed * 7 + 3) % SKINS.length];
     this.hair = ['#241a10', '#3a2a18', '#181818', '#6b4a26'][seed % 4];
     this.speed = PED_SPEED * (0.75 + (seed % 47) / 95);
-    this.mode = 'stroll';          // stroll | bolt | down
+    this.mode = 'stroll';          // stroll | gawk | bolt | down
     this.tx = x; this.ty = y;
     this.hp = 30;
     this.boltT = 0; this.downT = 0;
@@ -37,6 +37,8 @@ export class Person {
     // One stroller in eleven stops dead to gawk at the strip — sidewalks read as lived-in.
     this.mode = seed % 11 === 2 ? 'gawk' : 'stroll';
     this.gawkT = 3 + (seed % 55) / 10;
+    // Strollers occasionally pause mid-block to let a group knot up and un-knot again.
+    this.pauseT = seed % 9 === 4 ? 1 + (seed % 40) / 20 : 0;
     this.targetBlock();
   }
 
@@ -98,8 +100,18 @@ export class Person {
       if (this.boltT <= 0) { this.mode = 'stroll'; this.targetBlock(); }
       return;
     }
+    if (this.pauseT > 0) {
+      this.pauseT -= dt;
+      this.phase += dt * 1.2;
+      return;
+    }
     const dx = this.tx - this.x, dy = this.ty - this.y;
-    if (Math.hypot(dx, dy) < 6) { this.targetBlock(); return; }
+    if (Math.hypot(dx, dy) < 6) {
+      this.targetBlock();
+      // Roll a fresh pause at each corner: some walkers linger on the stoop.
+      if (rand() < 0.08) this.pauseT = 1 + rand() * 2.5;
+      return;
+    }
     this.x += (dx / Math.hypot(dx, dy)) * this.speed * dt;
     this.y += (dy / Math.hypot(dx, dy)) * this.speed * dt;
     this.phase += dt * 6;

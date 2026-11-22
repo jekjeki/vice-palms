@@ -19,36 +19,40 @@ node serve.ts
 then open http://localhost:8080 in desktop Chrome. Keyboard and mouse: WASD or arrows to walk or
 drive, Shift to sprint, F to enter or steal the nearest car (again to bail out), Space for the
 handbrake on wheels and punches on foot, E or left-click to shoot once a pistol is found, H for
-the horn, Esc to pause. Progress autosaves to localStorage on every mission payout and pause;
-the title menu can delete a save (press twice to confirm).
+the horn, Esc to pause. Progress autosaves to localStorage on every mission payout and pause
+(and on tab close); the title menu can delete a save (press twice to confirm).
 
 ## Systems
 
 - City: seeded generator — streets with two-way traffic and signals, sidewalk crowds (strollers,
-  phone-gazers, sightseers frozen mid-photo), parks, surface lots, neon signage (blades,
-  marquees, rooftop billboards on every tall building, water tanks notching the skyline), beach
-  and ocean.
-- Driving: arcade car physics with grip, handbrake slides that cook the rear tyres (smoke and
-  screech), damage states (smoke, fire, blast) and ten stealable models plus the police cruiser.
+  phone-gazers, sightseers frozen mid-photo, corner lingerers), parks, surface lots, neon signage
+  (blades, marquees, rooftop billboards on every tall building, water tanks and antenna beacons
+  notching the skyline), beach and ocean.
+- Driving: arcade car physics with grip, engine braking on lift-off, handbrake slides that cook
+  the rear tyres (smoke and screech), damage states (smoke, fire, blast) and ten stealable models
+  plus the police cruiser.
 - Traffic: kinematic lane AI — model-aware cruise speeds, gap keeping, red-light queueing,
-  overtakes with blinkers, turns at intersections.
+  overtakes with blinking turn signals, indignant horns in long jams, turns at intersections.
 - Police: five wanted stars (carjack +1, ped hit +1, shooting +2, cop kill +3). Cruisers spawn
-  biased down the road you are driving, flank from three stars, fire from the window, try pit
-  manoeuvres at four, and roadblock crews actually hold their post until you close in. Foot
-  officers chase the sidewalks and a cornered player on foot gets BUSTED. Line-of-sight decay
-  lets a clean escape bleed stars (downed officers spot nothing).
+  biased down the road you are driving, flank from three stars, fire from the window (faster
+  triggers every star), try pit manoeuvres at four, and roadblock crews actually hold their post
+  until you close in. Foot officers chase the sidewalks, back off a car driving at them, and a
+  cornered player on foot gets BUSTED. Line-of-sight decay lets a clean escape bleed stars
+  (downed officers spot nothing).
 - Night lighting: base pass with full-strength emissives, an ambient multiply, and an additive
-  glow pass — lamp pools, headlight cones (dark when parked), brake and reverse lamps, wet-asphalt
-  reflections, neon spill, sweeping police floodlights, firelight, and an orange blast flash
-  with camera shake.
+  glow pass — lamp pools, headlight cones (dark when parked), brake and reverse lamps, amber turn
+  signals, wet-asphalt reflections, neon spill, sweeping police floodlights, antenna beacons,
+  firelight, and an orange blast flash with camera shake.
 - Missions: six chained story jobs (goto, steal-and-deliver, timed runs, collection, arson,
   a hot finale escape) with markers, fail/retry and cash payouts.
 - HUD: circular minimap with a north tick and police blips, health/armor bars, a money counter
-  that pulses on payout, wanted stars with an out-of-sight cooling cue, weapon readout,
-  speedometer with gear, backed objective plate and mission banners.
-- Sound: everything synthesized live with WebAudio — engine, siren, gunfire, explosions, tyre
-  screech, blips and a looping synthwave pad (all of it ducks properly when the game pauses,
-  and catching up after a pause skips the missed bars instead of stacking them).
+  that pulses on payout, wanted stars with an out-of-sight cooling cue, weapon readout, a
+  speedometer dial with needle and gear, a hurt vignette at low health, and a backed objective
+  plate with live metres-to-goal and mission banners.
+- Sound: everything synthesized live with WebAudio behind a master compressor — engine with an
+  idle lope, two-tone siren, two-tone horn, gunfire, explosions, tyre screech, blips and a
+  looping synthwave pad (all of it ducks properly when the game pauses, and catching up after a
+  pause skips the missed bars instead of stacking them).
 - Deterministic staging: `?shot=start|play|end|chaos&seed=N` builds a seeded scene and freezes
   one frame, which is how the four screenshots in `screenshots/` were taken. The title screen
   shows the world seed it is drifting across.
@@ -58,4 +62,5 @@ the title menu can delete a save (press twice to confirm).
 - `main.ts` copies `game/` and `screenshots/` to the output directory and writes `dossier.json`
   with the vendored make.fun library (`vendor/makefun-game.ts`, byte-identical to the kit).
   Outside the grader: `mkdir out; $env:MAKEFUN_OUTPUT_DIR="out"; node main.ts`.
-- `shots.json` lists the four staged screenshot URLs; `serve.ts` serves `game/` locally.
+- `shots.json` lists the four staged screenshot URLs; `serve.ts` serves `game/` locally
+  (Ctrl+C shuts it down, a busy port tells you the next one to try).

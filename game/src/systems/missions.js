@@ -30,15 +30,15 @@ export const GIVERS = [
 export const JOBS = [
   {
     title: 'Back in Town',
-    brief: 'Rosa: “Six years away, Rico. Six years, and not one postcard. Walk to my garage before this night gets any ideas about you.”',
-    outro: 'Rosa: “Still walking like you own the sidewalk. Good — because I have work.”',
+    brief: 'Rosa: “Six years, Rico. Six years and not one postcard. Get yourself to my garage before this town remembers why it ate you the first time.”',
+    outro: 'Rosa: “Still walking like you own the sidewalk. Good — because I have work, and the work has teeth.”',
     reward: 300,
     stages: [{ type: 'goto', x: GARAGE.x, y: GARAGE.y, r: 46, text: 'Reach Rosa’s garage' }],
   },
   {
     title: 'Repo Run',
-    brief: 'Rosa: “A client stopped paying on a Vanta GT. It still sits at the Sunset lot, laughing at the paperwork. Bring it here — in one shape, ideally the shape it left in.”',
-    outro: 'Rosa: “Knew it would still be there. Nobody in this city trusts anybody. I count on that.”',
+    brief: 'Rosa: “A client quit paying on a Vanta GT. The car still sits at the Sunset lot, laughing at the paperwork. Bring it home — ideally the same shape it left in.”',
+    outro: 'Rosa: “Knew it would still be there. Nobody in this city trusts anybody. I build my whole ledger on that.”',
     reward: 500,
     stages: [
       { type: 'steal', x: 27 * PITCH, y: 14 * PITCH, r: 70, text: 'Steal the marked Vanta GT', vehicle: 1 },
@@ -47,7 +47,7 @@ export const JOBS = [
   },
   {
     title: 'The Night Run',
-    brief: 'Rosa: “A case waits in my garage. A buyer waits at the plaza. Ninety seconds, Rico — and whatever you hear ticking, do not open it.”',
+    brief: 'Rosa: “A case waits in my garage. A buyer waits at the plaza. Ninety seconds, Rico — and whatever you hear ticking in there, do not open it.”',
     outro: 'Buyer: “Clean work. Rosa sends her best people and her worst apologies.”',
     reward: 700,
     stages: [
@@ -57,8 +57,8 @@ export const JOBS = [
   },
   {
     title: 'Paper Trail',
-    brief: 'Serge: “My ledger is split across three cases, held by ex-partners who were too lazy to even steal it. Collect them before somebody honest does — that would ruin everything.”',
-    outro: 'Serge: “Now the numbers only embarrass me instead of ruining me. Much better.”',
+    brief: 'Serge: “My ledger is split across three cases, held by ex-partners too lazy to steal it properly. Collect them before somebody honest does — honesty would ruin everything.”',
+    outro: 'Serge: “Now the numbers only embarrass me instead of bankrupting me. Progress, Rico. Progress.”',
     reward: 900,
     stages: [
       { type: 'collect', text: 'Collect the three ledger cases', points: [street(8, 9), street(30, 10), street(22, 33)] },
@@ -66,7 +66,7 @@ export const JOBS = [
   },
   {
     title: 'Torch Song',
-    brief: 'Serge: “Three Tramline vans in the Coral Yard carry what owes me. Turn them into what the fire marshal writes up. The insurance man and I thank you in advance.”',
+    brief: 'Serge: “Three Tramline vans in the Coral Yard carry everything that owes me. Turn them into what the fire marshal writes up. My insurance man and I thank you in advance.”',
     outro: 'Serge: “Beautiful. Terrible, but beautiful. Here — and don’t spend it all on smoke.”',
     reward: 1400,
     stages: [
@@ -75,7 +75,7 @@ export const JOBS = [
   },
   {
     title: 'The Last Ride',
-    brief: 'Marisol: “There’s a warrant with your name in fresh ink, and every cruiser in the city is out looking for it. A boat waits at the marina gate. Dawn doesn’t wait at all.”',
+    brief: 'Marisol: “There’s a warrant with your name in fresh ink, and every cruiser in the city is out learning it by heart. A boat waits at the marina gate. Dawn doesn’t wait at all.”',
     outro: 'Marisol: “Welcome to the water, Rico. Vice Palms never lets you go — that’s the trouble with loving it.”',
     reward: 2500,
     stages: [
@@ -233,6 +233,7 @@ export class Missions {
         if (a.torched >= st.count) this.enterStage(a.stage + 1);
         break;
       case 'escape':
+        // The city refuses to cool off during the finale: the warrant keeps the heat live.
         if (game.wanted.stars < 2) { game.wanted.stars = 3; game.onWantedBegin(); }
         if (dist2(player.x, player.y, st.x, st.y) < st.r * st.r) this.payout();
         break;

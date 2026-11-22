@@ -1,6 +1,9 @@
-# build output and session scratch — never part of the entry
+# Vice Palms — local scratch never ships with the entry.
 out/
 .playwright-mcp/
 .superpowers/
 node_modules/
 *.log
+*.tsbuildinfo
+.DS_Store
+Thumbs.db

@@ -1,9 +1,9 @@
 // The night renderer, in three layers. The base pass paints the city in its own colours with
 // emissives (neon, lit windows) at full strength; a light map is multiplied over everything for
 // the ambient mood; an additive glow pass paints the true light sources — lamp pools, headlight
-// cones, neon spill with wet-asphalt reflections, sirens, fire, brake and reverse lamps. Camera
-// shake rides the world transform; culling uses the camera rect; buildings, palms and actors
-// draw y-sorted.
+// cones, neon spill with wet-asphalt reflections, sirens, turn signals, fire, brake and reverse
+// lamps. Camera shake rides the world transform; culling uses the camera rect; buildings, palms
+// and actors draw y-sorted.
 
 import { GRID, PITCH, ROAD, WALK, SAND, OCEAN, LIGHT } from '../config.js';
 import { blockRect } from '../world/city.js';
@@ -291,6 +291,7 @@ export class Painter {
     }
     if (!game.player.car) items.push({ z: game.player.y, kind: 'hero', o: game.player });
     for (const pk of game.pickups) {
+      if (pk.dead) continue;
       if (pk.x > x0 - 40 && pk.x < x1 + 40 && pk.y > y0 - 40 && pk.y < y1 + 40) items.push({ z: pk.y, kind: 'pk', o: pk });
     }
     const marker = game.missions.marker();
@@ -309,9 +310,9 @@ export class Painter {
       else if (it.kind === 'marker') this.marker(ctx, it.o, game);
     }
 
-    // Dark smoke rides the base layer; the bright particles glow above.
+    // Dark smoke and blast debris ride the base layer; the bright particles glow above.
     for (const p of game.fx.pool) {
-      if (!p.live || p.kind !== 'smoke') continue;
+      if (!p.live || (p.kind !== 'smoke' && p.kind !== 'debris')) continue;
       ctx.globalAlpha = clamp(p.life / p.max, 0, 1) * 0.7;
       ctx.fillStyle = p.color;
       ctx.beginPath();
@@ -373,6 +374,19 @@ export class Painter {
       ctx.beginPath(); ctx.arc(b.tank.x - lift, b.tank.y - lift, b.tank.r + 2, 0, TAU); ctx.fill();
       ctx.fillStyle = '#565b66';
       ctx.beginPath(); ctx.arc(b.tank.x - lift, b.tank.y - lift - 1.5, b.tank.r, 0, TAU); ctx.fill();
+    }
+    // Antenna mast: a thin lattice stroke rising off the roof (the beacon glows above).
+    if (b.ant) {
+      ctx.strokeStyle = '#20232c';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(b.ant.x - lift, b.ant.y - lift);
+      ctx.lineTo(b.ant.x - lift, b.ant.y - lift - b.ant.h);
+      ctx.moveTo(b.ant.x - lift - 3, b.ant.y - lift);
+      ctx.lineTo(b.ant.x - lift, b.ant.y - lift - b.ant.h * 0.5);
+      ctx.moveTo(b.ant.x - lift + 3, b.ant.y - lift);
+      ctx.lineTo(b.ant.x - lift, b.ant.y - lift - b.ant.h * 0.5);
+      ctx.stroke();
     }
   }
 
@@ -535,7 +549,7 @@ export class Painter {
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.beginPath(); ctx.ellipse(2, 3, 6.5, 3.2, 0, 0, TAU); ctx.fill();
     const bob = p.mode === 'bolt' ? Math.sin(p.phase * 2.1) * 1.6 : Math.sin(p.phase) * 1.1;
-    const step = p.mode === 'gawk' ? 0 : Math.sin(p.phase) * 3;
+    const step = p.mode === 'gawk' || p.pauseT > 0 ? 0 : Math.sin(p.phase) * 3;
     ctx.fillStyle = '#14161c';
     ctx.fillRect(-3 + step, 2, 3, 3);
     ctx.fillRect(1 - step, 2, 3, 3);
@@ -718,6 +732,17 @@ export class Painter {
           ctx.beginPath(); ctx.arc(0, 0, 60, 0, TAU); ctx.fill();
           ctx.restore();
         }
+        // Antenna beacons: a slow red blink pinned to the tallest roofs.
+        for (const b of block.buildings) {
+          if (!b.ant) continue;
+          if (Math.floor(game.time * 1.6 + b.ant.x) % 4 !== 0) continue;
+          const bx = b.ant.x - Math.min(28, 4 + b.floors * 2.7), by = b.ant.y - Math.min(28, 4 + b.floors * 2.7) - b.ant.h;
+          const g2 = ctx.createRadialGradient(bx, by, 1, bx, by, 9);
+          g2.addColorStop(0, 'rgba(255,64,64,0.85)');
+          g2.addColorStop(1, 'rgba(255,64,64,0)');
+          ctx.fillStyle = g2;
+          ctx.beginPath(); ctx.arc(bx, by, 9, 0, TAU); ctx.fill();
+        }
       }
     }
 
@@ -772,6 +797,12 @@ export class Painter {
         rg.addColorStop(1, 'rgba(255,255,245,0)');
         ctx.fillStyle = rg;
         ctx.beginPath(); ctx.arc(-s.len / 2 - 22, 0, 52, 0, TAU); ctx.fill();
+      }
+      // Turn signal: an overtaking car blinks amber on the side it is sliding toward.
+      if (moving && (v.blinker ?? 0) > 0 && Math.floor(game.time * 3.2) % 2 === 0) {
+        const side = (v.laneShift ?? 0) < 0 ? -1 : 1;
+        ctx.fillStyle = 'rgba(255,178,60,0.95)';
+        ctx.fillRect(side < 0 ? -s.len / 2 + 2 : s.len / 2 - 7, side * (s.wid / 2 + 1), 5, 5);
       }
       ctx.restore();
 
@@ -874,7 +905,7 @@ export class Painter {
 
     // Pickups shimmer.
     for (const pk of game.pickups) {
-      if (pk.x < x0 || pk.x > x1 || pk.y < y0 || pk.y > y1) continue;
+      if (pk.dead || pk.x < x0 || pk.x > x1 || pk.y < y0 || pk.y > y1) continue;
       const c = pk.kind === 'pistol' ? '255,217,119' : pk.kind === 'health' ? '125,255,164' : pk.kind === 'armor' ? '111,183,255' : '199,255,125';
       const gk = ctx.createRadialGradient(pk.x, pk.y, 2, pk.x, pk.y, 18);
       gk.addColorStop(0, `rgba(${c},0.45)`);
@@ -885,7 +916,7 @@ export class Painter {
 
     // Bright particles: fire, muzzle, flash, sparks, cash.
     for (const pt of game.fx.pool) {
-      if (!pt.live || pt.kind === 'smoke' || pt.kind === 'blood') continue;
+      if (!pt.live || pt.kind === 'smoke' || pt.kind === 'debris' || pt.kind === 'blood') continue;
       const a = clamp(pt.life / pt.max, 0, 1);
       if (pt.kind === 'flash') {
         const size = pt.size * (1.3 - a * 0.3);

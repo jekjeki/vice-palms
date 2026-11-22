@@ -6,6 +6,7 @@
 <meta name="color-scheme" content="dark">
 <meta name="description" content="Vice Palms — an original open-world crime game: steal cars, run six missions and shake a five-star police pursuit through a neon coastal city at night.">
 <meta name="theme-color" content="#0b0e1e">
+<meta name="referrer" content="no-referrer">
 <title>Vice Palms</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230b0e1e'/%3E%3Cpath d='M8 9 L8 13' stroke='%235c4228' stroke-width='1.6'/%3E%3Cpath d='M8 9 Q4.5 7.5 3 5 M8 9 Q11.5 7.5 13 5 M8 9 Q6.5 5.5 6.8 3.4 M8 9 Q9.5 5.5 9.2 3.4' stroke='%234db572' stroke-width='1.4' fill='none'/%3E%3Ccircle cx='12.7' cy='12.6' r='1.2' fill='%2333e7ff'/%3E%3C/svg%3E">
 <style>
@@ -13,12 +14,27 @@
   #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
   /* Read by screen readers, never shown: the live status line. */
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  /* Boot splash: visible until the module removes it, so the first paint is never a white flash. */
+  #boot {
+    position: fixed; inset: 0; display: grid; place-items: center; background: #0b0e1e;
+    color: #33e7ff; font: bold 18px Consolas, "Courier New", monospace; letter-spacing: 3px;
+  }
 </style>
 </head>
 <body>
 <canvas id="game" aria-label="Vice Palms: drive and walk a neon coastal city at night, steal cars, run six missions and shake a five-star police pursuit"></canvas>
 <p id="status" role="status" aria-live="polite"></p>
+<div id="boot">VICE PALMS</div>
 <noscript><p style="position:fixed;inset:0;display:grid;place-items:center;color:#9aa3b8;font:15px monospace">Vice Palms needs JavaScript and a desktop browser — no build step, no network.</p></noscript>
-<script type="module" src="./src/main.js"></script>
+<script type="module">
+  // The splash only exists for the instant before the game module takes over.
+  try { document.getElementById('boot').remove(); } catch {}
+  import('./src/main.js').catch((err) => {
+    const boot = document.createElement('div');
+    boot.style.cssText = 'position:fixed;inset:0;display:grid;place-items:center;color:#ff6b5f;font:14px Consolas,monospace;text-align:center;white-space:pre-wrap';
+    boot.textContent = 'Vice Palms failed to start\n' + (err && err.message ? err.message : err);
+    document.body.appendChild(boot);
+  });
+</script>
 </body>
 </html>

@@ -1,7 +1,8 @@
 // Every sound is synthesized in the browser with WebAudio — zero audio files. A saw/square
 // engine follows the player's throttle, a two-tone siren follows the nearest cruiser, one-shot
 // noise bursts handle gunfire, crashes and explosions, and a slow synthwave pad with a bass
-// pulse and hats loops under the whole night.
+// pulse and hats loops under the whole night. A compressor on the master bus keeps stacked
+// sirens, crashes and the music from clipping when a chase turns loud.
 
 export class Audio {
   constructor() {
@@ -21,7 +22,13 @@ export class Audio {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
       this.master = this.ctx.createGain();
       this.master.gain.value = 0.5;
-      this.master.connect(this.ctx.destination);
+      // The bus limiter: one place where crashes into sirens into music can never clip.
+      this.comp = this.ctx.createDynamicsCompressor();
+      this.comp.threshold.value = -14;
+      this.comp.knee.value = 22;
+      this.comp.ratio.value = 7;
+      this.master.connect(this.comp);
+      this.comp.connect(this.ctx.destination);
       this.music = this.ctx.createGain();
       this.music.gain.value = 0.15;
       this.music.connect(this.master);
@@ -49,9 +56,13 @@ export class Audio {
     const saw = c.createOscillator(); saw.type = 'sawtooth';
     const sq = c.createOscillator(); sq.type = 'square'; sq.detune.value = 16;
     const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 500;
+    // A slow LFO lope on the filter: idle reads as an engine breathing, not a flat drone.
+    const lope = c.createOscillator(); lope.type = 'sine'; lope.frequency.value = 7.3;
+    const lopeAmt = c.createGain(); lopeAmt.gain.value = 40;
+    lope.connect(lopeAmt); lopeAmt.connect(lp.frequency);
     const g = c.createGain(); g.gain.value = 0;
     saw.connect(lp); sq.connect(lp); lp.connect(g); g.connect(this.sfx);
-    saw.start(); sq.start();
+    saw.start(); sq.start(); lope.start();
     this.engine = { saw, sq, lp, g };
   }
 
@@ -182,6 +193,22 @@ export class Audio {
   shot(prox = 1) { this.burst(1500, 1.2, 0.13, 0.34 * prox); this.burst(230, 0.7, 0.19, 0.27 * prox, 'lowpass'); }
   punch() { this.burst(310, 0.8, 0.09, 0.3, 'lowpass'); }
   crash(v) { this.burst(520, 0.6, 0.24, 0.24 * v + 0.05, 'lowpass'); }
+
+  /** Two-tone electric car horn — the H key, honked through the sfx bus. */
+  horn() {
+    if (!this.live || !this.enabled) return;
+    for (const [f, at] of [[392, 0], [494, 0.09]]) {
+      const c = this.ctx;
+      const o = c.createOscillator(); o.type = 'square'; o.frequency.value = f;
+      const g = c.createGain();
+      g.gain.setValueAtTime(0, c.currentTime + at);
+      g.gain.linearRampToValueAtTime(0.07, c.currentTime + at + 0.02);
+      g.gain.setValueAtTime(0.07, c.currentTime + at + 0.22);
+      g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + at + 0.3);
+      o.connect(g); g.connect(this.sfx);
+      o.start(c.currentTime + at); o.stop(c.currentTime + at + 0.34);
+    }
+  }
 
   /** Tyre screech while the handbrake bites; rate-limited so a long slide chirps, not roars. */
   screech(v = 1) {

@@ -175,5 +175,9 @@ export class Menus {
     ctx.font = '15px Consolas, "Courier New", monospace';
     ctx.fillStyle = 'rgba(200,205,225,0.5)';
     ctx.fillText('the game autosaves on every mission payout and whenever this menu opens', W / 2, H * 0.46 + items.length * 42 + 30);
+    // The night keeps its own ledger: seed and cash, quiet in the corner of the pause.
+    ctx.font = '13px Consolas, "Courier New", monospace';
+    ctx.fillStyle = 'rgba(120,126,150,0.5)';
+    ctx.fillText(`WORLD SEED ${game.seed} · $${game.player.money.toLocaleString()}`, W / 2, H - 24);
   }
 }

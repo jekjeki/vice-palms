@@ -1,7 +1,8 @@
 // Broad-phase grid. Cars, people and pickups drop their circle into overlapping cells each
 // step; neighbourhood queries visit only the covered cells, which keeps hundreds of actors
-// inside the frame budget. Cell keys fold two small signed integers into one number: the
-// grid never spans more than a few thousand cells per axis, so the fold stays unique.
+// inside the frame budget. Cell keys fold two small signed integers into one number: the world
+// spans a few hundred cells per axis (40 blocks * 420 pitch at 320-unit cells, plus the beach),
+// so |cy| stays far under the 4095 half-range the fold needs and the key stays unique.
 
 const CELL = 320;
 const CELL_INV = 1 / CELL;
@@ -11,6 +12,7 @@ export class Grid {
 
   clear() { this.cells.clear(); }
 
+  /** Distinct while both |cx| and |cy| stay below 4096 — the city never gets near that. */
   static key(cx, cy) { return cx * 8191 + cy; }
 
   add(obj, x, y, radius) {

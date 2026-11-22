@@ -3,7 +3,7 @@
 // smoke to fire to a burning wreck, then the blast. One class serves the player, traffic and
 // the police; the `role` decides whose AI drives it (traffic.js / cops.js).
 
-import { CARS, WARDEN } from '../config.js';
+import { CARS, WARDEN, SKID_SPEED } from '../config.js';
 import { clamp, circlePush } from '../util.js';
 import { rand } from '../rng.js';
 
@@ -50,7 +50,9 @@ export class Car {
       else fwd -= s.accel * 0.55 * dt * this.brake;
     }
     fwd = clamp(fwd, -top * 0.36, top);
-    if (this.gas === 0 && this.brake === 0) fwd *= 1 - 0.34 * dt;
+    // Coast decay plus a little engine braking: releasing the throttle should feel like
+    // lifting off, not like going neutral.
+    if (this.gas === 0 && this.brake === 0) fwd -= Math.sign(fwd) * Math.min(Math.abs(fwd), (0.34 * Math.abs(fwd) + 12) * dt);
 
     const baseGrip = this.slide ? 0.34 : s.grip;
     const grip = baseGrip * (1 - Math.min(0.32, (Math.abs(fwd) / s.top) * 0.32));
@@ -67,9 +69,9 @@ export class Car {
     this.y += this.vy * dt;
     this.fwd = fwd;
     // Handbrake at speed cooks the rear tyres: smoke off the tail and a screech.
-    if (this.slide && Math.abs(fwd) > 140 && game.fx && rand() < 0.55) {
+    if (this.slide && abs > SKID_SPEED && game.fx && rand() < 0.55) {
       game.fx.smoke(this.x - cos * s.len * 0.42, this.y - sin * s.len * 0.42, 1, false);
-      game.audio.screech?.(Math.min(1, Math.abs(fwd) / s.top + 0.4));
+      game.audio.screech?.(Math.min(1, abs / s.top + 0.4));
     }
 
     if (worldCollide) {
@@ -99,6 +101,7 @@ export class Car {
       this.wreck = true;
       this.burn = 2.0;             // two seconds to bail out before the blast
       this.fwd = 0;
+      this.gas = 0; this.brake = 0; this.steer = 0; this.slide = false;
       if (this.role === 'player') game.onPlayerCarBurning(this);
       if (this.role === 'cop') game.cops.onCruiserDown(this);
     }

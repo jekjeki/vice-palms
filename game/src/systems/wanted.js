@@ -5,6 +5,8 @@ import { DECAY_SECS } from '../config.js';
 import { dist2 } from '../util.js';
 
 const HEAT = { carjack: 1, pedHit: 1, pedKill: 1, gunfire: 2, copKill: 3 };
+const CAR_SEES = 780;   // a cruiser spots you this far out
+const FOOT_SEES = 640;  // a foot officer's eyes are a little shorter
 
 export class Wanted {
   constructor(game) {
@@ -31,11 +33,11 @@ export class Wanted {
     const game = this.game;
     let seen = false;
     for (const c of game.cops.cruisers) {
-      if (!c.wreck && dist2(c.x, c.y, player.x, player.y) < 780 * 780) { seen = true; break; }
+      if (!c.wreck && dist2(c.x, c.y, player.x, player.y) < CAR_SEES * CAR_SEES) { seen = true; break; }
     }
     if (!seen) for (const f of game.cops.foot) {
       // A downed officer spots nothing: the street can forget you again.
-      if (!f.wreck && f.mode !== 'down' && dist2(f.x, f.y, player.x, player.y) < 640 * 640) { seen = true; break; }
+      if (!f.wreck && f.mode !== 'down' && dist2(f.x, f.y, player.x, player.y) < FOOT_SEES * FOOT_SEES) { seen = true; break; }
     }
     if (seen) this.unseen = 0;
     else {

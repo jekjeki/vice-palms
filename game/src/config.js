@@ -69,6 +69,8 @@ export const NEON = [
   ['#a86bff', 'VESPER LANE'],
   ['#33e7ff', 'JUNO BEACH FM'],
   ['#b8ff5e', 'KILO WOK'],
+  ['#ff7a3c', 'MIRAMAR GRILL'],
+  ['#7bffd4', 'PALM ROOM'],
 ];
 
 export const CYCLE = 9;         // seconds per traffic-light phase
@@ -84,6 +86,8 @@ export const DECAY_SECS = 14;   // seconds unseen before one wanted star decays
 export const BLOCK_HOLD = 340;  // a roadblock crew holds its post until you get this close
 export const PUNCH_CD = 0.32;   // seconds between two of Rico's punches
 export const PUNCH_DMG = 14;    // damage one clean punch lands
+export const SKID_SPEED = 140;  // forward speed where a handbrake starts cooking the tyres
+export const BLINKER_SECS = 2.2;// how long a turning traffic car shows its intent
 
 // Ten stealable models plus the police cruiser. Arcade stats first, realism never.
 export const CARS = [
@@ -96,7 +100,7 @@ export const CARS = [
   { id: 'steelhead', name: 'Steelhead',  len: 106, wid: 48, top: 256, accel: 170, grip: 0.92, turn: 2.05, hp: 168, tone: '#77845f', trim: '#3d4433' },
   { id: 'tramline',  name: 'Tramline',   len: 120, wid: 52, top: 240, accel: 152, grip: 0.94, turn: 1.8, hp: 178, tone: '#d8d2c4', trim: '#4a90b8' },
   { id: 'lagoon',    name: 'Lagoon',     len: 86, wid: 40, top: 326, accel: 232, grip: 0.86, turn: 2.65, hp: 104, tone: '#4fa3d9', trim: '#d5ecff' },
-  { id: 'howler',    name: 'Howler',     len: 90, wid: 43, top: 400, accel: 290, grip: 0.79, turn: 2.5, hp: 126, tone: '#8a5cd6', trim: '#e2d2ff' },
+  { id: 'howler',    name: 'Howler',     len: 90, wid: 43, top: 400, accel: 290, grip: 0.81, turn: 2.5, hp: 126, tone: '#8a5cd6', trim: '#e2d2ff' },
 ];
 
 export const WARDEN = { id: 'warden', name: 'Warden', len: 92, wid: 42, top: 418, accel: 310, grip: 0.88, turn: 2.8, hp: 142, tone: '#e9ecf4', trim: '#1c2c54' };

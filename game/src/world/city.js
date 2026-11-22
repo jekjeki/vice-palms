@@ -1,7 +1,8 @@
 // City generation: a GRID x GRID coastal street grid where every grid line is a two-way road.
-// Land blocks hold pseudo-3D buildings (roofs, AC units, window grids), pocket parks, surface
-// lots and one landmark plaza; the east column is the neon hotel strip, and beyond it the sand
-// and the sea. Everything derives from the seed, so a given seed rebuilds an identical city.
+// Land blocks hold pseudo-3D buildings (roofs, AC units, window grids, antennas), pocket parks,
+// surface lots and one landmark plaza; the east column is the neon hotel strip, and beyond it
+// the sand and the sea. Everything derives from the seed, so a given seed rebuilds an identical
+// city.
 
 import { GRID, PITCH, ROAD, WALK, SAND, NEON } from '../config.js';
 import { mulberry, remix } from '../rng.js';
@@ -96,6 +97,11 @@ export function generateCity(seed) {
           // Tall roofs sometimes carry a water tank — the classic beach-city skyline notch.
           if (b.floors >= 5 && gen() < 0.5) {
             b.tank = { x: bx + 10 + gen() * (bw - 20), y: by + 10 + gen() * (bh - 20), r: 5 + gen() * 3 };
+          }
+          // Mid-rise and up sometimes carries an antenna mast with a red beacon on top —
+          // a few extra skyline pins the night sky can glitter around.
+          if (b.floors >= 4 && gen() < 0.34) {
+            b.ant = { x: bx + 14 + gen() * (bw - 28), y: by + 14 + gen() * (bh - 28), h: 10 + gen() * 12 };
           }
           block.buildings.push(b);
 

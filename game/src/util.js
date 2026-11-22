@@ -9,12 +9,24 @@ export function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
 /** Linear blend of a toward b by t in [0,1] — the easing behind every smoothed camera. */
 export function lerp(a, b, t) { return a + (b - a) * t; }
 
+/** Inverse of lerp: where t lands between a and b, clamped to [0,1]. */
+export function invLerp(a, b, v) { return a === b ? 0 : clamp((v - a) / (b - a), 0, 1); }
+
+/** Quadratic ease-out, for UI counters and banner fades that should land softly. */
+export function easeOut(t) { const s = 1 - clamp(t, 0, 1); return 1 - s * s; }
+
 /** Shortest signed turn from angle a toward angle b, in (-PI, PI]. */
 export function turnDelta(a, b) {
   let d = (b - a) % TAU;
   if (d > Math.PI) d -= TAU;
   if (d < -Math.PI) d += TAU;
   return d;
+}
+
+/** Rotate angle a toward angle b by at most maxStep radians — dampened turrets and drift. */
+export function turnToward(a, b, maxStep) {
+  const d = turnDelta(a, b);
+  return a + clamp(d, -maxStep, maxStep);
 }
 
 /** Deterministic 2D hash in [0,1) — used for window lights and asphalt variation. */

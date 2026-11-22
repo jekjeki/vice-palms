@@ -43,8 +43,8 @@ export function stageShot(name, game, ui, seed) {
       v.role = 'parked';
     }
     // Proper lanes: two-way traffic rolling the strip, headlights burning.
-    for (let k = 0; k < 4; k++) {
-      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH + 22, y - 900 + k * 480, Math.PI / 2);
+    for (let k = 0; k < 5; k++) {
+      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH + 22, y - 1000 + k * 460, Math.PI / 2);
       v.role = 'traffic';
       v.axis = 'y'; v.dir = 1; v.lane = GRID * PITCH + 22;
       v.fwd = 130;
@@ -56,12 +56,12 @@ export function stageShot(name, game, ui, seed) {
       v.fwd = 130;
     }
     // A patrol cruiser rolls the strip far from the camera, sirens quiet.
-    const cop = game.spawnCar(-1, GRID * PITCH + 22, y - 1400, Math.PI / 2);
+    const cop = game.spawnCar(-1, GRID * PITCH + 22, y - 1460, Math.PI / 2);
     cop.role = 'traffic';
     cop.axis = 'y'; cop.dir = 1; cop.lane = GRID * PITCH + 22; cop.cruise = 150; cop.fwd = 150;
     // A few strollers share the sidewalk with the hero — the strip feels walked-on.
-    for (let n = 0; n < 8; n++) {
-      game.people.push(new Person(GRID * PITCH - 90 + (n % 2) * 40, y + 10 + n * 82, n * 31 + 5));
+    for (let n = 0; n < 10; n++) {
+      game.people.push(new Person(GRID * PITCH - 90 + (n % 2) * 40, y + 10 + n * 74, n * 31 + 5));
     }
     for (let n = 0; n < 40; n++) game.update(1 / 60, SCRIPT);
     ui.freeze = true;
