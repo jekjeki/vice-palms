@@ -30,9 +30,9 @@ export function stageShot(name, game, ui, seed) {
       if (score > best) { best = score; bestJ = j; }
     }
     const y = (bestJ + 0.5) * PITCH;
-    // The camera hangs out over the wet sand: the strip fills the left of the frame, the
-    // tide line cuts diagonally below, and the ocean haze closes the far right.
-    ui.cameraOverride = { x: GRID * PITCH + SAND * 0.55, y: y - 30, zoom: 0.8 };
+    // The camera hangs just off the beach kerb: the lit hotel strip fills the middle of the
+    // frame, headlights run the full height, and the wet sand closes the right edge.
+    ui.cameraOverride = { x: GRID * PITCH - 70, y: y - 30, zoom: 0.8 };
     game.player.x = GRID * PITCH - 96;
     game.player.y = y + 96;
     game.player.heading = Math.PI * 0.75;

@@ -16,11 +16,11 @@ export class Menus {
   }
 
   title(ctx, W, H, ui) {
-    // Dim the drifting vista behind the lettering.
+    // Dim the drifting vista behind the lettering, but keep the neon reading through it.
     const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, 'rgba(6,8,20,0.5)');
-    g.addColorStop(0.55, 'rgba(10,10,30,0.34)');
-    g.addColorStop(1, 'rgba(4,5,14,0.85)');
+    g.addColorStop(0, 'rgba(6,8,20,0.42)');
+    g.addColorStop(0.55, 'rgba(10,10,30,0.26)');
+    g.addColorStop(1, 'rgba(4,5,14,0.8)');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
 

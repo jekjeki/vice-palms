@@ -38,16 +38,17 @@ the title menu can delete a save (press twice to confirm).
   officers chase the sidewalks and a cornered player on foot gets BUSTED. Line-of-sight decay
   lets a clean escape bleed stars (downed officers spot nothing).
 - Night lighting: base pass with full-strength emissives, an ambient multiply, and an additive
-  glow pass — lamp pools, headlight cones (dark when parked), brake-light flares, wet-asphalt
+  glow pass — lamp pools, headlight cones (dark when parked), brake and reverse lamps, wet-asphalt
   reflections, neon spill, sweeping police floodlights, firelight, and an orange blast flash
   with camera shake.
 - Missions: six chained story jobs (goto, steal-and-deliver, timed runs, collection, arson,
   a hot finale escape) with markers, fail/retry and cash payouts.
-- HUD: circular minimap with a north tick and police blips, health/armor bars, money, wanted
-  stars with an out-of-sight cooling cue, weapon readout, speedometer with gear, backed objective
-  plate and mission banners.
+- HUD: circular minimap with a north tick and police blips, health/armor bars, a money counter
+  that pulses on payout, wanted stars with an out-of-sight cooling cue, weapon readout,
+  speedometer with gear, backed objective plate and mission banners.
 - Sound: everything synthesized live with WebAudio — engine, siren, gunfire, explosions, tyre
-  screech, blips and a looping synthwave pad (all of it ducks properly when the game pauses).
+  screech, blips and a looping synthwave pad (all of it ducks properly when the game pauses,
+  and catching up after a pause skips the missed bars instead of stacking them).
 - Deterministic staging: `?shot=start|play|end|chaos&seed=N` builds a seeded scene and freezes
   one frame, which is how the four screenshots in `screenshots/` were taken. The title screen
   shows the world seed it is drifting across.
