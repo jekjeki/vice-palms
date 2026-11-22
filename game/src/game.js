@@ -12,6 +12,11 @@ import { Traffic, laneAt } from './systems/traffic.js';
 import { Cops } from './systems/cops.js';
 import { Wanted } from './systems/wanted.js';
 import { Missions } from './systems/missions.js';
+import { Radio } from './systems/radio.js';
+import { Dialog } from './systems/dialog.js';
+import { Interiors } from './systems/interiors.js';
+import { Cutscenes } from './systems/cutscene.js';
+import { PhotoMode } from './systems/photoMode.js';
 import { Audio } from './audio.js';
 import { writeSave } from './systems/save.js';
 import { dist2, clamp, lerp } from './util.js';
@@ -43,6 +48,11 @@ export class Game {
     this.cops = new Cops(this);
     this.wanted = new Wanted(this);
     this.missions = new Missions(this);
+    this.radio = new Radio(this);          // the FM dial: songs, DJ patter, siren ducking
+    this.dialog = new Dialog(this);        // ambient barks, cop chatter, subtitle strip
+    this.interiors = new Interiors(this);  // enterable club, diner, garage and pawn shop
+    this.cutscenes = new Cutscenes(this);  // mission intro/outro scenes
+    this.photoMode = new PhotoMode(this);  // the P-key free camera and its reel
     this.pickups = [];
     this.shotMode = opts.shotMode ?? false;
     this.shake = 0;                // explosion camera shake, decays every step
@@ -151,8 +161,10 @@ export class Game {
     this.wanted.update(dt, p);
     this.cops.update(dt, this.wanted.stars, p);
     this.missions.update(dt, p);
+    this.dialog.update(dt, p);        // the street keeps talking while it moves
     this.peoplePatrol(dt);
     this.respawnPickups();
+    if (input.tap('KeyR')) this.radio.cycle();   // spin the FM dial from the driver's seat
 
     // Broad-phase build: cars and people register into the grid each step.
     if (!this.grid) this.grid = new Grid();
@@ -167,6 +179,8 @@ export class Game {
     this.carContacts(dt, p);
     this.runOverCheck(p);
     this.grabPickups(p);
+    this.interiors.update(dt, input);   // door prompts, room walls, interior pickups
+    this.radio.update(dt);              // songs, DJ patter, siren ducking
     this.decayShake(dt);
     if (this.cops.cornered(dt, p, this.wanted.stars)) {
       this.state = 'busted';
@@ -312,6 +326,8 @@ export class Game {
   respawn() {
     const p = this.player;
     const busted = this.state === 'busted';
+    // A death inside a venue must not strand the room around the respawn point.
+    this.interiors.forceExit();
     const fee = Math.max(50, Math.floor(p.money * (busted ? 0.2 : 0.15)));
     p.money = Math.max(0, p.money - fee);
     const spot = busted ? STATION : HOSPITAL;
@@ -459,6 +475,7 @@ export class Game {
       x: p.x, y: p.y,
       health: p.health, armor: p.armor, ammo: p.ammo, weapon: p.weapon,
       sound: this.audio.enabled,
+      radio: this.radio.snapshot(),
     });
   }
 }

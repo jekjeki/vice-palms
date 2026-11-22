@@ -148,6 +148,8 @@ export class Missions {
     this.enterStage(0);
     this.banner(def.title, def.brief, 6.5, '#ffd977');
     game.audio.blip(525);
+    game.cutscenes?.playIntro(index);   // the job's opening scene, skippable with Space
+    game.dialog?.mission('begin');      // control confirms the job is live
   }
 
   enterStage(idx) {
@@ -262,6 +264,8 @@ export class Missions {
     this.banner('MISSION PASSED', `${a.def.outro}  +$${a.def.reward}`, 6.5, '#7dffa4');
     game.fx.cash(game.player.x, game.player.y);
     game.audio.blip(880);
+    game.cutscenes?.playOutro(a.index);  // the job's closing scene
+    game.dialog?.mission('pass');
     this.active = null;
     this.jobCar = null;
     game.save();
@@ -273,6 +277,7 @@ export class Missions {
     this.active = null;
     this.jobCar = null;
     game.audio.blip(140);
+    game.dialog?.mission('fail');
   }
 
   banner(text, sub, secs, color) {

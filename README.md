@@ -57,6 +57,28 @@ the horn, Esc to pause. Progress autosaves to localStorage on every mission payo
   one frame, which is how the four screenshots in `screenshots/` were taken. The title screen
   shows the world seed it is drifting across.
 
+## New in this build
+
+- **Radio** (`R` to spin the dial): four stations — Flamingo FM, Pulse 103, Coral Classics and
+  Nightwire — each with its own chord palette, tempo, swing and DJ persona. Songs rotate through
+  a per-station play list, the DJ drops patter lines between tracks, a burst of static covers
+  every switch, a station wheel rides the right edge of the screen while you drive, and a live
+  ducking rule pulls the whole mix down under a closing siren. The dial state rides the save.
+- **Cutscenes**: every job now opens and closes with a letterboxed scene — a staged camera pan
+  across the actual city, cast silhouettes on their marks, timed subtitle beats, and Space to
+  skip. The world keeps stepping behind the letterbox.
+- **Dialog**: the streets talk. Ambient pedestrian barks keyed to the mood (calm, uneasy,
+  gunfire), dispatcher chatter keyed to the pursuit state machine, mission control lines on
+  begin/pass/fail — all on one subtitle strip with speaker names and priority preemption.
+- **Interiors**: four venues are open — Club Riviera, the Coral Diner, Rosa's garage bay and the
+  24-hour pawn shop. Walk to the door marker on foot, press `G`, and the room takes over the
+  screen: animated furniture, patrons, interior pickups on their own respawn clocks, and an exit
+  pad back to the street. Dying inside an interior no longer strands the room around you.
+- **Photo mode** (`P`): the shutter parks the night. Free pan and zoom (wheel or `Q`/`E`), five
+  colour filters on `F`, corner brackets with rule-of-thirds ticks, a fake focal-length readout,
+  and Space captures a watermarked frame into an in-memory reel of twelve. Shots live as data
+  URLs — nothing leaves the page.
+
 ## Plumbing
 
 - `main.ts` copies `game/` and `screenshots/` to the output directory and writes `dossier.json`
