@@ -60,6 +60,47 @@ can delete a save (press twice to confirm).
 
 ## New in this build
 
+- **Palms Airfield** (north-west quarter of the grid): a working GA field laid over six
+  claimed blocks — lit runway 09/27 with thresholds, touch-down zones and hold-short bars,
+  a parallel taxiway with connectors, a three-stand apron with parked club aircraft and a
+  fuel bowser on a real ramp loop, a terminal with lit glass frontage, a control tower with
+  a rotating beacon and spinning radar, three hangars, a fuel depot, the Conch Cargo yard,
+  windsocks that read the wind, a marshaller waving batons on stand 1, a perimeter fence
+  with gates at every public-road crossing, and a full night-light set: edge lights, green
+  and red thresholds, the approach "rabbit" strobe march, PAPI, taxiway teasers and apron
+  floods.
+- **Street races** (`E` at a checkered start line): three authored circuits on the public
+  roads — the Airfield GP around the field fence, the Strip Sprint down the beachfront and
+  the Downtown 500 through the older blocks. Countdown with beeps, three named rival
+  drivers (REYES, KANTO, MOMO…) on a proper start grid, pure-pursuit AI with corner-blend
+  racing lines, rubber-banding, soft separation, live standings plate, cash prizes by
+  finishing place, driver barks on the results board and best-lap records in localStorage.
+- **The Pit Below** (fight club, south side): a door and a ladder of five opponents from
+  Tiny Bruno to Cinder Kalifa. Timed brawl — punch with the beat, dodge the telegraph
+  flare, guard to soak, stamina economy, hit-stop and knockback, crowd of 52 with a roar
+  that swells on big shots, corner-man advice after every fight, purse per win, door fee
+  and the Coral Belt for clearing the card.
+- **The Gilded Conch** (casino, east side): three games with real math — blackjack with a
+  six-deck shoe, dealer stands on 17, double and 3:2 naturals; single-zero roulette with
+  the European wheel order, straight bets at 35:1 and the outside rail; three-reel slots
+  with weighted strips and a paytable. Chip cage buy-in and cash-out, posted table limits,
+  rotating dealer patter, and the chips you leave with ride the save.
+- **Boats**: four drivable hulls (Sunchaser Skiff, Wavecutter, Barracuda, Martini
+  Royale) with keel-style water physics, reverse churn, mooring at the beach marina and
+  the docks slip, a boat shop that berths your purchase at the pad, wake trails, bow/
+  stern nav lights in the glow pass, and a Coast Guard patrol that hunts three-star heat
+  on the water and shoots back.
+- **Taxi shifts** (`E` at a rank, in any car): three ranks, fares waiting at kerbs with a
+  destination arrow, a running meter, tips for smooth fast driving, penalties for scuffs,
+  fare variety (Fare Dash with a soft clock, long hauls, big-tipping talkers), passenger
+  quips and an end-of-shift grade.
+- **The sky**: a real time-of-day pass — dusk-to-dawn gradient loop, 170-star wheel with
+  twinkle, an arcing moon with halo and maria, drifting parallax clouds that catch fire at
+  dusk, occasional shooting stars, a slow satellite, and a two-tier distant city
+  silhouette ring on the northern horizon with lit windows, blinking beacons, harbor
+  running lights and the airfield's glow dome.
+- **New cover shot** (`?shot=race`): the Airfield GP grid at dusk — four cars staged on
+  the start line, the runway lights burning and the approach strobe mid-march.
 - **North Docks** (`?shot=docks`): a whole second district north of the grid — five piers on
   pilings reaching into the bay, three container yards with stacked colored boxes and rolling
   gantry cranes, warehouses with ribbed roll-up doors, a mooring-bollard promenade, a fish

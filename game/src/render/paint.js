@@ -13,6 +13,8 @@ import {
   drawDocksBase, drawDocksActors, drawDocksGlow, drawDocksSky,
   dockSortItems, drawDockItem,
 } from '../world/district.js';
+import { drawAirportBase, drawAirportGlow, drawAirportItem, airportSortItems } from '../world/airport.js';
+import { paintSky, paintFarRing } from './skyline.js';
 
 export class Painter {
   constructor(canvas) {
@@ -59,8 +61,8 @@ export class Painter {
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = LIGHT.sky;
-    ctx.fillRect(0, 0, W, H);
+    // The sky is a real pass now: gradient by hour, stars, moon, drifting clouds.
+    paintSky(ctx, game, W, H);
 
     ctx.save();
     ctx.translate(W / 2, H / 2);
@@ -133,9 +135,16 @@ export class Painter {
     // The docks district paints its own ground, roads and water north of
     // the grid before the city layer takes over at y >= 0.
     if (game.docks) drawDocksBase(ctx, game.docks, view);
+    // The distant city ring rides the horizon behind everything on land.
+    paintFarRing(ctx, game, cam, view);
 
     this.roads(ctx, game, view);
     this.blocks(ctx, game, view);
+    // The airfield paints over the blocks it claimed; the race world markers
+    // and the taxi posts stand on top of the ground, under the actors.
+    if (game.airport) drawAirportBase(ctx, game.airport, view);
+    game.races?.drawWorld(ctx, view);
+    game.taxi?.drawWorld(ctx, view);
     this.actors(ctx, game, cam, view);
     if (game.docks) {
       // Ferry and gulls ride above the district's static layer.
@@ -321,6 +330,17 @@ export class Painter {
     if (game.docks) {
       for (const it of dockSortItems(game.docks, view)) items.push({ z: it.z, kind: 'dock', sub: it.kind, o: it.o });
     }
+    // The airfield's standing props y-sort with everything else: a plane parked
+    // in front of the terminal reads correctly from any side.
+    if (game.airport) {
+      for (const it of airportSortItems(game.airport, view)) items.push({ z: it.z, kind: 'air', sub: it.kind, o: it.o });
+    }
+    // Hulls and their wakes join the sort on the water.
+    for (const b of game.boats?.boats ?? []) {
+      if (b.x > x0 - 260 && b.x < x1 + 260 && b.y > y0 - 260 && b.y < y1 + 260) {
+        items.push({ z: b.y + b.spec.len / 2, kind: 'boat', o: b });
+      }
+    }
     const hMarker = game.heists?.marker();
     if (hMarker && hMarker.x > x0 - 200 && hMarker.x < x1 + 200 && hMarker.y > y0 - 200 && hMarker.y < y1 + 200) {
       items.push({ z: hMarker.y + 1, kind: 'marker', o: hMarker });
@@ -336,6 +356,8 @@ export class Painter {
       else if (it.kind === 'pk') this.pickup(ctx, it.o, game);
       else if (it.kind === 'marker') this.marker(ctx, it.o, game);
       else if (it.kind === 'dock') drawDockItem(ctx, it.sub, it.o, game.docks);
+      else if (it.kind === 'air') drawAirportItem(ctx, it.sub, it.o, game.airport);
+      else if (it.kind === 'boat') game.boats.drawBoat(ctx, it.o);
     }
 
     // Dark smoke and blast debris ride the base layer; the bright particles glow above.
@@ -699,6 +721,10 @@ export class Painter {
 
     // North Docks glow: sodium lamps, floodlights, the lighthouse beam.
     if (game.docks) drawDocksGlow(ctx, game.docks, { x0, x1, y0: Math.min(y0, 0), y1 });
+    // Airfield glow: runway edges, the approach rabbit, apron floods, the beacon.
+    if (game.airport) drawAirportGlow(ctx, game.airport, { x0, x1, y0, y1 });
+    // Hull nav lights and wake shimmer.
+    for (const b of game.boats?.boats ?? []) game.boats.drawGlow(ctx, b);
 
     // Street lamps from the block corners: warm pools plus a wet vertical streak.
     const lamp = this.lampSprite();

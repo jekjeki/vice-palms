@@ -5,6 +5,7 @@
 import { GRID, PITCH, SAND } from '../config.js';
 import { clamp, dist, TAU } from '../util.js';
 import { stampDocksMap, drawDocksBlips } from './districtMap.js';
+import { stampAirportMap } from '../world/airport.js';
 import { DOCKS_NORTH_Y } from '../world/district.js';
 
 const MAP_PX = 760;
@@ -49,11 +50,13 @@ export class Hud {
     this.ky = MAP_PX / (span + this.north);
     const g = this.underlay.getContext('2d');
     if (game.docks) stampDocksMap(g, game, this.kx, this.ky, this.north, MAP_PX);
+    stampAirportMap(g, game.airport, this.kx, this.ky, this.north);
     for (const block of game.city.blocks) {
       const x = block.i * PITCH * this.kx, y = (block.j * PITCH + this.north) * this.ky, s = PITCH * this.kx;
       g.fillStyle = block.kind === 'park' ? '#1d4a2c'
         : block.kind === 'plaza' ? '#3d4358'
         : block.kind === 'lot' ? '#23262e'
+        : block.kind === 'airfield' ? '#3a3d46'
         : '#2b2f3c';
       g.fillRect(x, y, s, s);
     }
@@ -82,6 +85,9 @@ export class Hud {
     this.endState(ctx, game, p, W, H);
     this.toasts(ctx, game, W);
     this.interactPrompt(ctx, game, W, H);
+    // This build's live panels: the race plate and the taxi meter.
+    game.races?.drawHud(ctx, W, H);
+    game.taxi?.drawHud(ctx, W, H);
     if (game.phone?.state.open) this.phonePanel(ctx, game, W, H);
     if (this.lastMoney !== null && p.money > this.lastMoney) this.moneyPulse = 1;
     this.lastMoney = p.money;
@@ -185,6 +191,24 @@ export class Hud {
     // District blips: the ferry, the heist marker, turf skirmishes, hideouts,
     // and the weather's fog-of-war shading.
     drawDocksBlips(ctx, game, toMini, mx, my, r);
+    // This build's blips: race starts, the casino, the pit, the boat shop,
+    // taxi ranks and the airfield.
+    const blips = [];
+    for (const c of game.races?.circuits ?? []) blips.push([c.start.x, c.start.y, '#ffd977']);
+    if (game.casino) blips.push([game.casino.door.x, game.casino.door.y, '#a86bff']);
+    if (game.fightClub) blips.push([game.fightClub.door.x, game.fightClub.door.y, '#ff5a6e']);
+    if (game.boats) blips.push([game.boats.shop.x, game.boats.shop.y, '#33e7ff']);
+    for (const rk of game.taxi?.ranks ?? []) blips.push([rk.x, rk.y, '#f2cf47']);
+    for (const [wx, wy, col] of blips) {
+      const [bx, by] = toMini(wx, wy);
+      if (Math.hypot(bx - mx, by - my) < r - 5) {
+        ctx.fillStyle = col;
+        ctx.beginPath(); ctx.arc(bx, by, 3.4, 0, TAU); ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+      }
+    }
     // Police blips.
     for (const c of game.cops.cruisers) {
       if (c.wreck || c.wasted) continue;

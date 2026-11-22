@@ -62,6 +62,8 @@ export class Traffic {
       const x = vertical ? laneAt('y', center, dir) : along;
       const y = vertical ? along : laneAt('x', center, dir);
       if (dist2(x, y, player.x, player.y) < BIRTH * BIRTH) continue;
+      // Traffic never spawns inside the airfield: the apron is not a road.
+      if (game.city.airport?.inside(x, y)) continue;
       const c = new Car(randInt(10), x, y, vertical ? (dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (dir > 0 ? 0 : Math.PI));
       c.role = 'traffic';
       c.axis = vertical ? 'y' : 'x';

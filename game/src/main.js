@@ -64,6 +64,11 @@ function newGame(fromSave) {
     if ((fromSave.weapon ?? 'fist') === 'pistol') p.weapon = 'pistol';
     if (fromSave.sound != null) game.audio.enabled = fromSave.sound;
     game.radio.restore(fromSave.radio);   // the exact dial the player left on
+    // This build's ledgers: casino chips, the fight ladder, taxi stats, boats.
+    if (fromSave.casino) game.casino.restore(fromSave.casino);
+    if (fromSave.fight) game.fightClub.restore(fromSave.fight);
+    if (fromSave.taxi) game.taxi.restore(fromSave.taxi);
+    if (fromSave.boats) game.boats.restore(fromSave.boats);
   }
   hud.attach(game);
   ui.cameraOverride = null;
@@ -253,7 +258,11 @@ function frame(now) {
     ?? (ui.uiState === 'title' ? titleCamera(now / 1000) : null);
   if (game) {
     const ctx = canvas.getContext('2d');
+    // Screen-space venues take the whole frame: the fight club's basement ring
+    // and the casino floor render instead of the city; the HUD still rides on top.
     if (game.interiors.inside) game.interiors.render(ctx, canvas.width, canvas.height);
+    else if (game.fightClub?.inside) game.fightClub.render(ctx, canvas.width, canvas.height);
+    else if (game.casino?.inside) game.casino.render(ctx, canvas.width, canvas.height);
     else painter.render(game, { cameraOverride: cam });
     // Photo mode frames the world, never the HUD: capture right after the world pass.
     if (game.photoMode.active) game.photoMode.maybeCapture(canvas);

@@ -190,6 +190,19 @@ export function collideCity(city, x, y, r) {
       if (push) { x += push.x; y += push.y; bumped = true; }
     }
   }
+  // The Palms Airfield keeps its fence line and buildings solid the same way.
+  // The chain-link holds people (r <= 16) but a vehicle clips straight through
+  // the mesh — fences are visual to cars, so races and traffic never wedge on one.
+  const air = city.airport;
+  if (air) {
+    const nearAir = air.solidsNear(x, y, scratch3);
+    for (let i = 0; i < nearAir.length; i++) {
+      const s = nearAir[i];
+      if (s.tag === 'fence' && r > 16) continue;
+      const push = circlePush(x, y, r, s.x, s.y, s.w, s.h);
+      if (push) { x += push.x; y += push.y; bumped = true; }
+    }
+  }
   const maxX = GRID * PITCH + SAND - r;
   if (x < r) { x = r; bumped = true; }
   if (y < north) { y = north; bumped = true; }
@@ -199,4 +212,5 @@ export function collideCity(city, x, y, r) {
 }
 
 const scratch2 = [];
+const scratch3 = [];
 

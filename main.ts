@@ -1,25 +1,43 @@
-// ============================================================
-// main.ts — make.fun build entrypoint for Vice Palms (build #9)
-// Node 22, TypeScript, stdlib only.
-//
-// Behavior:
-//   * out dir = process.env.MAKEFUN_OUTPUT_DIR or /output
-//   * recursively copy game/ -> <out>/game/, screenshots/ -> <out>/screenshots/
-//   * import buildDossier from ./vendor/makefun-game.ts
-//   * write <out>/dossier.json with the bounty caps
-//   * exit 0
-// ============================================================
+// Build entry: stage an entry directory the make.fun scorer can read, then emit its
+// dossier. Output goes to MAKEFUN_OUTPUT_DIR (or /output by convention), game/ and
+// screenshots/ are copied in verbatim, and vendor/makefun-game.ts's buildDossier
+// writes dossier.json under this bounty's caps. Node 22, stdlib only.
 
+import { cpSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { buildDossier } from './vendor/makefun-game.ts';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const OUT_DIR = process.env.MAKEFUN_OUTPUT_DIR || '/output';
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const outArg = process.env.MAKEFUN_OUTPUT_DIR;
 
-// The bounty's caps, passed whole to buildDossier.
-const CAPS = {
+function pickOutDir() {
+  if (outArg && outArg.trim()) return resolve(outArg.trim());
+  // The bounty's default: /output. On hosts where that cannot exist, fall back
+  // to a local ./output so the build still produces a dossier.
+  try {
+    mkdirSync('/output', { recursive: true });
+    return '/output';
+  } catch {
+    return resolve('output');
+  }
+}
+
+const out = pickOutDir();
+mkdirSync(out, { recursive: true });
+
+// Copy the entry's two halves into place. Both must exist: the game is a
+// directory of static files with index.html at its root, and screenshots/ holds
+// the renders whose first file the scorer treats as the cover.
+for (const dir of ['game', 'screenshots']) {
+  const src = resolve(dir);
+  statSync(src); // throws with a clear errno if the entry is incomplete
+  const dst = join(out, dir);
+  rmSync(dst, { recursive: true, force: true });
+  cpSync(src, dst, { recursive: true });
+}
+
+// Caps for bounty gta6-01: text 160 KiB, up to 4 renders of 256 KiB each,
+// 993 game files totalling under 48 MiB, no path longer than 1000 bytes.
+const caps = {
   text_max_bytes: 163840,
   screenshots: { max: 4, max_bytes: 262144 },
   game_max_files: 993,
@@ -27,81 +45,10 @@ const CAPS = {
   game_path_max_bytes: 1000,
 };
 
-function ensureDir(p: string): void {
-  fs.mkdirSync(p, { recursive: true });
-}
+const dossier = buildDossier(out, caps);
+const dossierPath = join(out, 'dossier.json');
+writeFileSync(dossierPath, dossier);
 
-function copyDir(src: string, dest: string): { files: number; bytes: number } {
-  let files = 0;
-  let bytes = 0;
-  ensureDir(dest);
-  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
-    const s = path.join(src, e.name);
-    const d = path.join(dest, e.name);
-    if (e.isDirectory()) {
-      const sub = copyDir(s, d);
-      files += sub.files;
-      bytes += sub.bytes;
-    } else if (e.isFile()) {
-      const content = fs.readFileSync(s);
-      fs.writeFileSync(d, content);
-      files++;
-      bytes += content.length;
-    }
-  }
-  return { files, bytes };
-}
-
-function main(): number {
-  try {
-    ensureDir(OUT_DIR);
-
-    // 1. Copy game/ into the entry directory.
-    const gameSrc = path.join(ROOT, 'game');
-    const gameOut = path.join(OUT_DIR, 'game');
-    let gameFiles = 0;
-    let gameBytes = 0;
-    if (fs.existsSync(gameSrc)) {
-      const stats = copyDir(gameSrc, gameOut);
-      gameFiles = stats.files;
-      gameBytes = stats.bytes;
-    } else {
-      console.error('main.ts: no game/ directory next to main.ts');
-      return 1;
-    }
-
-    // 2. Copy screenshots/ into the entry directory.
-    const shotsSrc = path.join(ROOT, 'screenshots');
-    const shotsOut = path.join(OUT_DIR, 'screenshots');
-    if (fs.existsSync(shotsSrc)) {
-      copyDir(shotsSrc, shotsOut);
-    } else {
-      console.error('main.ts: no screenshots/ directory next to main.ts');
-      return 1;
-    }
-
-    // 3. Build the dossier from the entry directory (the vendor enforces
-    //    every cap itself and throws DossierError on a violation).
-    const dossierBytes = buildDossier(OUT_DIR, CAPS);
-
-    // 4. Write dossier.json — the vendor has already enforced every cap
-    //    (the text cut fits text_max_bytes; images ride as base64 on top).
-    const dossierPath = path.join(OUT_DIR, 'dossier.json');
-    fs.writeFileSync(dossierPath, dossierBytes);
-
-    // 5. Summary.
-    const shots = fs
-      .readdirSync(shotsOut)
-      .filter((f) => /\.(jpg|jpeg|png)$/i.test(f));
-    console.log(
-      `Vice Palms dossier: game=${gameFiles} files / ${gameBytes} bytes, ` +
-      `shots=${shots.length}, dossier=${dossierBytes.byteLength} bytes -> ${dossierPath}`
-    );
-    return 0;
-  } catch (err) {
-    console.error('main.ts failed:', err);
-    return 1;
-  }
-}
-
-process.exitCode = main();
+console.log(`[main.ts] output dir: ${out}`);
+console.log(`[main.ts] dossier.json: ${dossierPath} (${dossier.length} bytes)`);
+process.exit(0);

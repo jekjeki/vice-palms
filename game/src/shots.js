@@ -12,6 +12,11 @@ const SCRIPT = { axis: () => ({ x: 0, y: -1 }), held: () => false, tap: () => fa
 
 export function stageShot(name, game, ui, seed) {
   seedRun(seed);
+  if (name === 'race') {
+    raceScene(game, ui);
+    freeRun();
+    return;
+  }
   if (name === 'chaos') {
     chaosScene(game, ui);
     freeRun();
@@ -170,8 +175,7 @@ function docksScene(game, ui) {
   ui.freeze = true;
 }
 
-/** chaos: a torched van burning in an intersection, roadblock up the street, five stars. */
-function chaosScene(game, ui) {
+/** chaos: a torched van burning in an intersection, roadblock up the street, five stars. */function chaosScene(game, ui) {
   ui.uiState = 'play';
   game.missions.cursor = 4;
   const giver = GIVERS[4];
@@ -182,8 +186,11 @@ function chaosScene(game, ui) {
   const vans = game.cars.filter((c) => c.tag === 'van');
   const cx = 14 * PITCH, cy = 18 * PITCH;
   if (vans[0]) { vans[0].x = cx - 40; vans[0].y = cy - 30; vans[0].ang = 0.4; vans[0].hp = 0; vans[0].wreck = true; vans[0].burn = 1.4; }
-  if (vans[1]) { vans[1].x = cx + 30; vans[1].y = cy + 90; vans[1].ang = Math.PI / 2; vans[1].hp = vans[1].spec.hp * 0.2; }
-  if (game.missions.active) game.missions.active.torched = 2;
+  if (vans[1]) { vans[1].x = cx + 30; vans[1].y = cy + 90; vans[1].ang = Math.PI / 2; vans[1].hp = vans[1].spec.hp * 0.55; }
+  // The third van parks out of blast range so the staged frame never rolls the
+  // mission's own PASSED banner over the shot.
+  if (vans[2]) { vans[2].x = cx + 880; vans[2].y = cy + 420; vans[2].hp = vans[2].spec.hp; }
+  if (game.missions.active) game.missions.active.torched = 1;
   game.player.x = cx + 180;
   game.player.y = cy + 60;
   game.player.heading = Math.PI;
@@ -200,7 +207,7 @@ function chaosScene(game, ui) {
   game.wanted.stars = 5;
   game.player.ammo = 18;
   game.player.weapon = 'pistol';
-  for (let n = 0; n < 50; n++) game.update(1 / 60, SCRIPT);
+  for (let n = 0; n < 210; n++) game.update(1 / 60, SCRIPT);
   // The wreck throws fire even if the mission staging ever came up short on vans.
   if (vans[0]) {
     for (let n = 0; n < 5; n++) game.fx.fire(vans[0].x + (rand() - 0.5) * 30, vans[0].y + (rand() - 0.5) * 30, 3);
@@ -210,6 +217,41 @@ function chaosScene(game, ui) {
   // frame keeps at full strength, since no further update runs to decay them.
   game.fx.muzzle(game.player.x + Math.cos(game.player.heading) * 16, game.player.y + Math.sin(game.player.heading) * 16, game.player.heading);
   game.fx.sparks(game.player.x + Math.cos(game.player.heading) * 60, game.player.y + Math.sin(game.player.heading) * 60, 6);
-  game.flash = 0.4;
+  game.flash = 0.22;
+  // Frame the burning van with the roadblock up the street, flash settled.
+  ui.cameraOverride = { x: cx - 60, y: cy + 40, zoom: 0.8 };
+  for (let n = 0; n < 8; n++) game.update(1 / 60, SCRIPT);
+  ui.freeze = true;
+}
+
+/** race: the cover shot — the Airfield GP grid at dusk, four cars on the start
+ *  line with the runway lights burning and the approach rabbit mid-march. */
+function raceScene(game, ui) {
+  ui.uiState = 'play';
+  // Dusk: the sky loop starts at 19:00 and takes 26 real seconds per hour, so a
+  // small game.time lands the frame in the last of the sunset.
+  game.time = (19.5 - 19) * 26;
+  game.wanted.stars = 0;
+  // Rico brings the Vanta to the Airfield GP start line at the field's corner.
+  const circuit = game.races.circuits[0];
+  const car = game.spawnCar(1, circuit.start.x, circuit.start.y, circuit.start.ang);
+  car.role = 'player';
+  game.player.x = car.x;
+  game.player.y = car.y;
+  game.player.car = car;
+  game.player.money = 14320;
+  // A couple of spectator cars nose-in along the fence road.
+  for (let k = 0; k < 3; k++) {
+    const v = game.spawnCar(Math.floor(rand() * 10), circuit.start.x - 160 - k * 120, circuit.start.y + (k % 2 ? 62 : -62), 0);
+    v.role = 'parked';
+  }
+  // Run the real race start: grid slots, rivals, countdown, banner.
+  game.races.begin(circuit, game.player);
+  // Roll the countdown most of the way in and freeze just off the lights.
+  for (let n = 0; n < 105; n++) game.update(1 / 60, SCRIPT);
+  // Frame: the grid left of centre, the lit runway and apron planes south, the
+  // fuel depot and cargo yard north, the tower's beacon east.
+  ui.cameraOverride = { x: 1500, y: 1330, zoom: 0.62 };
+  for (let n = 0; n < 10; n++) game.update(1 / 60, SCRIPT);
   ui.freeze = true;
 }

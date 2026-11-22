@@ -29,6 +29,12 @@ import { createProperty } from './systems/property.js';
 import { createPhone } from './systems/phone.js';
 import { createFerry } from './systems/ferry.js';
 import { createHeists } from './systems/heists.js';
+import { buildAirport } from './world/airport.js';
+import { createRaces } from './systems/races.js';
+import { createFightClub } from './systems/fightClub.js';
+import { createCasino } from './systems/casino.js';
+import { createBoats } from './systems/boats.js';
+import { createTaxi } from './systems/taxi.js';
 
 export const HOSPITAL = { x: 15 * PITCH, y: 22 * PITCH };
 export const STATION = { x: 8 * PITCH, y: 11 * PITCH };
@@ -78,6 +84,15 @@ export class Game {
     this.phone = createPhone(this);
     this.heists = createHeists(this, this.docks);
     this.ferry = createFerry(this, this.docks.ferryRoute);
+    // This build's additions: the airfield, the racing circuit, the fight club,
+    // the casino floor, the boat fleet and the taxi rank job.
+    this.airport = buildAirport(this);
+    this.city.airport = this.airport;   // collision reads the field off the city
+    this.races = createRaces(this);
+    this.fightClub = createFightClub(this);
+    this.casino = createCasino(this);
+    this.boats = createBoats(this);
+    this.taxi = createTaxi(this);
     this.toastQueue = [];          // screen toasts queued for the HUD
     this.ferryPrompt = false;      // live boarding prompt
     this.heistInteract = false;    // E queued for the heist this step
@@ -232,6 +247,12 @@ export class Game {
     this.phone.update(dt);
     this.heists.update(dt, p);
     this.ferry.update(dt, this.time, p);
+    this.airport.update(dt, this.time);
+    this.races.update(dt, p);
+    this.fightClub.update(dt, effInput);
+    this.casino.update(dt, effInput);
+    this.boats.update(dt, p);
+    this.taxi.update(dt, p);
 
     // Broad-phase build: cars and people register into the grid each step.
     if (!this.grid) this.grid = new Grid();
@@ -267,6 +288,11 @@ export class Game {
     const p = this.player;
     if (this.heists.state.active) { this.heistInteract = true; return; }
     if (this.ferryPrompt) { this.ferry.tryInteract(p); return; }
+    if (this.races.tryInteract(p)) return;
+    if (this.fightClub.tryInteract(p)) return;
+    if (this.casino.tryInteract(p)) return;
+    if (this.boats.tryInteract(p)) return;
+    if (this.taxi.tryInteract(p)) return;
     this.gangs.tryInteract(p);
   }
 
@@ -338,6 +364,16 @@ export class Game {
           c.damage(b.dmg * 0.7, this);
           this.fx.sparks(b.x, b.y, 3);
           if (c.role === 'cop' && c.wreck) this.wanted.add('copKill');
+          return;
+        }
+      }
+      // Hulls take rounds too: the coast guard's patrol boat is fair game.
+      for (const hull of this.boats?.boats ?? []) {
+        if (hull.wasted || hull === this.player.car) continue;
+        if (dist2(hull.x, hull.y, b.x, b.y) < hull.radius * hull.radius) {
+          b.live = false;
+          hull.damage(b.dmg * 0.8, this);
+          this.fx.sparks(b.x, b.y, 3);
           return;
         }
       }
@@ -415,6 +451,9 @@ export class Game {
     const busted = this.state === 'busted';
     // A death inside a venue must not strand the room around the respawn point.
     this.interiors.forceExit();
+    this.fightClub?.exit();
+    this.casino?.exit();
+    this.taxi?.cancel('Wasted on the clock. The rank reassigns the cab.');
     const fee = Math.max(50, Math.floor(p.money * (busted ? 0.2 : 0.15)));
     p.money = Math.max(0, p.money - fee);
     const spot = busted ? STATION : HOSPITAL;
@@ -570,6 +609,11 @@ export class Game {
       gangs: this.gangs.serialize(),
       heists: this.heists.serialize(),
       weather: this.weather.serialize(),
+      // This build's systems keep their own ledgers.
+      casino: this.casino?.serialize(),
+      fight: this.fightClub?.serialize(),
+      taxi: this.taxi?.serialize(),
+      boats: this.boats?.serialize(),
     });
   }
 }
