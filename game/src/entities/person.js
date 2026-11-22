@@ -34,6 +34,9 @@ export class Person {
     this.wreck = false;
     this.isCop = false;
     this.graceT = 0;               // seconds of run-over immunity right after spawning
+    // One stroller in eleven stops dead to gawk at the strip — sidewalks read as lived-in.
+    this.mode = seed % 11 === 2 ? 'gawk' : 'stroll';
+    this.gawkT = 3 + (seed % 55) / 10;
     this.targetBlock();
   }
 
@@ -78,6 +81,13 @@ export class Person {
   update(dt, game) {
     if (this.graceT > 0) this.graceT -= dt;
     if (this.mode === 'down') { this.downT -= dt; return; }
+    if (this.mode === 'gawk') {
+      // Frozen mid-photo; gunfire or a horn bolts them like anyone else.
+      this.gawkT -= dt;
+      this.phase += dt * 1.6;
+      if (this.gawkT <= 0) { this.mode = 'stroll'; }
+      return;
+    }
     if (this.mode === 'bolt') {
       this.boltT -= dt;
       const d = Math.hypot(this.x - this.boltX, this.y - this.boltY) || 1;

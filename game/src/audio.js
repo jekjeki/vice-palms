@@ -69,6 +69,13 @@ export class Audio {
     if (this.master) this.master.gain.value = on ? 0.5 : 0;
   }
 
+  /** Called when the game pauses: the engine, the siren and the hats must not drone on. */
+  pause() {
+    if (!this.live) return;
+    this.engine.g.gain.value = 0;
+    this.siren.g.gain.value = 0;
+  }
+
   /** Per-frame: engine pitch from the player's car, siren wail by cruiser proximity. */
   update(dt, game) {
     if (!this.live || !this.enabled) return;
@@ -110,6 +117,13 @@ export class Audio {
       [130.8, 261.6, 329.6, 392.0],  // C
       [98.0, 196.0, 246.9, 293.7],   // G
     ];
+    // After a pause the loop's next downbeat sits in the past; scheduling those bars would
+    // fire every missed chord at once on resume, so skip them silently and stay in time.
+    if (this.barAt < c.currentTime) {
+      const missed = Math.ceil((c.currentTime - this.barAt) / BAR);
+      this.barAt += missed * BAR;
+      this.barNo += missed;
+    }
     while (this.barAt < c.currentTime + 0.6) {
       const chord = CHORDS[this.barNo % CHORDS.length];
       const t0 = this.barAt;
@@ -168,6 +182,15 @@ export class Audio {
   shot(prox = 1) { this.burst(1500, 1.2, 0.13, 0.34 * prox); this.burst(230, 0.7, 0.19, 0.27 * prox, 'lowpass'); }
   punch() { this.burst(310, 0.8, 0.09, 0.3, 'lowpass'); }
   crash(v) { this.burst(520, 0.6, 0.24, 0.24 * v + 0.05, 'lowpass'); }
+
+  /** Tyre screech while the handbrake bites; rate-limited so a long slide chirps, not roars. */
+  screech(v = 1) {
+    if (!this.live || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    if (now < (this.screechAt ?? 0)) return;
+    this.screechAt = now + 0.21;
+    this.burst(2500, 2.6, 0.2, 0.13 * v);
+  }
 
   tone(freq, dur = 0.12, vol = 0.12) {
     if (!this.live || !this.enabled) return;

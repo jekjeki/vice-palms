@@ -31,6 +31,7 @@ const ui = {
   hasSave: hasSave(),
   cameraOverride: null,
   freeze: false,
+  seed,                       // shown on the title screen: the world the vista drifts across
 };
 const menus = new Menus(ui);
 
@@ -38,13 +39,15 @@ let game = null;
 let gameSeed = seed;
 
 function newGame(fromSave) {
+  // Restore the saved world seed BEFORE anything builds on it, so CONTINUE lands back in
+  // the city the player left rather than a fresh re-roll of the current URL seed.
+  if (fromSave && fromSave.seed) gameSeed = fromSave.seed;
   const opts = { seed: gameSeed };
   if (fromSave) {
     opts.money = fromSave.money;
     opts.missionIndex = fromSave.missionIndex;
     opts.playerX = fromSave.x;
     opts.playerY = fromSave.y;
-    if (fromSave.seed) gameSeed = fromSave.seed;
   }
   game = new Game(gameSeed, opts);
   if (fromSave) {
@@ -161,6 +164,7 @@ function frame(now) {
       if (input.tap('Enter') || input.tap('Space')) { activateTitle(ui.menuIndex); menuCooldown = 0.3; }
     }
   } else if (ui.uiState === 'pause') {
+    game?.audio.pause();   // the engine and the sirens must stop while the menu is up
     const items = ui.pauseItems;
     if (input.tap('Escape')) ui.uiState = 'play';
     else if (menuCooldown <= 0) {

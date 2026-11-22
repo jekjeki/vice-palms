@@ -30,14 +30,14 @@ export const GIVERS = [
 export const JOBS = [
   {
     title: 'Back in Town',
-    brief: 'Rosa: “Six years, Rico. Six years, and not one postcard. Walk to my garage before the night gets ideas about you.”',
-    outro: 'Rosa: “Still walking like you own the sidewalk. Good. I have work.”',
+    brief: 'Rosa: “Six years away, Rico. Six years, and not one postcard. Walk to my garage before this night gets any ideas about you.”',
+    outro: 'Rosa: “Still walking like you own the sidewalk. Good — because I have work.”',
     reward: 300,
     stages: [{ type: 'goto', x: GARAGE.x, y: GARAGE.y, r: 46, text: 'Reach Rosa’s garage' }],
   },
   {
     title: 'Repo Run',
-    brief: 'Rosa: “A client stopped paying on a Vanta GT. It still sits at the Sunset lot, laughing. Bring it here — and bring it back in one shape.”',
+    brief: 'Rosa: “A client stopped paying on a Vanta GT. It still sits at the Sunset lot, laughing at the paperwork. Bring it here — in one shape, ideally the shape it left in.”',
     outro: 'Rosa: “Knew it would still be there. Nobody in this city trusts anybody. I count on that.”',
     reward: 500,
     stages: [
@@ -47,7 +47,7 @@ export const JOBS = [
   },
   {
     title: 'The Night Run',
-    brief: 'Rosa: “A case waits in my garage. The buyer waits at the plaza. Ninety seconds, Rico. And don’t open it.”',
+    brief: 'Rosa: “A case waits in my garage. A buyer waits at the plaza. Ninety seconds, Rico — and whatever you hear ticking, do not open it.”',
     outro: 'Buyer: “Clean work. Rosa sends her best people and her worst apologies.”',
     reward: 700,
     stages: [
@@ -57,17 +57,17 @@ export const JOBS = [
   },
   {
     title: 'Paper Trail',
-    brief: 'Serge: “My ledger is in three cases my ex-partners were too lazy to steal. Collect them before somebody honest does.”',
-    outro: 'Serge: “Now the numbers only embarrass me. Much better.”',
+    brief: 'Serge: “My ledger is split across three cases, held by ex-partners who were too lazy to even steal it. Collect them before somebody honest does — that would ruin everything.”',
+    outro: 'Serge: “Now the numbers only embarrass me instead of ruining me. Much better.”',
     reward: 900,
     stages: [
-      { type: 'collect', text: 'Collect the ledger cases', points: [street(8, 9), street(30, 10), street(22, 33)] },
+      { type: 'collect', text: 'Collect the three ledger cases', points: [street(8, 9), street(30, 10), street(22, 33)] },
     ],
   },
   {
     title: 'Torch Song',
-    brief: 'Serge: “Three Tramline vans in the Coral Yard carry what owes me. Turn them into what the fire marshal writes up.”',
-    outro: 'Serge: “Beautiful. Terrible, but beautiful. Here — and don’t spend it on smoke.”',
+    brief: 'Serge: “Three Tramline vans in the Coral Yard carry what owes me. Turn them into what the fire marshal writes up. The insurance man and I thank you in advance.”',
+    outro: 'Serge: “Beautiful. Terrible, but beautiful. Here — and don’t spend it all on smoke.”',
     reward: 1400,
     stages: [
       { type: 'destroy', x: 33 * PITCH, y: 29 * PITCH, r: 90, text: 'Destroy the three Tramline vans', vehicle: 7, count: 3 },
@@ -75,7 +75,7 @@ export const JOBS = [
   },
   {
     title: 'The Last Ride',
-    brief: 'Marisol: “There’s a warrant with your name in fresh ink, and every cruiser in the city is out. The boat at the marina gate leaves at dawn — don’t be late for dawn.”',
+    brief: 'Marisol: “There’s a warrant with your name in fresh ink, and every cruiser in the city is out looking for it. A boat waits at the marina gate. Dawn doesn’t wait at all.”',
     outro: 'Marisol: “Welcome to the water, Rico. Vice Palms never lets you go — that’s the trouble with loving it.”',
     reward: 2500,
     stages: [

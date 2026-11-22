@@ -11,6 +11,8 @@ const MAP_SPAN = 1500;   // world units shown across the minimap circle
 export class Hud {
   constructor() {
     this.underlay = this.bakeMap();
+    this.lastMoney = null;      // drives the payout pulse on the money counter
+    this.moneyPulse = 0;
   }
 
   /** Pre-render the static city map once: land, parks, lots, plaza, beach, roads. */
@@ -29,8 +31,9 @@ export class Hud {
     return c;
   }
 
-  /** Stamp block kinds and roads onto the baked map for the freshly generated city. */
+  /** Stamp block kinds and roads onto a fresh baked map for the newly generated city. */
   attach(game) {
+    this.underlay = this.bakeMap(); // a second city must never double-stamp the first map
     const span = GRID * PITCH + SAND;
     const k = MAP_PX / span;
     const g = this.underlay.getContext('2d');
@@ -50,6 +53,7 @@ export class Hud {
       g.moveTo(0, i * PITCH * k); g.lineTo(GRID * PITCH * k, i * PITCH * k);
     }
     g.stroke();
+    this.lastMoney = null;
   }
 
   draw(ctx, game, W, H) {
@@ -63,6 +67,9 @@ export class Hud {
     this.objective(ctx, game, W, H);
     this.banner(ctx, game, W, H);
     this.endState(ctx, game, p, W, H);
+    if (this.lastMoney !== null && p.money > this.lastMoney) this.moneyPulse = 1;
+    this.lastMoney = p.money;
+    this.moneyPulse = Math.max(0, this.moneyPulse - 0.016 * 2.2);
   }
 
   minimap(ctx, game, p, H) {
@@ -135,8 +142,6 @@ export class Hud {
     if (p.armor > 0) this.bar(ctx, mx - r, my - r - 46, r * 2, 13, p.armor / 100, '#5db3ff', '#16303f');
   }
 
-  vitals(ctx, game, p) { /* folded into minimap(): the bars ride above the ring */ }
-
   bar(ctx, x, y, w, h, f, color, back) {
     ctx.fillStyle = back;
     this.rounded(ctx, x, y, w, h, 4);
@@ -165,7 +170,11 @@ export class Hud {
     ctx.font = 'bold 27px Consolas, "Courier New", monospace';
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
     ctx.fillText(`$${p.money.toLocaleString()}`, W - 27 + 2, 45 + 2);
-    ctx.fillStyle = '#9dffb0';
+    // A payout flashes the counter white-hot, then settles back to mint green.
+    const hot = this.moneyPulse > 0 ? this.moneyPulse : 0;
+    ctx.fillStyle = hot > 0
+      ? `rgba(255,255,${180 + 60 * (1 - hot) | 0},1)`
+      : '#9dffb0';
     ctx.fillText(`$${p.money.toLocaleString()}`, W - 27, 45);
   }
 
@@ -174,6 +183,14 @@ export class Hud {
     for (let s = 0; s < 5; s++) {
       const x = W - 43 - s * 31, y = 76;
       this.star(ctx, x, y, 11, s < lit, s < lit && Math.floor(game.time * 4) % 2 === 0);
+    }
+    // The meter cooling: when no officer has you in sight for a few seconds, say so —
+    // it reads as "keep driving, this is working".
+    if (lit > 0 && game.wanted.unseen > 2.5) {
+      ctx.textAlign = 'right';
+      ctx.font = '12px Consolas, "Courier New", monospace';
+      ctx.fillStyle = 'rgba(160,220,255,0.75)';
+      ctx.fillText('OUT OF SIGHT — HEAT COOLING', W - 27, 100);
     }
   }
 
@@ -214,11 +231,16 @@ export class Hud {
   objective(ctx, game, W, H) {
     const text = game.missions.objectiveText();
     ctx.font = 'bold 17px Consolas, "Courier New", monospace';
-    // Backing plate keeps the objective readable over neon spill and smoke.
+    // Backing plate keeps the objective readable over neon spill and smoke; the thin gold
+    // rim ties it to the marker colour without shouting.
     const w = ctx.measureText(text).width;
     ctx.fillStyle = 'rgba(5,7,15,0.62)';
     this.rounded(ctx, W / 2 - w / 2 - 14, H - 52, w + 28, 30, 8);
     ctx.fill();
+    ctx.strokeStyle = 'rgba(255,217,119,0.35)';
+    ctx.lineWidth = 1.5;
+    this.rounded(ctx, W / 2 - w / 2 - 14, H - 52, w + 28, 30, 8);
+    ctx.stroke();
     ctx.textAlign = 'center';
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
     ctx.fillText(text, W / 2 + 1, H - 34 + 1);

@@ -88,6 +88,8 @@ export class Particles {
 
   muzzle(x, y, ang) {
     this.emit(x, y, Math.cos(ang) * 90, Math.sin(ang) * 90, 0.08, 7, '#ffe9a3', 'muzzle');
+    // A hot core that reads even against neon spill.
+    this.flash(x, y, 13, 0.07);
   }
 
   flash(x, y, size, life = 0.35) {

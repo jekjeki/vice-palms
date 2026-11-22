@@ -93,6 +93,10 @@ export function generateCity(seed) {
             b.acs.push({ x: bx + 12 + gen() * (bw - 24), y: by + 12 + gen() * (bh - 24), s: 9 + gen() * 9 });
           }
           if (gen() < 0.45) b.stacks.push({ x: bx + bw * (0.3 + gen() * 0.4), y: by + bh * (0.3 + gen() * 0.4), r: 4 + gen() * 3 });
+          // Tall roofs sometimes carry a water tank — the classic beach-city skyline notch.
+          if (b.floors >= 5 && gen() < 0.5) {
+            b.tank = { x: bx + 10 + gen() * (bw - 20), y: by + 10 + gen() * (bh - 20), r: 5 + gen() * 3 };
+          }
           block.buildings.push(b);
 
           // Neon: blade signs hang off the street wall, marquees stretch along the beach

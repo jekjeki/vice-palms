@@ -1,7 +1,7 @@
 // Full-screen UI: the neon title with its palm silhouettes and animated shimmer, the pause
 // menu, and the wording under each. Drawn over the live game render.
 
-import { TAU } from '../util.js';
+import { TAU, clamp } from '../util.js';
 
 export class Menus {
   constructor(uiRef) {
@@ -75,6 +75,19 @@ export class Menus {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(W / 2 - total / 2 + sweep * total * 1.6, cy - size, Math.min(W * 0.05, total * 0.1), size * 1.4);
     ctx.restore();
+    // Thin neon rule under the wordmark, its glow breathing with the sweep.
+    const ruleY = cy + 26;
+    ctx.strokeStyle = 'rgba(255,63,164,0.55)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(W / 2 - total / 2, ruleY);
+    ctx.lineTo(W / 2 - total / 2 + total * clamp(sweep + 0.2, 0.06, 1), ruleY);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(51,231,255,0.4)';
+    ctx.beginPath();
+    ctx.moveTo(W / 2 + total / 2 - total * clamp(1.1 - sweep, 0.06, 1), ruleY);
+    ctx.lineTo(W / 2 + total / 2, ruleY);
+    ctx.stroke();
     ctx.textAlign = 'center';
     ctx.font = 'bold 19px Consolas, "Courier New", monospace';
     ctx.fillStyle = '#ffd977';
@@ -105,6 +118,10 @@ export class Menus {
     ctx.fillText('E or CLICK shoot · H horn · ESC pause', W / 2, H - 28);
     ctx.fillStyle = 'rgba(160,166,190,0.4)';
     ctx.fillText('a make.fun gta6-01 entry · every line of code, art and sound is original', W / 2, H - 8);
+    // The world seed, bottom-left: the vista and every ?shot=&seed=N scene share it.
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(120,126,150,0.5)';
+    ctx.fillText(`WORLD SEED ${ui.seed}`, 16, H - 10);
   }
 
   pill(ctx, x, y, w, h) {

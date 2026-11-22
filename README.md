@@ -24,27 +24,33 @@ the title menu can delete a save (press twice to confirm).
 
 ## Systems
 
-- City: seeded generator — streets with two-way traffic and signals, sidewalk crowds, parks,
-  surface lots, neon signage (blades, marquees, rooftop billboards on every tall building),
-  beach and ocean.
-- Driving: arcade car physics with grip, handbrake slides that cook the rear tyres, damage
-  states (smoke, fire, blast) and ten stealable models plus the police cruiser.
-- Traffic: kinematic lane AI — gap keeping, red-light queueing, overtakes with blinkers, turns.
+- City: seeded generator — streets with two-way traffic and signals, sidewalk crowds (strollers,
+  phone-gazers, sightseers frozen mid-photo), parks, surface lots, neon signage (blades,
+  marquees, rooftop billboards on every tall building, water tanks notching the skyline), beach
+  and ocean.
+- Driving: arcade car physics with grip, handbrake slides that cook the rear tyres (smoke and
+  screech), damage states (smoke, fire, blast) and ten stealable models plus the police cruiser.
+- Traffic: kinematic lane AI — model-aware cruise speeds, gap keeping, red-light queueing,
+  overtakes with blinkers, turns at intersections.
 - Police: five wanted stars (carjack +1, ped hit +1, shooting +2, cop kill +3). Cruisers spawn
   biased down the road you are driving, flank from three stars, fire from the window, try pit
-  manoeuvres at four and lock the street with roadblocks; foot officers chase the sidewalks and
-  a cornered player on foot gets BUSTED. Line-of-sight decay lets a clean escape bleed stars.
+  manoeuvres at four, and roadblock crews actually hold their post until you close in. Foot
+  officers chase the sidewalks and a cornered player on foot gets BUSTED. Line-of-sight decay
+  lets a clean escape bleed stars (downed officers spot nothing).
 - Night lighting: base pass with full-strength emissives, an ambient multiply, and an additive
-  glow pass — lamp pools, headlight cones (dark when parked), wet-asphalt reflections, neon
-  spill, sirens, firelight, and an orange blast flash with camera shake.
+  glow pass — lamp pools, headlight cones (dark when parked), brake-light flares, wet-asphalt
+  reflections, neon spill, sweeping police floodlights, firelight, and an orange blast flash
+  with camera shake.
 - Missions: six chained story jobs (goto, steal-and-deliver, timed runs, collection, arson,
   a hot finale escape) with markers, fail/retry and cash payouts.
 - HUD: circular minimap with a north tick and police blips, health/armor bars, money, wanted
-  stars, weapon readout, speedometer with gear, backed objective plate and mission banners.
-- Sound: everything synthesized live with WebAudio — engine, siren, gunfire, explosions,
-  blips and a looping synthwave pad.
+  stars with an out-of-sight cooling cue, weapon readout, speedometer with gear, backed objective
+  plate and mission banners.
+- Sound: everything synthesized live with WebAudio — engine, siren, gunfire, explosions, tyre
+  screech, blips and a looping synthwave pad (all of it ducks properly when the game pauses).
 - Deterministic staging: `?shot=start|play|end|chaos&seed=N` builds a seeded scene and freezes
-  one frame, which is how the four screenshots in `screenshots/` were taken.
+  one frame, which is how the four screenshots in `screenshots/` were taken. The title screen
+  shows the world seed it is drifting across.
 
 ## Plumbing
 

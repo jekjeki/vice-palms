@@ -13,7 +13,7 @@ import { Wanted } from './systems/wanted.js';
 import { Missions } from './systems/missions.js';
 import { Audio } from './audio.js';
 import { writeSave } from './systems/save.js';
-import { dist2, clamp } from './util.js';
+import { dist2, clamp, lerp } from './util.js';
 import { remix, mulberry, rand, randInt, seedRun } from './rng.js';
 import { Grid } from './spatial.js';
 
@@ -185,10 +185,11 @@ export class Game {
     const look = car ? 0.55 : 0.25;
     const tx = p.x + (car ? car.vx : p.vx) * look;
     const ty = p.y + (car ? car.vy : p.vy) * look;
-    this.camera.x += (tx - this.camera.x) * Math.min(1, dt * 4);
-    this.camera.y += (ty - this.camera.y) * Math.min(1, dt * 4);
+    const k = Math.min(1, dt * 4);
+    this.camera.x = lerp(this.camera.x, tx, k);
+    this.camera.y = lerp(this.camera.y, ty, k);
     const zoomTarget = car && speed > 200 ? 0.78 : car ? 0.84 : 0.95;
-    this.camera.zoom += (zoomTarget - this.camera.zoom) * Math.min(1, dt * 2);
+    this.camera.zoom = lerp(this.camera.zoom, zoomTarget, Math.min(1, dt * 2));
   }
 
   // ---------------------------------------------------------------- events
@@ -308,6 +309,7 @@ export class Game {
     p.car = null;
     p.ammo = Math.floor(p.ammo / 2);
     this.wanted.clear();
+    this.shake = 0; this.flash = 0;   // the blast wash dies with the failure screen
     this.state = 'play';
     this.camera.x = p.x; this.camera.y = p.y;
     this.save();
@@ -331,8 +333,8 @@ export class Game {
       driver.graceT = 1.5;
       driver.bolt(p.x, p.y);
       this.people.push(driver);
+      // Stealing a cruiser is the heaviest single crime on the meter (copKill heat).
       this.wanted.add(best.role === 'cop' ? 'copKill' : 'carjack');
-      if (best.role === 'cop') this.wanted.stars = Math.max(this.wanted.stars, 2);
       this.scarePeople(best.x, best.y, 380);
     }
     best.role = 'player';

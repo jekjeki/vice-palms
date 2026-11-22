@@ -2,7 +2,7 @@
 // pit-manoeuvre rams at four and up, roadblocks lock the street from three stars on, and foot
 // officers chase on the sidewalks. A cornered player on foot gets BUSTED.
 
-import { GRID, PITCH, LANE, COP_RANGE } from '../config.js';
+import { BLOCK_HOLD, GRID, PITCH, LANE, COP_RANGE } from '../config.js';
 import { Car } from '../entities/car.js';
 import { Person } from '../entities/person.js';
 import { clamp, dist, dist2, turnDelta } from '../util.js';
@@ -25,8 +25,8 @@ export class Cops {
     this.spawnT -= dt;
     this.blockT -= dt;
 
-    // Cruisers on duty scale with the wanted level.
-    const quota = stars === 0 ? 0 : Math.min(2 + stars, 7);
+    // Cruisers on duty scale with the wanted level: one star is a nervous city, five is a manhunt.
+    const quota = stars === 0 ? 0 : Math.min(1 + stars, 7);
     if (this.cruisers.length < quota && this.spawnT <= 0) {
       const c = this.birthCruiser(player);
       if (c) { this.cruisers.push(c); game.cars.push(c); this.spawnT = Math.max(0.6, 1.4 - stars * 0.15); }
@@ -38,6 +38,11 @@ export class Cops {
         if (at >= 0) game.cars.splice(at, 1);
         this.cruisers.splice(i, 1);
         continue;
+      }
+      // Roadblock crews stay posted until the player closes in; then they join the chase.
+      if (c.roadblock) {
+        if (dist2(c.x, c.y, player.x, player.y) < BLOCK_HOLD * BLOCK_HOLD) c.roadblock = false;
+        else { c.update(dt, game); continue; }
       }
       this.pursue(c, dt, player, stars);
     }
@@ -128,6 +133,7 @@ export class Cops {
       const c = new Car(-1, vertical ? bx + k * 24 : bx, vertical ? by : by + k * 24, vertical ? 0 : Math.PI / 2);
       c.role = 'cop';
       c.siren = true;
+      c.roadblock = true;   // posted: holds the lane until the player closes in
       this.cruisers.push(c);
       game.cars.push(c);
       this.birthFoot(vertical ? bx + k * 42 : bx + 55, vertical ? by + 55 : by + k * 42);

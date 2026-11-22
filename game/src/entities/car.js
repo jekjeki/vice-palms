@@ -66,9 +66,10 @@ export class Car {
     this.x += this.vx * dt;
     this.y += this.vy * dt;
     this.fwd = fwd;
-    // Handbrake at speed cooks the rear tyres: smoke off the tail.
+    // Handbrake at speed cooks the rear tyres: smoke off the tail and a screech.
     if (this.slide && Math.abs(fwd) > 140 && game.fx && rand() < 0.55) {
       game.fx.smoke(this.x - cos * s.len * 0.42, this.y - sin * s.len * 0.42, 1, false);
+      game.audio.screech?.(Math.min(1, Math.abs(fwd) / s.top + 0.4));
     }
 
     if (worldCollide) {

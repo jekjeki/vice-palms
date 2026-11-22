@@ -1,6 +1,7 @@
 // Broad-phase grid. Cars, people and pickups drop their circle into overlapping cells each
 // step; neighbourhood queries visit only the covered cells, which keeps hundreds of actors
-// inside the frame budget.
+// inside the frame budget. Cell keys fold two small signed integers into one number: the
+// grid never spans more than a few thousand cells per axis, so the fold stays unique.
 
 const CELL = 320;
 const CELL_INV = 1 / CELL;

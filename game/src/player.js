@@ -1,7 +1,7 @@
 // The player: Rico, on foot and behind the wheel. Walking with sprint, punches, the pistol,
 // car entering and stealing, and the health/armor model the cops and blasts wear down.
 
-import { WALK_SPEED, SPRINT_SPEED } from './config.js';
+import { PUNCH_CD, PUNCH_DMG, WALK_SPEED, SPRINT_SPEED } from './config.js';
 import { clamp, dist2 } from './util.js';
 import { collideCity } from './world/city.js';
 
@@ -91,7 +91,7 @@ export class Hero {
 
   punch() {
     if (this.punchT > 0) return;
-    this.punchT = 0.38;
+    this.punchT = PUNCH_CD;
     const game = this.game;
     const rx = this.x + Math.cos(this.heading) * 26;
     const ry = this.y + Math.sin(this.heading) * 26;
@@ -99,7 +99,7 @@ export class Hero {
     for (const person of game.people) {
       if (person.mode === 'down') continue;
       if (dist2(person.x, person.y, rx, ry) < 26 * 26) {
-        const down = person.hurt(game, 12, this.x, this.y);
+        const down = person.hurt(game, PUNCH_DMG, this.x, this.y);
         game.wanted.add(down ? 'pedKill' : 'pedHit');
         game.fx.blood(person.x, person.y, 3);
         break;

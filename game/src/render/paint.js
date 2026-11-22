@@ -1,8 +1,9 @@
 // The night renderer, in three layers. The base pass paints the city in its own colours with
 // emissives (neon, lit windows) at full strength; a light map is multiplied over everything for
 // the ambient mood; an additive glow pass paints the true light sources — lamp pools, headlight
-// cones, neon spill with wet-asphalt reflections, sirens, fire. Camera shake rides the world
-// transform; culling uses the camera rect; buildings, palms and actors draw y-sorted.
+// cones, neon spill with wet-asphalt reflections, sirens, fire, brake and reverse lamps. Camera
+// shake rides the world transform; culling uses the camera rect; buildings, palms and actors
+// draw y-sorted.
 
 import { GRID, PITCH, ROAD, WALK, SAND, OCEAN, LIGHT } from '../config.js';
 import { blockRect } from '../world/city.js';
@@ -366,6 +367,13 @@ export class Painter {
       ctx.fillStyle = '#3b3e49';
       ctx.beginPath(); ctx.arc(s.x - lift, s.y - lift, s.r, 0, TAU); ctx.fill();
     }
+    // Water tank: a raised drum with a dark cap shadow.
+    if (b.tank) {
+      ctx.fillStyle = '#2a2d38';
+      ctx.beginPath(); ctx.arc(b.tank.x - lift, b.tank.y - lift, b.tank.r + 2, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#565b66';
+      ctx.beginPath(); ctx.arc(b.tank.x - lift, b.tank.y - lift - 1.5, b.tank.r, 0, TAU); ctx.fill();
+    }
   }
 
   signBase(ctx, s, game) {
@@ -527,7 +535,7 @@ export class Painter {
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.beginPath(); ctx.ellipse(2, 3, 6.5, 3.2, 0, 0, TAU); ctx.fill();
     const bob = p.mode === 'bolt' ? Math.sin(p.phase * 2.1) * 1.6 : Math.sin(p.phase) * 1.1;
-    const step = Math.sin(p.phase) * 3;
+    const step = p.mode === 'gawk' ? 0 : Math.sin(p.phase) * 3;
     ctx.fillStyle = '#14161c';
     ctx.fillRect(-3 + step, 2, 3, 3);
     ctx.fillRect(1 - step, 2, 3, 3);
@@ -748,6 +756,23 @@ export class Painter {
       ctx.fillStyle = 'rgba(255,72,60,0.85)';
       ctx.fillRect(-s.len / 2, -s.wid / 2 + 5, 3, 7);
       ctx.fillRect(-s.len / 2, s.wid / 2 - 12, 3, 7);
+      // Brake flare: stopping or slowing burns a red pool across the wet road behind.
+      const braking = v.brake > 0 || v.stopped;
+      if (braking) {
+        const bg = ctx.createRadialGradient(-s.len / 2 - 26, 0, 4, -s.len / 2 - 26, 0, 64);
+        bg.addColorStop(0, 'rgba(255,58,46,0.34)');
+        bg.addColorStop(1, 'rgba(255,58,46,0)');
+        ctx.fillStyle = bg;
+        ctx.beginPath(); ctx.arc(-s.len / 2 - 26, 0, 64, 0, TAU); ctx.fill();
+      }
+      // Reverse lamp: backing up shows the driver's intent with a clean white pool.
+      if (moving && v.fwd < -20) {
+        const rg = ctx.createRadialGradient(-s.len / 2 - 22, 0, 3, -s.len / 2 - 22, 0, 52);
+        rg.addColorStop(0, 'rgba(255,255,245,0.4)');
+        rg.addColorStop(1, 'rgba(255,255,245,0)');
+        ctx.fillStyle = rg;
+        ctx.beginPath(); ctx.arc(-s.len / 2 - 22, 0, 52, 0, TAU); ctx.fill();
+      }
       ctx.restore();
 
       // Wet-road throw: the headlights stretch into a streak ahead of a fast car.
@@ -775,6 +800,27 @@ export class Painter {
         g.addColorStop(1, `rgba(${rgb},0)`);
         ctx.fillStyle = g;
         ctx.beginPath(); ctx.arc(v.x, v.y, 112, 0, TAU); ctx.fill();
+        // Floodlight sweep: a narrow beam that swings across the street as the bar spins,
+        // so a cruiser carving through traffic visibly searches for its suspect.
+        if (v.siren) {
+          const sweep = Math.sin(game.time * 4.6 + v.specIndex * 2.1) * 1.15;
+          const beamLen = 190;
+          ctx.save();
+          ctx.translate(v.x, v.y);
+          ctx.rotate(v.ang + sweep);
+          const beam = ctx.createLinearGradient(0, 0, beamLen, 0);
+          beam.addColorStop(0, `rgba(${rgb},0.22)`);
+          beam.addColorStop(1, `rgba(${rgb},0)`);
+          ctx.fillStyle = beam;
+          ctx.beginPath();
+          ctx.moveTo(0, -7);
+          ctx.lineTo(beamLen, -46);
+          ctx.lineTo(beamLen, 46);
+          ctx.lineTo(0, 7);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        }
       }
       if (v.wreck) {
         const g = ctx.createRadialGradient(v.x, v.y, 4, v.x, v.y, 115);

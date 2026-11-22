@@ -30,7 +30,8 @@ export const LIGHT = {
   roofTrim: 'rgba(255,255,255,0.07)',
 };
 
-// Neon catalogue: sign text + the colour its tube burns. The generator mixes these freely.
+// Neon catalogue: sign text + the colour its tube burns. The generator mixes these freely;
+// longer names read best on the wide marquee bars, short ones on the vertical blades.
 export const NEON = [
   ['#ff3fa4', 'CLUB RIVIERA'],
   ['#33e7ff', 'OASIS GRILL'],
@@ -64,6 +65,10 @@ export const NEON = [
   ['#ff7a3c', 'DUNE DINER'],
   ['#7bffd4', 'REEF RECORDS'],
   ['#ff3fa4', 'SALT AIR CLUB'],
+  ['#ffc042', 'MIDNIGHT MOTA'],
+  ['#a86bff', 'VESPER LANE'],
+  ['#33e7ff', 'JUNO BEACH FM'],
+  ['#b8ff5e', 'KILO WOK'],
 ];
 
 export const CYCLE = 9;         // seconds per traffic-light phase
@@ -76,6 +81,9 @@ export const PED_SPEED = 56;
 
 export const COP_RANGE = 430;   // cops open fire inside this range at 3+ stars
 export const DECAY_SECS = 14;   // seconds unseen before one wanted star decays
+export const BLOCK_HOLD = 340;  // a roadblock crew holds its post until you get this close
+export const PUNCH_CD = 0.32;   // seconds between two of Rico's punches
+export const PUNCH_DMG = 14;    // damage one clean punch lands
 
 // Ten stealable models plus the police cruiser. Arcade stats first, realism never.
 export const CARS = [

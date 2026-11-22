@@ -3,7 +3,7 @@
 // freezes one frame. The global runtime RNG is pointed at a seeded stream first, so the same
 // URL always produces the same picture.
 
-import { GRID, PITCH } from './config.js';
+import { GRID, PITCH, SAND } from './config.js';
 import { seedRun, freeRun, rand } from './rng.js';
 import { Person } from './entities/person.js';
 import { JOBS, GIVERS } from './systems/missions.js';
@@ -30,22 +30,26 @@ export function stageShot(name, game, ui, seed) {
       if (score > best) { best = score; bestJ = j; }
     }
     const y = (bestJ + 0.5) * PITCH;
-    ui.cameraOverride = { x: GRID * PITCH + 80, y: y - 30, zoom: 0.78 };
-    game.player.x = GRID * PITCH - 100;
-    game.player.y = y + 120;
-    // Parked shoulder cars along the oceanfront road.
-    for (let k = 0; k < 5; k++) {
-      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH - (rand() < 0.5 ? 24 : -24), y - 420 + k * 210, rand() < 0.5 ? 0 : Math.PI);
+    // The camera hangs out over the wet sand: the strip fills the left of the frame, the
+    // tide line cuts diagonally below, and the ocean haze closes the far right.
+    ui.cameraOverride = { x: GRID * PITCH + SAND * 0.55, y: y - 30, zoom: 0.8 };
+    game.player.x = GRID * PITCH - 96;
+    game.player.y = y + 96;
+    game.player.heading = Math.PI * 0.75;
+    // Parked shoulder cars along the oceanfront road — a fuller, more varied kerbside,
+    // mostly hugging the beach kerb where the camera reads them best.
+    for (let k = 0; k < 8; k++) {
+      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH - (rand() < 0.72 ? 24 : -24), y - 480 + k * 172, rand() < 0.5 ? 0 : Math.PI);
       v.role = 'parked';
     }
     // Proper lanes: two-way traffic rolling the strip, headlights burning.
-    for (let k = 0; k < 3; k++) {
-      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH + 22, y - 760 + k * 480, Math.PI / 2);
+    for (let k = 0; k < 4; k++) {
+      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH + 22, y - 900 + k * 480, Math.PI / 2);
       v.role = 'traffic';
       v.axis = 'y'; v.dir = 1; v.lane = GRID * PITCH + 22;
       v.fwd = 130;
     }
-    for (let k = 0; k < 3; k++) {
+    for (let k = 0; k < 4; k++) {
       const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH - 22, y + 240 + k * 480, -Math.PI / 2);
       v.role = 'traffic';
       v.axis = 'y'; v.dir = -1; v.lane = GRID * PITCH - 22;
@@ -55,9 +59,9 @@ export function stageShot(name, game, ui, seed) {
     const cop = game.spawnCar(-1, GRID * PITCH + 22, y - 1400, Math.PI / 2);
     cop.role = 'traffic';
     cop.axis = 'y'; cop.dir = 1; cop.lane = GRID * PITCH + 22; cop.cruise = 150; cop.fwd = 150;
-    // A few strollers share the sidewalk with the hero.
-    for (let n = 0; n < 6; n++) {
-      game.people.push(new Person(GRID * PITCH - 90 + (n % 2) * 40, y + 40 + n * 90, n * 31 + 5));
+    // A few strollers share the sidewalk with the hero — the strip feels walked-on.
+    for (let n = 0; n < 8; n++) {
+      game.people.push(new Person(GRID * PITCH - 90 + (n % 2) * 40, y + 10 + n * 82, n * 31 + 5));
     }
     for (let n = 0; n < 40; n++) game.update(1 / 60, SCRIPT);
     ui.freeze = true;
@@ -155,8 +159,11 @@ function chaosScene(game, ui) {
   game.player.ammo = 18;
   game.player.weapon = 'pistol';
   for (let n = 0; n < 50; n++) game.update(1 / 60, SCRIPT);
-  for (let n = 0; n < 5; n++) game.fx.fire(vans[0].x + (rand() - 0.5) * 30, vans[0].y + (rand() - 0.5) * 30, 3);
-  game.fx.blast(cx - 90, cy - 110);
+  // The wreck throws fire even if the mission staging ever came up short on vans.
+  if (vans[0]) {
+    for (let n = 0; n < 5; n++) game.fx.fire(vans[0].x + (rand() - 0.5) * 30, vans[0].y + (rand() - 0.5) * 30, 3);
+    game.fx.blast(cx - 90, cy - 110);
+  }
   // Rico just fired on the van: a hot muzzle beat and a blast wash that the frozen
   // frame keeps at full strength, since no further update runs to decay them.
   game.fx.muzzle(game.player.x + Math.cos(game.player.heading) * 16, game.player.y + Math.sin(game.player.heading) * 16, game.player.heading);

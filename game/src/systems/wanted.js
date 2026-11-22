@@ -34,7 +34,8 @@ export class Wanted {
       if (!c.wreck && dist2(c.x, c.y, player.x, player.y) < 780 * 780) { seen = true; break; }
     }
     if (!seen) for (const f of game.cops.foot) {
-      if (!f.wreck && dist2(f.x, f.y, player.x, player.y) < 640 * 640) { seen = true; break; }
+      // A downed officer spots nothing: the street can forget you again.
+      if (!f.wreck && f.mode !== 'down' && dist2(f.x, f.y, player.x, player.y) < 640 * 640) { seen = true; break; }
     }
     if (seen) this.unseen = 0;
     else {

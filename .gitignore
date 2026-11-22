@@ -1,4 +1,4 @@
-# build and session scratch — never part of the entry
+# build output and session scratch — never part of the entry
 out/
 .playwright-mcp/
 .superpowers/

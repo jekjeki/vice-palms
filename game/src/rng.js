@@ -26,3 +26,5 @@ export function seedRun(seed) { stream = mulberry(seed); }
 export function freeRun() { stream = mulberry(0x0a11ce); }
 export function rand() { return stream(); }
 export function randInt(n) { return Math.floor(stream() * n); }
+/** True `p` of the time — the readable spelling of `rand() < p`. */
+export function chance(p) { return stream() < p; }

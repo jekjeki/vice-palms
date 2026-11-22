@@ -15,6 +15,7 @@ export function readSave() {
     if (!raw) return null;
     const s = JSON.parse(raw);
     if (typeof s !== 'object' || s === null || !Number.isFinite(s.x) || !Number.isFinite(s.y)) return null;
+    if (s.v !== 2) return null;   // a foreign or older schema falls back to a fresh night
     s.money = Math.max(0, Math.floor(s.money) || 0);
     s.missionIndex = Math.min(6, Math.max(0, Math.floor(s.missionIndex) || 0));
     s.health = Math.min(100, Math.max(1, Math.floor(s.health) || 100));
@@ -25,7 +26,7 @@ export function readSave() {
 }
 
 export function writeSave(data) {
-  try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch { /* storage blocked */ }
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify({ ...data, v: 2 })); } catch { /* storage blocked */ }
 }
 
 export function wipeSave() {

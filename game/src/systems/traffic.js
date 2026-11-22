@@ -6,7 +6,7 @@
 import { GRID, PITCH, ROAD, LANE, STOP_GAP } from '../config.js';
 import { Car } from '../entities/car.js';
 import { clamp, turnDelta, dist2 } from '../util.js';
-import { rand, randInt } from '../rng.js';
+import { chance, rand, randInt } from '../rng.js';
 
 const KEEP = 34;            // target live traffic count around the player
 const CULL = 3400;          // despawn beyond this range
@@ -67,7 +67,8 @@ export class Traffic {
       c.axis = vertical ? 'y' : 'x';
       c.dir = dir;
       c.lane = laneAt(c.axis, center, dir);
-      c.cruise = 140 + rand() * 95;
+      // Cruise speed leans on the model: the Vanta flows faster than the Tramline van.
+      c.cruise = 120 + rand() * 80 + c.spec.top * 0.15;
       c.line = line;
       return c;
     }
@@ -195,7 +196,8 @@ export class Traffic {
   }
 
   pickTurn(c, cross) {
-    if (rand() > 0.3) return;
+    // Three intersections in ten become turns; the rest run straight through.
+    if (!chance(0.3)) return;
     const perpLine = clamp(Math.round((c.axis === 'y' ? c.x : c.y) / PITCH) + (rand() < 0.5 ? -1 : 1), 0, GRID);
     const newCenter = perpLine * PITCH;
     const newDir = rand() < 0.5 ? 1 : -1;

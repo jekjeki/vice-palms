@@ -14,6 +14,8 @@ export class Input {
     window.addEventListener('keyup', (e) => this.heldKeys.delete(e.code));
     window.addEventListener('blur', () => { this.heldKeys.clear(); });
     window.addEventListener('mousedown', (e) => { if (e.button === 0) this.taps.add('MouseLeft'); });
+    // The right button belongs to the game during a chase, not to the browser menu.
+    window.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   /** Normalised walk/drive axis from WASD or the arrows. */

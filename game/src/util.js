@@ -6,6 +6,9 @@ export function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 export function dist2(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
 export function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
 
+/** Linear blend of a toward b by t in [0,1] — the easing behind every smoothed camera. */
+export function lerp(a, b, t) { return a + (b - a) * t; }
+
 /** Shortest signed turn from angle a toward angle b, in (-PI, PI]. */
 export function turnDelta(a, b) {
   let d = (b - a) % TAU;

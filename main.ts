@@ -1,9 +1,8 @@
 // Vice Palms — a gta6-01 entry (Node 22, standard library only): an original open-world crime
-// game. The game is this directory's game/ folder, plain static files a desktop browser loads
-// offline (game/index.html and its ES modules, no library and no network request); this program
-// copies game/ and screenshots/ beside it to /output and writes /output/dossier.json, the
-// summary the judge reads, with the vendored make.fun library. Outside the grader,
-// MAKEFUN_OUTPUT_DIR stands in for /output.
+// game set in a neon coastal city at night. The game is this directory's game/ folder, plain
+// static files a desktop browser loads offline (game/index.html and its ES modules, no library
+// and no network request); this program copies game/ and screenshots/ beside it to /output and
+// writes /output/dossier.json, the summary the judge reads, with the vendored make.fun library.
 //
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
