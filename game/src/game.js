@@ -22,6 +22,13 @@ import { writeSave } from './systems/save.js';
 import { dist2, clamp, lerp } from './util.js';
 import { remix, mulberry, rand, randInt, seedRun } from './rng.js';
 import { Grid } from './spatial.js';
+import { buildDocks } from './world/district.js';
+import { createWeather } from './systems/weather.js';
+import { createGangs } from './systems/gangs.js';
+import { createProperty } from './systems/property.js';
+import { createPhone } from './systems/phone.js';
+import { createFerry } from './systems/ferry.js';
+import { createHeists } from './systems/heists.js';
 
 export const HOSPITAL = { x: 15 * PITCH, y: 22 * PITCH };
 export const STATION = { x: 8 * PITCH, y: 11 * PITCH };
@@ -30,6 +37,9 @@ const PED_KEEP = 42;        // people kept alive around the player
 const PED_CULL = 2800;      // cull radius
 const PED_BAND = 500;       // spawn ring depth
 const PICKUP_RESPAWN = 45;  // seconds before a taken pickup reappears
+
+// The pocket world's input: while the phone is up nobody walks or shoots.
+const PHONE_IDLE = { axis: () => ({ x: 0, y: 0 }), held: () => false, tap: () => false, endFrame() {} };
 
 export class Game {
   constructor(seed, opts = {}) {
@@ -57,6 +67,24 @@ export class Game {
     this.shotMode = opts.shotMode ?? false;
     this.shake = 0;                // explosion camera shake, decays every step
     this.flash = 0;                // blast screen flash, decays every step
+
+    // The North Docks: the second district, north of the grid, carrying the
+    // gangs, the ferry, the heist and its own weather-wet ground.
+    this.docks = buildDocks(seed);
+    this.city.docks = this.docks;  // collision reads the district off the city
+    this.weather = createWeather(this);
+    this.gangs = createGangs(this, this.docks);
+    this.property = createProperty(this);
+    this.phone = createPhone(this);
+    this.heists = createHeists(this, this.docks);
+    this.ferry = createFerry(this, this.docks.ferryRoute);
+    this.toastQueue = [];          // screen toasts queued for the HUD
+    this.ferryPrompt = false;      // live boarding prompt
+    this.heistInteract = false;    // E queued for the heist this step
+    this.gangHideout = null;       // hideout under the interaction prompt
+    // The security gate lifts for whatever rolls or walks at the barrier line.
+    this.docks._gateProbe = () =>
+      Math.abs(this.player.x - 20 * 420) < 360 && this.player.y > -500;
 
     const start = blockCenter(12, 23);
     this.player = new Hero(this, opts.playerX ?? start.x, opts.playerY ?? start.y);
@@ -155,8 +183,37 @@ export class Game {
     }
     this.time += dt;
     const p = this.player;
-    p.update(dt, input);
+
+    // The phone owns Tab; while it is up the pocket world keeps stepping but
+    // nobody walks, punches or drives. Each tap is consumed exactly once:
+    // the key loop first, then the pocket toggle for whatever is left over.
+    let effInput = input;
+    if (this.phone.state.open) {
+      let handled = false;
+      for (const code of ['ArrowUp', 'ArrowDown', 'Enter', 'Space', 'KeyE', 'KeyQ', 'Backspace', 'Tab']) {
+        if (input.tap(code)) handled = this.phone.onKey(code) || handled;
+      }
+      if (!handled && input.tap('Tab')) this.phone.pocket();
+      effInput = PHONE_IDLE;
+    } else if (input.tap('Tab')) {
+      this.phone.toggle();
+    }
+
+    // Interaction taps are resolved before the systems tick: heist prompts
+    // claim E first, then the ferry, then the gangs' doors and fights.
+    if (effInput !== PHONE_IDLE && input.tap('KeyE')) this.resolveInteract();
+
+    p.update(dt, effInput);
     if (p.car) p.car.drive(dt, this);   // the player's ride runs the full physics step
+    // Wet roads steal grip: a light per-step bleed reads as a slide.
+    if (p.car) {
+      const grip = this.weather.gripMultiplier();
+      if (grip < 1) {
+        const f = 1 - (1 - grip) * 0.03;
+        p.car.vx *= f;
+        p.car.vy *= f;
+      }
+    }
     this.traffic.update(dt, p);
     this.wanted.update(dt, p);
     this.cops.update(dt, this.wanted.stars, p);
@@ -164,7 +221,17 @@ export class Game {
     this.dialog.update(dt, p);        // the street keeps talking while it moves
     this.peoplePatrol(dt);
     this.respawnPickups();
-    if (input.tap('KeyR')) this.radio.cycle();   // spin the FM dial from the driver's seat
+    if (effInput !== PHONE_IDLE && input.tap('KeyR')) this.radio.cycle();   // spin the FM dial from the driver's seat
+
+    // District systems: weather, docks animation, gangs, property, phone, heist, ferry.
+    this.weather.update(dt, this.time, p);
+    this.docks.update(dt, this.time);
+    this.gangs.update(dt, p);
+    this.property.update(dt);
+    this.property.updateProximity(p);
+    this.phone.update(dt);
+    this.heists.update(dt, p);
+    this.ferry.update(dt, this.time, p);
 
     // Broad-phase build: cars and people register into the grid each step.
     if (!this.grid) this.grid = new Grid();
@@ -179,7 +246,7 @@ export class Game {
     this.carContacts(dt, p);
     this.runOverCheck(p);
     this.grabPickups(p);
-    this.interiors.update(dt, input);   // door prompts, room walls, interior pickups
+    this.interiors.update(dt, effInput);   // door prompts, room walls, interior pickups
     this.radio.update(dt);              // songs, DJ patter, siren ducking
     this.decayShake(dt);
     if (this.cops.cornered(dt, p, this.wanted.stars)) {
@@ -189,6 +256,24 @@ export class Game {
     }
     this.followCamera(dt);
     this.audio.update(dt, this);
+
+    // Toasts and prompts age out once per step.
+    for (const t of this.toastQueue) t.t -= dt;
+    this.toastQueue = this.toastQueue.filter((t) => t.t > 0);
+  }
+
+  /** E-press arbitration across the district systems. */
+  resolveInteract() {
+    const p = this.player;
+    if (this.heists.state.active) { this.heistInteract = true; return; }
+    if (this.ferryPrompt) { this.ferry.tryInteract(p); return; }
+    this.gangs.tryInteract(p);
+  }
+
+  /** A short screen toast; the HUD drains the queue. */
+  toast(text, color = '#7bffd4') {
+    this.toastQueue.push({ text, color, t: 4.2 });
+    if (this.toastQueue.length > 4) this.toastQueue.shift();
   }
 
   respawnPickups() {
@@ -321,6 +406,8 @@ export class Game {
     this.state = 'wasted';
     this.stateT = 3.0;
     this.audio.boom(0.4);
+    // A heist in progress dies with the hero: no rewards from the morgue.
+    this.heists.abort('You bled out before the drop.');
   }
 
   respawn() {
@@ -331,7 +418,10 @@ export class Game {
     const fee = Math.max(50, Math.floor(p.money * (busted ? 0.2 : 0.15)));
     p.money = Math.max(0, p.money - fee);
     const spot = busted ? STATION : HOSPITAL;
-    p.x = spot.x; p.y = spot.y - 80;
+    // An owned safehouse closer than the hospital takes you in.
+    const safe = this.property.respawnPoint(spot.x, spot.y);
+    if (safe) { p.x = safe.x; p.y = safe.y; }
+    else { p.x = spot.x; p.y = spot.y - 80; }
     p.vx = 0; p.vy = 0;
     p.health = 100;
     p.armor = 0;
@@ -476,6 +566,10 @@ export class Game {
       health: p.health, armor: p.armor, ammo: p.ammo, weapon: p.weapon,
       sound: this.audio.enabled,
       radio: this.radio.snapshot(),
+      // District progress rides along with the city save.
+      gangs: this.gangs.serialize(),
+      heists: this.heists.serialize(),
+      weather: this.weather.serialize(),
     });
   }
 }

@@ -4,6 +4,8 @@
 
 import { GRID, PITCH, SAND } from '../config.js';
 import { clamp, dist, TAU } from '../util.js';
+import { stampDocksMap, drawDocksBlips } from './districtMap.js';
+import { DOCKS_NORTH_Y } from '../world/district.js';
 
 const MAP_PX = 760;
 const MAP_SPAN = 1500;   // world units shown across the minimap circle
@@ -13,6 +15,10 @@ export class Hud {
     this.underlay = this.bakeMap();
     this.lastMoney = null;      // drives the payout pulse on the money counter
     this.moneyPulse = 0;
+    this.promptText = null;     // live "E — ..." interaction prompt
+    this.promptT = 0;
+    this.north = 0;             // docks depth added above the city on the map
+    this.kx = 1; this.ky = 1;
   }
 
   /** Pre-render the static city map once: land, parks, lots, plaza, beach, roads. */
@@ -33,12 +39,18 @@ export class Hud {
 
   /** Stamp block kinds and roads onto a fresh baked map for the newly generated city. */
   attach(game) {
+    game.hud = this;             // district systems prompt through game.hud
     this.underlay = this.bakeMap(); // a second city must never double-stamp the first map
+    // With the docks the map grows northward: world y is shifted by the
+    // district depth so y = DOCKS_NORTH_Y lands on the map's top edge.
+    this.north = game.docks ? -DOCKS_NORTH_Y + 300 : 0;
     const span = GRID * PITCH + SAND;
-    const k = MAP_PX / span;
+    this.kx = MAP_PX / span;
+    this.ky = MAP_PX / (span + this.north);
     const g = this.underlay.getContext('2d');
+    if (game.docks) stampDocksMap(g, game, this.kx, this.ky, this.north, MAP_PX);
     for (const block of game.city.blocks) {
-      const x = block.i * PITCH * k, y = block.j * PITCH * k, s = PITCH * k;
+      const x = block.i * PITCH * this.kx, y = (block.j * PITCH + this.north) * this.ky, s = PITCH * this.kx;
       g.fillStyle = block.kind === 'park' ? '#1d4a2c'
         : block.kind === 'plaza' ? '#3d4358'
         : block.kind === 'lot' ? '#23262e'
@@ -46,11 +58,11 @@ export class Hud {
       g.fillRect(x, y, s, s);
     }
     g.strokeStyle = '#8d93a8';
-    g.lineWidth = Math.max(1, 90 * k * 0.8);
+    g.lineWidth = Math.max(1, 90 * this.kx * 0.8);
     g.beginPath();
     for (let i = 0; i <= GRID; i++) {
-      g.moveTo(i * PITCH * k, 0); g.lineTo(i * PITCH * k, GRID * PITCH * k);
-      g.moveTo(0, i * PITCH * k); g.lineTo(GRID * PITCH * k, i * PITCH * k);
+      g.moveTo(i * PITCH * this.kx, this.north * this.ky); g.lineTo(i * PITCH * this.kx, (GRID * PITCH + this.north) * this.ky);
+      g.moveTo(0, (i * PITCH + this.north) * this.ky); g.lineTo(GRID * PITCH * this.kx, (i * PITCH + this.north) * this.ky);
     }
     g.stroke();
     this.lastMoney = null;
@@ -68,9 +80,62 @@ export class Hud {
     this.objective(ctx, game, W, H);
     this.banner(ctx, game, W, H);
     this.endState(ctx, game, p, W, H);
+    this.toasts(ctx, game, W);
+    this.interactPrompt(ctx, game, W, H);
+    if (game.phone?.state.open) this.phonePanel(ctx, game, W, H);
     if (this.lastMoney !== null && p.money > this.lastMoney) this.moneyPulse = 1;
     this.lastMoney = p.money;
     this.moneyPulse = Math.max(0, this.moneyPulse - 0.016 * 2.2);
+  }
+
+  /** The live "E — ..." prompt above the objective plate. */
+  setPrompt(text) {
+    if (text) {
+      this.promptText = text;
+      this.promptT = 0.35;   // refreshed every frame while a system is near
+    }
+  }
+
+  interactPrompt(ctx, game, W, H) {
+    this.promptT -= 1 / 60;
+    if (this.promptT <= 0 || !this.promptText) return;
+    ctx.save();
+    ctx.globalAlpha = clamp(this.promptT / 0.35, 0, 1);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 16px Consolas, "Courier New", monospace';
+    const w = ctx.measureText(this.promptText).width;
+    ctx.fillStyle = 'rgba(5,7,15,0.7)';
+    this.rounded(ctx, W / 2 - w / 2 - 16, H - 96, w + 32, 30, 8);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(123,255,212,0.5)';
+    ctx.lineWidth = 1.5;
+    this.rounded(ctx, W / 2 - w / 2 - 16, H - 96, w + 32, 30, 8);
+    ctx.stroke();
+    ctx.fillStyle = '#7bffd4';
+    ctx.fillText(this.promptText, W / 2, H - 76);
+    ctx.restore();
+  }
+
+  /** Toast queue drained from game.toastQueue. */
+  toasts(ctx, game, W) {
+    let y = 148;
+    for (const t of game.toastQueue ?? []) {
+      const a = clamp(t.t / 0.6, 0, 1);
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 15px Consolas, "Courier New", monospace';
+      const w = Math.min(W * 0.8, ctx.measureText(t.text).width + 40);
+      ctx.fillStyle = 'rgba(5,7,15,0.72)';
+      this.rounded(ctx, W / 2 - w / 2, y - 18, w, 28, 7);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+      ctx.stroke();
+      ctx.fillStyle = t.color;
+      ctx.fillText(t.text, W / 2, y + 1);
+      ctx.restore();
+      y += 36;
+    }
   }
 
   /** A red breath on the frame edges while Rico is close to flatlining. */
@@ -89,19 +154,21 @@ export class Hud {
     const r = 90;
     const mx = 26 + r, my = H - 26 - r;
     const span = GRID * PITCH + SAND;
-    const k = MAP_PX / span;
+    const kx = this.kx, ky = this.ky;
+    const mapSpanY = span + this.north;
     ctx.save();
     ctx.beginPath();
     ctx.arc(mx, my, r, 0, TAU);
     ctx.clip();
     ctx.fillStyle = '#0a0e1a';
     ctx.fillRect(mx - r, my - r, r * 2, r * 2);
-    const viewPx = MAP_SPAN * k;
-    const sx = clamp(p.x * k - viewPx / 2, 0, MAP_PX - viewPx);
-    const sy = clamp(p.y * k - viewPx / 2, 0, MAP_PX - viewPx);
+    const viewPx = MAP_SPAN * kx;
+    const viewPy = MAP_SPAN * ky;
+    const sx = clamp(p.x * kx - viewPx / 2, 0, MAP_PX - viewPx);
+    const sy = clamp((p.y + this.north) * ky - viewPy / 2, 0, MAP_PX - viewPy);
     ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(this.underlay, sx, sy, viewPx, viewPx, mx - r, my - r, r * 2, r * 2);
-    const toMini = (wx, wy) => [mx + ((wx * k - sx) / viewPx) * r * 2 - r, my + ((wy * k - sy) / viewPx) * r * 2 - r];
+    ctx.drawImage(this.underlay, sx, sy, viewPx, viewPy, mx - r, my - r, r * 2, r * 2);
+    const toMini = (wx, wy) => [mx + ((wx * kx - sx) / viewPx) * r * 2 - r, my + (((wy + this.north) * ky - sy) / viewPy) * r * 2 - r];
 
     // Mission marker, clamped to the rim so off-screen goals still show direction.
     const marker = game.missions.marker();
@@ -115,6 +182,9 @@ export class Hud {
       ctx.lineWidth = 1.5;
       ctx.stroke();
     }
+    // District blips: the ferry, the heist marker, turf skirmishes, hideouts,
+    // and the weather's fog-of-war shading.
+    drawDocksBlips(ctx, game, toMini, mx, my, r);
     // Police blips.
     for (const c of game.cops.cruisers) {
       if (c.wreck || c.wasted) continue;
@@ -250,9 +320,9 @@ export class Hud {
   }
 
   objective(ctx, game, W, H) {
-    let text = game.missions.objectiveText();
-    // Off-screen goals get a metres readout — the plate doubles as a compass.
-    const marker = game.missions.marker();
+    // The heist owns the plate while it runs; missions otherwise.
+    let text = game.heists?.objectiveText() ?? game.missions.objectiveText();
+    const marker = game.heists?.marker() ?? game.missions.marker();
     if (marker) {
       const m = Math.round(dist(game.player.x, game.player.y, marker.x, marker.y) / 8);
       text += ` · ${m}m`;
@@ -342,5 +412,95 @@ export class Hud {
       ctx.lineWidth = 1.5;
       ctx.stroke();
     }
+  }
+
+  // ---------------------------------------------------------------- phone
+
+  /** The pocket phone: a tall plate on the right with pages and a cursor. */
+  phonePanel(ctx, game, W, H) {
+    const phone = game.phone;
+    const st = phone.state;
+    const pw = 320, ph = 470;
+    const px = W - pw - 42, py = H - ph - 90;
+    ctx.save();
+    // Backing plate with a warm rim.
+    ctx.fillStyle = 'rgba(8,10,18,0.88)';
+    this.rounded(ctx, px, py, pw, ph, 18);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(123,255,212,0.4)';
+    ctx.lineWidth = 2;
+    this.rounded(ctx, px, py, pw, ph, 18);
+    ctx.stroke();
+    // Status bar.
+    ctx.font = 'bold 13px Consolas, "Courier New", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#7bffd4';
+    ctx.fillText('VICE PALMS PHONE', px + 20, py + 28);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#9aa3b8';
+    ctx.fillText(`${Math.round(st.battery)}%  Tab`, px + pw - 20, py + 28);
+    // Header line.
+    ctx.textAlign = 'left';
+    ctx.font = '12px Consolas, "Courier New", monospace';
+    ctx.fillStyle = '#6f7788';
+    ctx.fillText(pageTitle(st.page), px + 20, py + 52);
+
+    // An active call takes over the panel.
+    if (st.inCall) {
+      const call = st.inCall;
+      ctx.fillStyle = call.contact.color ?? '#ffd977';
+      ctx.font = 'bold 19px Consolas, "Courier New", monospace';
+      ctx.fillText(call.contact.name, px + 20, py + 96);
+      ctx.fillStyle = '#9aa3b8';
+      ctx.font = '12px Consolas, "Courier New", monospace';
+      ctx.fillText('CALL IN PROGRESS — SPACE to continue', px + 20, py + 116);
+      ctx.fillStyle = '#dfe4ee';
+      ctx.font = '14px Consolas, "Courier New", monospace';
+      this.wrap(ctx, call.lines[Math.min(call.step, call.lines.length - 1)], px + 20, py + 150, pw - 40, 20);
+      ctx.restore();
+      return;
+    }
+
+    // Page items with the cursor row.
+    const items = phone.pageItems();
+    const rowH = 44;
+    const listTop = py + 68;
+    const rows = Math.floor((ph - 100) / rowH);
+    const first = Math.max(0, Math.min(st.cursor - rows + 1, items.length - rows));
+    ctx.font = 'bold 15px Consolas, "Courier New", monospace';
+    for (let i = first; i < Math.min(items.length, first + rows); i++) {
+      const it = items[i];
+      const ry = listTop + (i - first) * rowH;
+      const sel = i === st.cursor;
+      if (sel) {
+        ctx.fillStyle = 'rgba(123,255,212,0.14)';
+        this.rounded(ctx, px + 10, ry - 6, pw - 20, rowH - 6, 8);
+        ctx.fill();
+      }
+      ctx.textAlign = 'left';
+      ctx.fillStyle = sel ? '#ffffff' : it.color ?? '#c8cede';
+      ctx.fillText(it.label, px + 24, ry + 12);
+      ctx.font = '11px Consolas, "Courier New", monospace';
+      ctx.fillStyle = '#8a92a4';
+      const sub = it.sub ?? '';
+      ctx.fillText(sub.length > 40 ? sub.slice(0, 39) + '…' : sub, px + 24, ry + 28);
+      ctx.font = 'bold 15px Consolas, "Courier New", monospace';
+    }
+    // Footer hint.
+    ctx.textAlign = 'center';
+    ctx.font = '11px Consolas, "Courier New", monospace';
+    ctx.fillStyle = '#6f7788';
+    ctx.fillText('↑↓ move · ENTER pick · Q back', px + pw / 2, py + ph - 16);
+    ctx.restore();
+  }
+}
+
+function pageTitle(page) {
+  switch (page) {
+    case 'contacts': return 'CONTACTS';
+    case 'messages': return 'MESSAGES';
+    case 'property': return 'PROPERTY LEDGER';
+    case 'radio': return 'FM DIAL';
+    default: return 'HOME';
   }
 }

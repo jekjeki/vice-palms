@@ -7,6 +7,7 @@
 import { GRID, PITCH, ROAD, WALK, SAND, NEON } from '../config.js';
 import { mulberry, remix } from '../rng.js';
 import { clamp, circlePush } from '../util.js';
+import { DOCKS_NORTH_Y } from './district.js';
 
 const WALLS = ['#4b3f61', '#3f4a6b', '#6b3f58', '#3f6a62', '#6a5c3f', '#514466', '#2f4a54', '#5a4848', '#46516b'];
 const ROOFS = ['#332e48', '#2c3850', '#4e2e40', '#2c4e48', '#4e432c', '#3f2e4e', '#223a44', '#442e2e', '#3a4258'];
@@ -167,7 +168,7 @@ export function buildingsNear(city, x, y, out) {
   return out;
 }
 
-/** Resolve a circle against nearby buildings and the world bounds. */
+/** Resolve a circle against nearby buildings, dock solids and the world bounds. */
 export function collideCity(city, x, y, r) {
   const scratch = [];
   let bumped = false;
@@ -177,10 +178,25 @@ export function collideCity(city, x, y, r) {
     const push = circlePush(x, y, r, s.x, s.y, s.w, s.h);
     if (push) { x += push.x; y += push.y; bumped = true; }
   }
+  // North of the grid lies the docks district: its solids collide the
+  // same way, and the north bound opens up to the bay edge.
+  const docks = city.docks;
+  const north = docks ? DOCKS_NORTH_Y + r : r;
+  if (docks) {
+    const near = docks.solidsNear(x, y, scratch2);
+    for (let i = 0; i < near.length; i++) {
+      const s = near[i];
+      const push = circlePush(x, y, r, s.x, s.y, s.w, s.h);
+      if (push) { x += push.x; y += push.y; bumped = true; }
+    }
+  }
   const maxX = GRID * PITCH + SAND - r;
   if (x < r) { x = r; bumped = true; }
-  if (y < r) { y = r; bumped = true; }
+  if (y < north) { y = north; bumped = true; }
   if (y > GRID * PITCH - r) { y = GRID * PITCH - r; bumped = true; }
   if (x > maxX) { x = maxX; bumped = true; }
   return { x, y, bumped };
 }
+
+const scratch2 = [];
+

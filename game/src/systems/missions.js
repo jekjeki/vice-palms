@@ -266,6 +266,11 @@ export class Missions {
     game.audio.blip(880);
     game.cutscenes?.playOutro(a.index);  // the job's closing scene
     game.dialog?.mission('pass');
+    // Word travels on the phone: the fixer who watched the streets likes the work.
+    game.phone?.pushMessage?.('fixer-marla', 'Heard what you just did. The docks job pays better — Tab, contacts, ask for Marla.');
+    if (this.done) {
+      game.phone?.pushMessage?.('roland', 'City job done and you still breathe. The boathouse door is open to you now.', { urgent: true });
+    }
     this.active = null;
     this.jobCar = null;
     game.save();

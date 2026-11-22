@@ -83,6 +83,8 @@ export class Traffic {
 
     // Desired speed: cruise minus the gap-keeping limit for whatever is ahead.
     let want = c.cruise;
+    // Poor weather makes the whole fleet drive like it is raining (it is).
+    if (this.brakeFactor && this.brakeFactor > 1) want /= this.brakeFactor;
     const ahead = this.thingAhead(c, alongNow, laneNow);
     if (ahead !== null) want = Math.min(want, ahead);
     // Red light: ease to the stop line unless we already crossed it.

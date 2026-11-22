@@ -216,7 +216,11 @@ function frame(now) {
       if (input.tap('Enter') || input.tap('Space')) { activatePause(ui.menuIndex); menuCooldown = 0.3; }
     }
   } else if (ui.uiState === 'play') {
-    if (input.tap('Escape') && game && game.state === 'play' && !game.photoMode.active) openPause();
+    if (input.tap('Escape') && game && game.state === 'play' && !game.photoMode.active) {
+      // The phone pockets before the pause menu opens: no accidental exits.
+      if (game.phone?.state.open) game.phone.pocket();
+      else openPause();
+    }
     else if (game && !ui.freeze) {
       if (game.photoMode.active) {
         // The shutter is up: the world holds still, the camera is yours.

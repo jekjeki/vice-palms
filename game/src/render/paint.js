@@ -9,6 +9,10 @@ import { GRID, PITCH, ROAD, WALK, SAND, OCEAN, LIGHT } from '../config.js';
 import { blockRect } from '../world/city.js';
 import { clamp, TAU, hash01 } from '../util.js';
 import { rand } from '../rng.js';
+import {
+  drawDocksBase, drawDocksActors, drawDocksGlow, drawDocksSky,
+  dockSortItems, drawDockItem,
+} from '../world/district.js';
 
 export class Painter {
   constructor(canvas) {
@@ -79,6 +83,8 @@ export class Painter {
     }
     ctx.globalCompositeOperation = 'source-over';
     if (this.overlay) ctx.drawImage(this.overlay, 0, 0);
+    // Weather rides last: fog wash, rain streaks, lightning pulses.
+    if (game.weather) game.weather.drawScreen(ctx, W, H, game.time, cam);
   }
 
   // ---------------------------------------------------------------- base layer
@@ -124,18 +130,30 @@ export class Painter {
       ctx.globalAlpha = 1;
     }
 
+    // The docks district paints its own ground, roads and water north of
+    // the grid before the city layer takes over at y >= 0.
+    if (game.docks) drawDocksBase(ctx, game.docks, view);
+
     this.roads(ctx, game, view);
     this.blocks(ctx, game, view);
     this.actors(ctx, game, cam, view);
+    if (game.docks) {
+      // Ferry and gulls ride above the district's static layer.
+      game.ferry?.draw(ctx);
+      drawDocksSky(ctx, game.docks, view);
+    }
   }
 
   roads(ctx, game, view) {
     const { x0, x1, y0, y1 } = view;
+    // City roads stop at the shoreline: everything north of y=0 belongs to
+    // the docks, which paints its own street grid.
+    const ry0 = Math.max(0, y0);
     const i0 = Math.max(0, Math.floor((x0 - ROAD / 2) / PITCH)), i1 = Math.min(GRID, Math.ceil((x1 + ROAD / 2) / PITCH));
     const j0 = Math.max(0, Math.floor((y0 - ROAD / 2) / PITCH)), j1 = Math.min(GRID, Math.ceil((y1 + ROAD / 2) / PITCH));
 
     ctx.fillStyle = LIGHT.asphalt;
-    for (let i = i0; i <= i1; i++) ctx.fillRect(i * PITCH - ROAD / 2, y0, ROAD, y1 - y0);
+    for (let i = i0; i <= i1; i++) ctx.fillRect(i * PITCH - ROAD / 2, ry0, ROAD, y1 - ry0);
     for (let j = j0; j <= j1; j++) ctx.fillRect(x0, j * PITCH - ROAD / 2, x1 - x0, ROAD);
 
     // Wet-asphalt variation: faint darker patches per road cell, deterministic per seed.
@@ -143,7 +161,7 @@ export class Painter {
     for (let i = i0; i <= i1; i++) {
       for (let j = j0; j < j1; j++) {
         if (hash01(i * 3.7, j * 9.1) < 0.4) {
-          ctx.fillRect(i * PITCH - ROAD / 2, Math.max(j * PITCH + ROAD / 2, y0), ROAD, Math.min(PITCH - ROAD, y1 - Math.max(j * PITCH + ROAD / 2, y0)));
+          ctx.fillRect(i * PITCH - ROAD / 2, Math.max(j * PITCH + ROAD / 2, ry0), ROAD, Math.min(PITCH - ROAD, y1 - Math.max(j * PITCH + ROAD / 2, ry0)));
         }
       }
     }
@@ -298,6 +316,15 @@ export class Painter {
     if (marker && marker.x > x0 - 200 && marker.x < x1 + 200 && marker.y > y0 - 200 && marker.y < y1 + 200) {
       items.push({ z: marker.y + 1, kind: 'marker', o: marker });
     }
+    // The docks' own props join the same y-sort so a car parked in front of
+    // a container stack reads correctly.
+    if (game.docks) {
+      for (const it of dockSortItems(game.docks, view)) items.push({ z: it.z, kind: 'dock', sub: it.kind, o: it.o });
+    }
+    const hMarker = game.heists?.marker();
+    if (hMarker && hMarker.x > x0 - 200 && hMarker.x < x1 + 200 && hMarker.y > y0 - 200 && hMarker.y < y1 + 200) {
+      items.push({ z: hMarker.y + 1, kind: 'marker', o: hMarker });
+    }
     items.sort((a, b) => a.z - b.z);
     for (const it of items) {
       if (it.kind === 'bld') this.building(ctx, it.o);
@@ -308,6 +335,7 @@ export class Painter {
       else if (it.kind === 'hero') this.hero(ctx, game.player);
       else if (it.kind === 'pk') this.pickup(ctx, it.o, game);
       else if (it.kind === 'marker') this.marker(ctx, it.o, game);
+      else if (it.kind === 'dock') drawDockItem(ctx, it.sub, it.o, game.docks);
     }
 
     // Dark smoke and blast debris ride the base layer; the bright particles glow above.
@@ -648,6 +676,8 @@ export class Painter {
     lc.fillStyle = g;
     lc.fillRect(SPAN - 210, cam.y - H / cam.zoom, SAND + OCEAN + 210, (H / cam.zoom) * 2);
     lc.restore();
+    // Weather tints the whole light map: cool damp tones under rain and storm.
+    if (game.weather) game.weather.paintLight(lc, W, H);
   }
 
   // ---------------------------------------------------------------- glow layer
@@ -666,6 +696,9 @@ export class Painter {
     const bi1 = clamp(Math.ceil((x1 + ROAD / 2) / PITCH), 0, GRID - 1);
     const bj0 = clamp(Math.floor((y0 - ROAD / 2) / PITCH), 0, GRID - 1);
     const bj1 = clamp(Math.ceil((y1 + ROAD / 2) / PITCH), 0, GRID - 1);
+
+    // North Docks glow: sodium lamps, floodlights, the lighthouse beam.
+    if (game.docks) drawDocksGlow(ctx, game.docks, { x0, x1, y0: Math.min(y0, 0), y1 });
 
     // Street lamps from the block corners: warm pools plus a wet vertical streak.
     const lamp = this.lampSprite();

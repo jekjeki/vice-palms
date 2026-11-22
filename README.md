@@ -19,8 +19,9 @@ node serve.ts
 then open http://localhost:8080 in desktop Chrome. Keyboard and mouse: WASD or arrows to walk or
 drive, Shift to sprint, F to enter or steal the nearest car (again to bail out), Space for the
 handbrake on wheels and punches on foot, E or left-click to shoot once a pistol is found, H for
-the horn, Esc to pause. Progress autosaves to localStorage on every mission payout and pause
-(and on tab close); the title menu can delete a save (press twice to confirm).
+the horn, Tab for the phone, R to spin the radio dial, P for photo mode, Esc to pause. Progress
+autosaves to localStorage on every mission payout and pause (and on tab close); the title menu
+can delete a save (press twice to confirm).
 
 ## Systems
 
@@ -53,12 +54,48 @@ the horn, Esc to pause. Progress autosaves to localStorage on every mission payo
   idle lope, two-tone siren, two-tone horn, gunfire, explosions, tyre screech, blips and a
   looping synthwave pad (all of it ducks properly when the game pauses, and catching up after a
   pause skips the missed bars instead of stacking them).
-- Deterministic staging: `?shot=start|play|end|chaos&seed=N` builds a seeded scene and freezes
-  one frame, which is how the four screenshots in `screenshots/` were taken. The title screen
-  shows the world seed it is drifting across.
+- Deterministic staging: `?shot=start|play|end|chaos|docks&seed=N` builds a seeded scene and
+  freezes one frame, which is how the four screenshots in `screenshots/` were taken (the cover
+  is the docks at night). The title screen shows the world seed it is drifting across.
 
 ## New in this build
 
+- **North Docks** (`?shot=docks`): a whole second district north of the grid — five piers on
+  pilings reaching into the bay, three container yards with stacked colored boxes and rolling
+  gantry cranes, warehouses with ribbed roll-up doors, a mooring-bollard promenade, a fish
+  market on Pier B, oil drums, security fences, sodium lamps and floodlight masts, rain
+  puddles that shine when the weather soaks the apron, a rail spur with a loaded flatcar, the
+  anchored MV Coral Crown rolling on the swell, a rotating lighthouse on the breakwater and
+  the Bay Marina island across the water. The district is wired into collision (the seawall,
+  pier rails and yard fences all stop you; the security gate lifts as you approach), into the
+  minimap (stamped landmarks, turf tints, live blips) and into its own staged night scene.
+- **Gangs**: The Tides hold the west water, The Cinders the east yards. Turf heat per block
+  rises with trouble and cools over time; skirmishes erupt near the boundary — join one with
+  `E` and your side's loyalty (and wallet) grows, pick the wrong side and it doesn't. Drive-bys
+  strafe rival blocks with real bullets, gang members wear crew colors in the crowd, and each
+  hideout door opens to a loyal friend (free patch-up, quiet cash, and a pistol at high
+  loyalty). Loyalty rides the save.
+- **Phone** (`Tab`): contacts with scripted mission calls, the property ledger (buy, banked
+  income, garages), the FM dial, a camera shortcut and a message inbox with toast
+  notifications. The pocket world keeps stepping while you text; nobody walks or shoots.
+- **Property**: two businesses bank passive income on a tick you collect from the phone, and
+  three safehouses (including a Pier B walk-up) hold garage slots — and take you in when you
+  get wasted, instead of the hospital.
+- **Ferry**: a working ferry crosses the bay from the North Docks slip to the Bay Marina
+  landing on a schedule. Board with `E` at the slip, ride the deck while she sails (horn and
+  wake included), and step off on the island. The schedule board at the slip tells you when.
+- **Weather**: the sky cycles clear → rain → storm → fog on a weighted clock. Rain streaks
+  slant with the wind, storms flash lightning with delayed thunder and camera shake, fog banks
+  swallow the coast and fog-of-war on the minimap, wet roads steal the player's grip and make
+  every driver in town brake earlier, and the docks' puddles mirror the sodium light.
+- **Heists**: "The Coral Crown Job" — a four-stage score out of the docks (case the harbormaster
+  office, lift the contraband off the Pier C skiff, outrun harbor security through coast-road
+  checkpoints, hand off at Pier A) with per-stage timers, police response that scales with the
+  noise you make, a time-bonus/heat-penalty payout, a Marla thread on your phone, and death
+  ending the job for real.
+- **HUD**: the minimap now covers the docks with stamped landmarks and turf, live blips for the
+  ferry, skirmishes and hideouts, weather fog-of-war, an interaction prompt plate, toast
+  notifications and the pocket phone panel.
 - **Radio** (`R` to spin the dial): four stations — Flamingo FM, Pulse 103, Coral Classics and
   Nightwire — each with its own chord palette, tempo, swing and DJ persona. Songs rotate through
   a per-station play list, the DJ drops patter lines between tracks, a burst of static covers

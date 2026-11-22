@@ -17,6 +17,11 @@ export function stageShot(name, game, ui, seed) {
     freeRun();
     return;
   }
+  if (name === 'docks') {
+    docksScene(game, ui);
+    freeRun();
+    return;
+  }
   if (name === 'start') {
     ui.uiState = 'title';
     // Frame the neon stretch with the most signs, beach road and water behind it.
@@ -126,6 +131,43 @@ export function stageShot(name, game, ui, seed) {
   for (let n = 0; n < 100; n++) game.update(1 / 60, SCRIPT);
   ui.freeze = true;
   freeRun();
+}
+
+/** docks: the North Docks at night — rain rolling in off the bay, the Coral
+ *  Crown at anchor, a turf standoff brewing on Pier B and the fish market. */
+function docksScene(game, ui) {
+  ui.uiState = 'play';
+  // Night rain reads best on wet concrete with sodium lamps burning.
+  game.weather.setWeather('rain', 9999);
+  const pierB = 10 * 420 + 65;          // centre of Pier B
+  const shoreY = -1400;
+  // Rico walks the promenade between Pier B and the market, the anchored
+  // ship looming off his shoulder.
+  game.player.car = null;
+  game.player.x = pierB - 700;
+  game.player.y = shoreY + 190;
+  game.player.heading = -Math.PI / 2;
+  game.player.money = 18750;
+  game.player.weapon = 'pistol';
+  game.player.ammo = 12;
+  // A couple of parked trucks along the shore road.
+  for (let k = 0; k < 3; k++) {
+    const v = game.spawnCar(6, pierB - 620 + k * 300, -1430, 0);
+    v.role = 'parked';
+  }
+  // The Tides and the Cinders square off on Pier B by the market stalls.
+  for (let k = 0; k < 4; k++) {
+    game.gangs.spawnMember('tides', pierB - 55 + k * 22, shoreY - 260 - k * 26);
+  }
+  for (let k = 0; k < 4; k++) {
+    game.gangs.spawnMember('cinders', pierB - 55 + k * 22, shoreY - 380 - k * 22);
+  }
+  game.wanted.stars = 0;
+  game.missions.banner('NORTH DOCKS', 'Five piers, two gangs, one boat that should not be there.', 30, '#7bffd4');
+  // Let the cranes swing, the gulls settle and the rain build.
+  for (let n = 0; n < 150; n++) game.update(1 / 60, SCRIPT);
+  ui.cameraOverride = { x: 3560, y: -1180, zoom: 0.55 };
+  ui.freeze = true;
 }
 
 /** chaos: a torched van burning in an intersection, roadblock up the street, five stars. */
