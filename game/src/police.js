@@ -173,8 +173,18 @@ export class Police {
         if (c.type !== 'police' || !(c.ai instanceof ChaseAI) || c.state !== 'drive') continue;
         if (dist(c.x, c.y, p.x, p.y) < 130 && c.speed < 40 && !c.deployed) {
           c.deployed = true;
-          const cop = game.spawnPed(c.centerOffset('left').x, c.centerOffset('left').y, { kind: 'cop' });
+          const door = c.centerOffset('left');
+          // at 5 stars: SWAT pair, heavier and more accurate
+          const swat = this.wanted >= 5;
+          const cop = game.spawnPed(door.x, door.y, { kind: 'cop', hp: swat ? 90 : 45 });
+          if (swat) cop.swat = true;
           this.active.push(cop);
+          if (swat) {
+            const cop2 = game.spawnPed(door.x + 20, door.y + 12, { kind: 'cop', hp: 90 });
+            cop2.swat = true;
+            this.active.push(cop2);
+            game.hud.toast('SWAT deployed!');
+          }
         }
       }
     }
@@ -183,9 +193,9 @@ export class Police {
       const d = dist(cop.x, cop.y, p.x, p.y);
       cop.shootT = (cop.shootT || 0) - dt;
       if (d < 320 && cop.shootT <= 0) {
-        cop.shootT = CFG.COP_SHOOT_CD * rand(0.8, 1.3);
+        cop.shootT = (cop.swat ? CFG.COP_SHOOT_CD * 0.7 : CFG.COP_SHOOT_CD) * rand(0.8, 1.3);
         cop.dir = angleTo(cop.x, cop.y, p.x, p.y);
-        game.spawnBullet(cop.x + Math.cos(cop.dir) * 12, cop.y + Math.sin(cop.dir) * 12, cop.dir, 'cop');
+        game.spawnBullet(cop.x + Math.cos(cop.dir) * 12, cop.y + Math.sin(cop.dir) * 12, cop.dir + (cop.swat ? 0 : rand(-0.08, 0.08)), 'cop');
         game.audio?.gunshot?.(0.5);
       }
       // walk toward the player
@@ -194,9 +204,6 @@ export class Police {
         cop.dir = a;
         cop.state = 'walk';
         cop.homeDir = a;
-      } else if (d < 120) {
-        cop.state = 'flee'; // reuse fast movement inward? no — cops approach:
-        cop.state = 'walk';
       }
     }
   }
@@ -213,12 +220,15 @@ export class Police {
     if (seen) this.decayT = 0;
     else {
       this.decayT += dt;
+      // continuous cool-off: heat bleeds a little every second, stars drop on the beat
       if (this.decayT > CFG.DECAY_SEEN) {
         this.decayT = 0;
         this.heat = Math.max(0, Math.ceil(this.heat) - 1);
         this.wanted = Math.min(this.wanted, Math.max(0, Math.ceil(this.heat)));
-        if (this.wanted === 0) { this.clear(); game.hud.toast('You lost the heat'); }
+        if (this.wanted === 0) { this.clear(); game.hud.toast('You lost the heat'); game.audio?.missionTick?.(); }
         else game.hud.toast('Heat cooling… ' + '★'.repeat(this.wanted));
+      } else if (this.decayT > CFG.DECAY_SEEN * 0.5 && Math.random() < dt * 0.3) {
+        this.heat = Math.max(this.wanted, this.heat - dt * 0.05);
       }
     }
   }

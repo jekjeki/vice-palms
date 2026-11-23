@@ -36,6 +36,13 @@ export class Transit {
     const target = BUS_LOOP[this.wp];
     const d = dist(car.x, car.y, target.x, target.y);
     if (d < 60) this.wp = (this.wp + 1) % BUS_LOOP.length;
+    // dwell at stops: pause 3s when passing a bus stop on the loop
+    const nearStop = this.game.world.props.some((q) => q.kind === 'busstop' && dist(q.x, q.y, car.x, car.y) < 70);
+    if (nearStop && car.speed < 40) {
+      this.dwell = (this.dwell ?? 0) + 1;
+      if (this.dwell > 160) this.dwell = 0; // ~2.7s dwell then go
+      else return { t: 0, s: 0 };
+    } else this.dwell = 0;
     const aim = angleTo(car.x, car.y, target.x, target.y);
     const err = Math.atan2(Math.sin(aim - car.h), Math.cos(aim - car.h));
     // keep it stately: buses do not street-race

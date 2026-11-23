@@ -64,9 +64,41 @@ const EVENTS = [
     text: 'A dragnet crawls across downtown. Walk casually.',
     spawn(game) {
       for (let i = 0; i < 4; i++) {
-        const cop = game.spawnPed(1000 + i * 700, game.world.roadH[6] - CFG.ROAD_W / 2 - 12, { kind: 'cop' });
+        game.spawnPed(1000 + i * 700, game.world.roadH[6] - CFG.ROAD_W / 2 - 12, { kind: 'cop' });
       }
       return 'Every cruiser in the grid, one very calm jaywalker.';
+    },
+  },
+  {
+    id: 'towline', name: 'TOW TRUCK STAMPEDE',
+    text: 'The impound lot overflows. Every tow truck in VP is rolling.',
+    spawn(game) {
+      for (let i = 0; i < 3; i++) {
+        const car = game.spawnTraffic('truck', 1500 + i * 900, game.world.roadH[8] + CFG.LANE_OFF);
+        if (car) car.ai.cruise = 0.85;
+      }
+      return 'Nobody knows whose car is whose. That is the business model.';
+    },
+  },
+  {
+    id: 'filmcrew', name: 'FILM CREW SIGHTING',
+    text: 'A car-chase movie shoots on 8th. The city is the stunt team.',
+    spawn(game) {
+      const y = game.world.roadH[7];
+      for (let i = 0; i < 8; i++) {
+        game.spawnPed(600 + i * 240, y - CFG.ROAD_W / 2 - 12, { job: 'tourist' });
+      }
+      const hero = game.spawnTraffic('sport', 1000, y + CFG.LANE_OFF);
+      if (hero) hero.color = '#e0c040';
+      return 'Someone yelled "action" and the traffic obeyed.';
+    },
+  },
+  {
+    id: 'blackout', name: 'ROLLING BLACKOUT',
+    text: 'The grid flips out for a minute. Neon city goes candlelight.',
+    spawn(game) {
+      game.blackout = 14;
+      return 'Vice Palms by candlelight: still illegal, just quieter.';
     },
   },
 ];

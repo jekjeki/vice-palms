@@ -6,6 +6,7 @@ const SERVICES = [
   {
     id: 'spray', poi: 'spray', name: "Pay 'n' Spray", color: '#ff5da2',
     hint: 'Drive in to respray and repair — $100',
+    line: 'shop_spray',
     canUse(g) { return !!g.player.inCar; },
     price: 100,
     act(g) {
@@ -21,12 +22,14 @@ const SERVICES = [
       g.hud.toast('Fresh paint, clean record — $100');
       g.audio?.missionTick?.();
       g.fxSparks(car.x, car.y, 10);
+      g.dialogue?.play(this.line, true);
       return null;
     },
   },
   {
     id: 'gas', poi: 'gas', name: 'Octane Fuel & Repair', color: '#ffd166',
     hint: 'Stop here to patch the bodywork — $50',
+    line: 'shop_spray',
     canUse(g) { return !!g.player.inCar; },
     price: 50,
     act(g) {
@@ -38,6 +41,7 @@ const SERVICES = [
       car.fireT = 0;
       g.hud.toast('Bodywork patched — $50');
       g.audio?.missionTick?.();
+      g.dialogue?.play(this.line, true);
       return null;
     },
   },
@@ -45,6 +49,7 @@ const SERVICES = [
     id: 'ammo', poi: 'ammunation', name: 'Ammu-Nation', color: '#8cff5d',
     hint: 'E: buy 24 rounds ($60) · E again: armor ($150)',
     price: 60,
+    line: 'shop_guns',
     canUse(g) { return !g.player.inCar; },
     act(g) {
       if (!this.armorNext) {
@@ -60,6 +65,7 @@ const SERVICES = [
       }
       this.armorNext = !this.armorNext;
       g.audio?.missionTick?.();
+      g.dialogue?.play(this.line, true);
       return null;
     },
   },
@@ -67,6 +73,7 @@ const SERVICES = [
     id: 'food', poi: 'food', name: 'Palm Dogs', color: '#00e5ff',
     hint: 'E: hot dog, full heal — $25',
     price: 25,
+    line: 'shop_spray',
     canUse(g) { return !g.player.inCar; },
     act(g) {
       if (g.player.hp >= CFG.P_HP) return 'Already full';
@@ -75,6 +82,7 @@ const SERVICES = [
       g.player.hp = CFG.P_HP;
       g.hud.toast('Full health — $25');
       g.audio?.missionTick?.();
+      g.dialogue?.play(this.line, true);
       return null;
     },
   },

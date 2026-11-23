@@ -230,6 +230,17 @@ export class Game {
     if (this.missions.storyIndex >= 6) { this.state = 'end'; this.screenT = 0; }
   }
 
+  // epilogue: after the story, the strip stays open — free-roam hints
+  updateEpilogue(dt) {
+    if (this.missions.storyIndex < 6 || this.epilogueShown || this.state !== 'play') return;
+    this.epilogueShown = true;
+    this.hud.banner('VICE PALMS IS YOURS', 'Free roam unlocked — the strip stays open');
+    this.dialogue?.play('m6_done', true);
+    this.addPickup(this.world.pois.safehouse.x + 60, this.world.pois.safehouse.y - 30, 'armor');
+    this.addPickup(this.world.pois.safehouse.x + 100, this.world.pois.safehouse.y - 30, 'ammo');
+    this.addPickup(this.world.pois.safehouse.x + 140, this.world.pois.safehouse.y - 30, 'health');
+  }
+
   // ---------- gameplay hooks ----------
   addWanted(n, reason) {
     this.police.addWanted(n, reason);
@@ -424,6 +435,7 @@ export class Game {
     }
     this.flash = Math.max(0, this.flash - dt * CFG.FLASH_DECAY);
     this.cam.shake = Math.max(0, this.cam.shake - dt * 30);
+    if (this.blackout > 0) this.blackout -= dt;
     for (const pt of this.particles) {
       pt.life -= dt;
       pt.x += pt.vx * dt;
@@ -451,6 +463,7 @@ export class Game {
     this.dialogue.update(dt);
     this.transit.update(dt);
     this.events.update(dt);
+    this.updateEpilogue(dt);
     this.checkAchievements();
     for (const c of this.cars) c.update(this, dt, this.input);
     for (const ped of this.peds) ped.update(this, dt);

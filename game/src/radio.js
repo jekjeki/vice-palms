@@ -67,13 +67,14 @@ export class Radio {
       this.show(true);
     }
     // R: next station
-    if (this.game.input.pressed('R') && this.cool <= 0) {
+      if (this.game.input.pressed('R') && this.cool <= 0) {
       this.cool = 0.4;
       this.stationIndex = (this.stationIndex + 1) % STATIONS.length;
       this.trackIndex = 0;
       this.trackT = 0;
       this.show(true);
       this.game.audio?.missionTick?.();
+      this.game.audio?.stationJingle?.(this.station.id);
     }
   }
 

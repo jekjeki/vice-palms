@@ -254,6 +254,20 @@ export class World {
     this.spawns.cars.push({ x: CFG.AIR_W + 140, y: 2200, h: 0, type: 'pickup', parked: true });
     this.spawns.cars.push({ x: CFG.AIR_W + 240, y: 2200, h: 0, type: 'van', parked: true });
 
+    // --- ambient wildlife: seagulls circle the beach and the harbor ---------
+    this.gulls = [];
+    for (let i = 0; i < 8; i++) {
+      const gx = this.rng.range(400, 4000);
+      const gy = this.rng.f() < 0.5 ? this.rng.range(CFG.SAND_S, CFG.OCEAN_S + 60) : this.rng.range(60, 240);
+      this.gulls.push({ x: gx, y: gy, r: 40 + this.rng.f() * 70, sp: this.rng.range(0.8, 1.6), ph: this.rng.f() * TAU });
+    }
+
+    // --- cafe tables on the old town sidewalks -------------------------------
+    for (let i = 0; i < 5; i++) {
+      this.props.push({ kind: 'cafetable', x: 480 + i * 110, y: 1782 });
+      this.props.push({ kind: 'umbrellastand', x: 480 + i * 110, y: 1798 });
+    }
+
     // --- beach extras: umbrellas, surfboards, more lifeguards ---------------
     for (let i = 0; i < 14; i++) {
       const x = this.rng.range(260, 4000);
@@ -365,6 +379,27 @@ export class World {
       this.props.push({ kind: 'drums', x: CFG.AIR_W + 140 + (i % 4) * 70, y: 2140 + Math.floor(i / 4) * 60 });
     }
     this.props.push({ kind: 'windsock', x: CFG.AIR_W + 60, y: 1840 });
+
+    // --- drive-in theater by the beach: giant screen + speaker posts --------
+    this.props.push({ kind: 'drivein', x: 3450, y: CFG.SAND_S - 60 });
+    for (let i = 0; i < 4; i++) {
+      this.props.push({ kind: 'speaker', x: 3300 + i * 100, y: CFG.SAND_S + 80 });
+    }
+    this.addSolid({ x0: 3330, y0: CFG.SAND_S - 130, x1: 3570, y1: CFG.SAND_S - 66, type: 'screen' });
+
+    // --- landmark blocks: VPD precinct, hospital, Palm Garage ---------------
+    const landmarks = [
+      { x: 1386, y: 1700, kind: 'precinct', label: 'VPD PRECINCT 1', color: '#4f8aff', w: 150, h: 100 },
+      { x: 2074, y: 1016, kind: 'hospital', label: 'MERCY GENERAL', color: '#ff5d7d', w: 150, h: 100 },
+      { x: 2380, y: 2896, kind: 'garagebld', label: 'PALM GARAGE', color: '#ffd166', w: 140, h: 90 },
+    ];
+    for (const L of landmarks) {
+      this.props.push({ kind: L.kind, x: L.x, y: L.y, label: L.label, color: L.color, w: L.w, h: L.h });
+      this.addSolid({ x0: L.x - L.w / 2, y0: L.y - L.h / 2, x1: L.x + L.w / 2, y1: L.y + L.h / 2, type: L.kind });
+    }
+    // remove procedural buildings that collide with landmark footprints
+    const lmRects = [[1311, 1650, 1461, 1750], [1999, 966, 2149, 1066], [2310, 2851, 2450, 2941]];
+    this.buildings = this.buildings.filter((b) => !b.container && !lmRects.some((r) => b.x0 < r[2] && b.x1 > r[0] && b.y0 < r[3] && b.y1 > r[1]));
 
     // --- hidden packages (12 collectibles tucked around town) ----------------
     // snap each to the nearest sidewalk so they are always reachable on foot

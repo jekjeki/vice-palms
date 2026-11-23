@@ -111,10 +111,23 @@ function drawTitle(game, ctx) {
   ctx.font = '600 22px "Segoe UI", sans-serif';
   ctx.fillStyle = Math.sin(t * 4) > 0 ? '#ffffff' : '#c9c9d4';
   ctx.fillText('PRESS  ENTER  TO  PLAY', W / 2, H * 0.68);
+  // rotating tip marquee
+  const tips = [
+    'RICO TIP: rain makes the roads slippery — respect the handbrake',
+    'VPD TIP: spike strips pop tires. Pay \'n\' Spray fixes everything else.',
+    'RADIO TIP: R surfs the dial. WAVE 101.3 owns the night.',
+    'CAB TIP: the Palm Line bus rides the whole loop for five bucks.',
+    'SECRET TIP: twelve green briefcases are tucked around town.',
+    'STUNT TIP: ramps pay by the second. Bigger air, bigger money.',
+  ];
+  const tip = tips[Math.floor(t / 4) % tips.length];
+  ctx.font = '600 14px "Segoe UI", sans-serif';
+  ctx.fillStyle = 'rgba(140,200,255,0.8)';
+  ctx.fillText(tip, W / 2, H * 0.74);
   ctx.font = '600 15px "Segoe UI", sans-serif';
   ctx.fillStyle = 'rgba(230,230,240,0.75)';
-  ctx.fillText('WASD drive/walk · SHIFT sprint · SPACE handbrake · F enter/carjack', W / 2, H * 0.78);
-  ctx.fillText('Mouse aim + click shoot · E punch · M mute · ESC pause', W / 2, H * 0.82);
+  ctx.fillText('WASD drive/walk · SHIFT sprint/nitro · SPACE handbrake · F enter/carjack', W / 2, H * 0.78);
+  ctx.fillText('Mouse aim + click shoot · E punch · H siren · TAB map · M mute · ESC pause', W / 2, H * 0.82);
   ctx.fillStyle = 'rgba(255,209,102,0.85)';
   ctx.fillText('make.fun · gta6-01 · jekjeki', W / 2, H * 0.9);
   ctx.textAlign = 'left';

@@ -32,6 +32,7 @@ export function render(game, ctx) {
   drawPeds(game, ctx);
   drawSkidmarks(game, ctx);
   drawCars(game, ctx);
+  drawRoadSpray(game, ctx);
   drawPlayer(game, ctx);
   drawBullets(game, ctx);
   drawParticles(game, ctx);
@@ -216,9 +217,24 @@ function drawZoneProps(game, ctx, vis) {
       ctx.stroke();
     }
   }
+  // seagulls: little circling V-shapes over beach and harbor
+  for (const b of w.gulls || []) {
+    const gx = b.x + Math.cos(game.t * b.sp + b.ph) * b.r;
+    const gy = b.y + Math.sin(game.t * b.sp * 0.8 + b.ph) * b.r * 0.5;
+    if (gx < vis.x0 - 40 || gx > vis.x1 + 40 || gy < vis.y0 - 40 || gy > vis.y1 + 40) continue;
+    const flap = Math.sin(game.t * 9 + b.ph * 7) * 2.4;
+    ctx.strokeStyle = 'rgba(220,225,235,0.8)';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(gx - 4, gy - flap);
+    ctx.lineTo(gx, gy);
+    ctx.lineTo(gx + 4, gy - flap);
+    ctx.stroke();
+  }
   // street lamps: pole + warm pool of light
   for (const l of w.lamps) {
     if (l.x < vis.x0 - 80 || l.x > vis.x1 + 80 || l.y < vis.y0 - 80 || l.y > vis.y1 + 80) continue;
+    if (game.blackout > 0) continue;
     const g = ctx.createRadialGradient(l.x, l.y, 4, l.x, l.y, 66);
     g.addColorStop(0, 'rgba(255,214,140,0.16)');
     g.addColorStop(1, 'rgba(255,214,140,0)');
@@ -380,6 +396,91 @@ function drawProp(game, ctx, prop, vis) {
       ctx.lineTo(prop.x + 24 + sway, prop.y - 16);
       ctx.lineTo(prop.x, prop.y - 18);
       ctx.closePath(); ctx.fill();
+      break;
+    }
+    case 'drivein': {
+      // giant screen on stilts, playing a flickering late-night movie
+      ctx.fillStyle = '#2a2a36';
+      ctx.fillRect(prop.x - 120, prop.y - 56, 240, 10);
+      ctx.fillStyle = '#101018';
+      ctx.fillRect(prop.x - 110, prop.y - 46, 220, 54);
+      // movie frame: animated sunset bars
+      for (let i = 0; i < 5; i++) {
+        ctx.fillStyle = ['rgba(255,93,162,0.6)', 'rgba(255,209,102,0.5)', 'rgba(0,229,255,0.4)', 'rgba(140,255,93,0.3)', 'rgba(199,125,255,0.3)'][i];
+        const hOff = Math.sin(game.t * 2 + i) * 4;
+        ctx.fillRect(prop.x - 100 + i * 42, prop.y - 40 + hOff, 30, 40);
+      }
+      ctx.fillStyle = '#3a3a46';
+      ctx.fillRect(prop.x - 110, prop.y + 8, 12, 12);
+      ctx.fillRect(prop.x + 98, prop.y + 8, 12, 12);
+      break;
+    }
+    case 'speaker': {
+      ctx.fillStyle = '#5a5a68';
+      ctx.fillRect(prop.x - 3, prop.y - 16, 6, 18);
+      ctx.beginPath(); ctx.arc(prop.x, prop.y - 18, 5, 0, TAU); ctx.fill();
+      break;
+    }
+    case 'precinct': case 'hospital': case 'garagebld': {
+      const { x, y, w, h, color, label } = prop;
+      ctx.fillStyle = '#20242e';
+      ctx.fillRect(x - w / 2, y - h / 2, w, h);
+      // civic banding
+      ctx.fillStyle = color;
+      ctx.fillRect(x - w / 2, y - h / 2, w, 10);
+      // glowing sign
+      ctx.save();
+      ctx.font = 'bold 12px "Segoe UI", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = color; ctx.shadowBlur = 12;
+      ctx.fillStyle = color;
+      ctx.fillText(label, x, y - h / 2 - 8);
+      ctx.restore();
+      // windows grid
+      ctx.fillStyle = 'rgba(255,214,140,0.28)';
+      for (let wx = x - w / 2 + 12; wx < x + w / 2 - 12; wx += 22) {
+        for (let wy = y - h / 2 + 18; wy < y + h / 2 - 10; wy += 20) {
+          ctx.fillRect(wx, wy, 12, 10);
+        }
+      }
+      // entrance
+      ctx.fillStyle = '#111118';
+      ctx.fillRect(x - 14, y + h / 2 - 20, 28, 20);
+      // service details
+      if (prop.kind === 'hospital') {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(x - 2, y - 30, 4, 12);
+        ctx.fillRect(x - 5, y - 27, 10, 5);
+      }
+      if (prop.kind === 'precinct') {
+        ctx.fillStyle = '#4f8aff';
+        const blink = Math.floor(game.t * 3) % 2 === 0;
+        if (blink) ctx.fillRect(x - w / 2 + 6, y - h / 2 + 14, 8, 4);
+      }
+      if (prop.kind === 'garagebld') {
+        ctx.strokeStyle = '#3a3a46';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x - w / 2 + 10, y + h / 2 - 34, w - 20, 24);
+      }
+      break;
+    }
+    case 'cafetable': {
+      ctx.fillStyle = '#d8d0c0';
+      ctx.beginPath(); ctx.arc(prop.x, prop.y, 8, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#8a7a52';
+      ctx.fillRect(prop.x - 1, prop.y, 2, 6);
+      // two cups
+      ctx.fillStyle = '#c23434';
+      ctx.beginPath(); ctx.arc(prop.x - 3, prop.y - 2, 1.6, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#3a6a8a';
+      ctx.beginPath(); ctx.arc(prop.x + 3, prop.y + 1, 1.6, 0, TAU); ctx.fill();
+      break;
+    }
+    case 'umbrellastand': {
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.beginPath(); ctx.ellipse(prop.x, prop.y, 10, 4, 0, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#c94f6d';
+      ctx.beginPath(); ctx.arc(prop.x, prop.y - 2, 9, 0, Math.PI); ctx.fill();
       break;
     }
     case 'stall': {
@@ -824,6 +925,8 @@ function drawContainer(ctx, b) {
 }
 
 function drawNeonText(ctx, s) {
+  const blackout = typeof window !== 'undefined' && window.__vp ? window.__vp.blackout > 0 : false;
+  if (blackout) return;
   const flick = Math.sin(game_time() * 17 + s.x) > -0.85;
   if (!flick) return;
   ctx.save();
@@ -916,6 +1019,23 @@ function drawRamps(game, ctx) {
       ctx.fillText('AIR ' + game.jumps.airT.toFixed(1) + 's', p.inCar.x, p.inCar.y - 44);
       ctx.restore();
       ctx.textAlign = 'left';
+    }
+  }
+}
+
+// rain splashes kicked up by fast cars
+function drawRoadSpray(game, ctx) {
+  if (!game.weather || game.weather.intensity <= 0.4) return;
+  const k = game.weather.intensity;
+  for (const c of game.cars) {
+    if (c.state === 'wreck' || c.speed < 60) continue;
+    if (c.x < game.vis.x0 - 100 || c.x > game.vis.x1 + 100 || c.y < game.vis.y0 - 100 || c.y > game.vis.y1 + 100) continue;
+    ctx.fillStyle = 'rgba(170,200,240,' + 0.35 * k + ')';
+    const n = Math.floor(2 + k * 3);
+    for (let i = 0; i < n; i++) {
+      const bx = c.x - Math.cos(c.h) * c.len * (0.5 + Math.random() * 0.4) + (Math.random() - 0.5) * c.wid;
+      const by = c.y - Math.sin(c.h) * c.len * (0.5 + Math.random() * 0.4) + (Math.random() - 0.5) * c.wid;
+      ctx.beginPath(); ctx.arc(bx, by, 2.4 + Math.random() * 2.4, 0, TAU); ctx.fill();
     }
   }
 }
@@ -1169,6 +1289,30 @@ function drawCar(game, ctx, c) {
     ctx.beginPath(); ctx.arc(0, 0, c.len * 0.3, 0, TAU); ctx.fill();
   }
   ctx.restore();
+
+  // battle scars: dents appear on hard-hit cars (deterministic per car id)
+  if (!wreck && c.hp < c.maxHp * 0.6) {
+    const dents = Math.floor((1 - c.hp / c.maxHp) * 5);
+    for (let i = 0; i < dents; i++) {
+      const ang = (c.id * 2.4 + i * 1.7) % TAU;
+      const dx = Math.cos(ang) * c.len * 0.3;
+      const dy = Math.sin(ang) * c.wid * 0.28;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      ctx.rotate(c.h);
+      ctx.fillStyle = 'rgba(10,10,14,0.55)';
+      ctx.beginPath();
+      ctx.ellipse(dx, dy, 6 + (i % 2) * 3, 4, ang, 0, TAU);
+      ctx.fill();
+      // scorch ring when burning
+      if (c.state === 'fire') {
+        ctx.strokeStyle = 'rgba(255,140,60,0.4)';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(dx * 0.6, dy * 0.6, 9, 0, TAU); ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
 }
 
 function shadeCar(hex, k) {
@@ -1291,12 +1435,18 @@ function drawParticles(game, ctx) {
 
 // ---------------------------------------------------------------- glow passes
 function drawHeadlights(game, ctx) {
+  // damaged headlights flicker on the lastHP legs
+  function headlightOn(c) {
+    if (c.driver === null && c.speed < 5 && c.type !== 'police') return false;
+    if (c.hp < c.maxHp * 0.25) return Math.sin(game.t * 11 + c.id * 3) > -0.5;
+    return true;
+  }
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
   for (const c of game.cars) {
     if (c.state === 'wreck') continue;
     if (c.x < game.vis.x0 - 200 || c.x > game.vis.x1 + 200 || c.y < game.vis.y0 - 200 || c.y > game.vis.y1 + 200) continue;
-    if (c.driver === null && c.speed < 5 && c.type !== 'police') continue;
+    if (!headlightOn(c)) continue;
     const L = 170;
     const g = ctx.createRadialGradient(c.x + Math.cos(c.h) * c.len / 2, c.y + Math.sin(c.h) * c.len / 2, 6, c.x + Math.cos(c.h) * (c.len / 2 + L / 2), c.y + Math.sin(c.h) * (c.len / 2 + L / 2), L / 1.4);
     g.addColorStop(0, 'rgba(255,240,190,0.22)');
@@ -1325,6 +1475,7 @@ function drawHeadlights(game, ctx) {
 }
 
 function drawNeonGlow(game, ctx, vis) {
+  if (game.blackout > 0) return; // rolling blackout: the neon grid sleeps
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
   for (const s of game.world.neonSigns) {

@@ -153,6 +153,20 @@ export class HUD {
     ctx.font = 'bold 11px "Segoe UI", sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('N', mx, my - this.minimapR - 2);
+    // active objective distance under the map
+    if (m) {
+      const target = game.missions.markers.find((k) => k.id === 'obj' || k.id === 'story');
+      if (target) {
+        const d = Math.round(Math.hypot(target.x - (p.inCar ? p.inCar.x : p.x), target.y - (p.inCar ? p.inCar.y : p.y)));
+        ctx.fillStyle = target.color;
+        ctx.fillText('» ' + d + 'm to ' + (target.label || 'objective'), mx, my + this.minimapR + 16);
+      }
+    }
+    // hidden packages progress
+    if (game.stats && game.stats.packages > 0) {
+      ctx.fillStyle = '#8cff5d';
+      ctx.fillText('PKG ' + game.stats.packages + '/' + (game.world.hidden ? game.world.hidden.length : 12), mx, my + this.minimapR + 30);
+    }
     ctx.textAlign = 'left';
 
     // ---- speedo (bottom-right) ----
@@ -194,10 +208,11 @@ export class HUD {
         ctx.font = 'bold 12px "Segoe UI", sans-serif';
         ctx.fillText('NITRO!', W - 178, H - 52);
       }
-      // gear + car name
+    // ---- gear + car name ----
       ctx.fillStyle = p.inCar.speedFwd < -4 ? '#ff9d3c' : '#8cff5d';
       ctx.font = 'bold 13px "Segoe UI", sans-serif';
-      ctx.fillText(p.inCar.def.name + (p.inCar.speedFwd < -4 ? ' · R' : ' · D'), W - 178, H - 36);
+      const gear = p.inCar.speedFwd < -4 ? 'R' : p.inCar.speed < 2 ? 'N' : Math.min(5, 1 + Math.floor(p.inCar.engineLevel * 5)) + '';
+      ctx.fillText(p.inCar.def.name + ' · ' + gear, W - 178, H - 36);
       // damage bar
       const dmg = 1 - clamp(p.inCar.hp / p.inCar.maxHp, 0, 1);
       ctx.fillStyle = dmg > 0.55 ? '#ff4a5d' : '#ffd166';

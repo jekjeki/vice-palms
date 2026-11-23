@@ -49,11 +49,23 @@ export class Weather {
       if (this.thunderT <= 0) {
         this.thunderT = rand(8, 18);
         this.flashT = 0.35;
+        // a bolt actually strikes somewhere near the camera
+        const g = this.game;
+        this.bolt = {
+          x: g.cam.x + rand(-500, 500),
+          y: g.cam.y + rand(-360, 360),
+          life: 0.28,
+          seed: Math.random(),
+        };
         this.game.audio?.thunder?.();
         this.game.cam.shake = Math.min(CFG.SHAKE_MAX, this.game.cam.shake + 3);
       }
     }
     this.flashT = Math.max(0, this.flashT - dt);
+    if (this.bolt) {
+      this.bolt.life -= dt;
+      if (this.bolt.life <= 0) this.bolt = null;
+    }
   }
 
   // tire grip multiplier (applied inside cars.js physics)
@@ -61,6 +73,7 @@ export class Weather {
 
   // screen-space overlays called by render after the world pass
   draw(ctx) {
+    if (this.bolt) this.drawBolt(ctx);
     if (this.intensity > 0.02) {
       ctx.save();
       ctx.strokeStyle = 'rgba(170,200,240,' + (0.10 + this.intensity * 0.18) + ')';
@@ -81,6 +94,37 @@ export class Weather {
       ctx.fillStyle = 'rgba(210,225,255,' + a + ')';
       ctx.fillRect(0, 0, CFG.VIEW_W, CFG.VIEW_H);
     }
+  }
+
+  // jagged bolt anchored above the strike point, drawn in world space
+  drawBolt(ctx) {
+    const b = this.bolt;
+    const a = clamp(b.life / 0.28, 0, 1);
+    const g = this.game;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(220,230,255,' + 0.85 * a + ')';
+    ctx.shadowColor = 'rgba(160,190,255,' + 0.9 * a + ')';
+    ctx.shadowBlur = 18;
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    let x = b.x, y = b.y - 520;
+    ctx.moveTo(x, y);
+    // 6 jagged segments down to the strike point
+    for (let i = 0; i < 6; i++) {
+      x += Math.sin((i + 1) * 3.7 + b.seed * 10) * 34;
+      y += 520 / 6;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    // ground scorch glow
+    const grd = ctx.createRadialGradient(b.x, b.y, 2, b.x, b.y, 60);
+    grd.addColorStop(0, 'rgba(200,220,255,' + 0.5 * a + ')');
+    grd.addColorStop(1, 'rgba(200,220,255,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath(); ctx.arc(b.x, b.y, 60, 0, TAU); ctx.fill();
+    ctx.restore();
   }
 
   serialize() { return { t: this.t, phase: this.phase }; }

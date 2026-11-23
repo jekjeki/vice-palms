@@ -1,5 +1,6 @@
 // audio.js — synthesized WebAudio: engine, gunshots, siren, explosions, synthwave loop
 import { CFG } from './config.js';
+import { clamp } from './util.js';
 
 export class Audio {
   constructor() {
@@ -83,13 +84,18 @@ export class Audio {
   }
 
   // engine follow: pitch by speed, audible only while driving
+  // engine rpm stepped into fake gears for a shifting feel
   engine(level, driving) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
-    const f = 55 + level * 150 + (driving ? 8 : 0);
-    this.engineOsc.frequency.setTargetAtTime(f, t, 0.08);
-    this.engineSub.frequency.setTargetAtTime(f / 2, t, 0.08);
-    this.engineGain.gain.setTargetAtTime(driving ? 0.10 + level * 0.10 : 0, t, 0.12);
+    const lvl = clamp(level, 0, 1);
+    const gear = Math.min(4, Math.floor(lvl * 4.2));
+    const gearFrac = clamp(lvl * 4.2 - gear, 0, 1);
+    const gearBase = [50, 74, 104, 138, 168][gear];
+    const f = gearBase + gearFrac * 30 + (driving ? 6 : 0);
+    this.engineOsc.frequency.setTargetAtTime(f, t, 0.06);
+    this.engineSub.frequency.setTargetAtTime(f / 2, t, 0.06);
+    this.engineGain.gain.setTargetAtTime(driving ? 0.10 + lvl * 0.10 : 0, t, 0.12);
   }
 
   siren(prox) {
@@ -157,6 +163,10 @@ export class Audio {
   missionDone() { this.tone(523, 0.18, 0.3, 'square'); this.tone(659, 0.18, 0.3, 'square'); this.tone(784, 0.3, 0.35, 'square'); }
   missionFail() { this.tone(330, 0.3, 0.3, 'sawtooth', -120); }
   missionTick() { this.tone(880, 0.1, 0.25, 'square'); }
+  stationJingle(id) {
+    const notes = { wave: [523, 659, 784], jazz: [440, 523, 622], talk: [392, 392], pulse: [622, 740, 880], off: [] }[id] || [];
+    notes.forEach((f, i) => this.tone(f, 0.12, 0.2, 'square'));
+  }
   thunder() { this.noiseBurst(1.6, 0.7, 220); this.tone(52, 1.1, 0.4, 'sawtooth', -18); }
   splash() { this.noiseBurst(0.5, 0.45, 900); }
   screech() { this.noiseBurst(0.22, 0.22, 3400, 'bandpass'); this.tone(1100, 0.18, 0.06, 'sawtooth', -240); }

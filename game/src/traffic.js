@@ -14,6 +14,8 @@ export class TrafficAI {
     this.turnedRecently = 0;
     this.panic = 0;
     this.honked = 0;
+    this.overtake = 0;
+    this.overtaking = false;
     this.cruise = 0.62 + Math.random() * 0.3; // fraction of max speed
   }
 
@@ -44,6 +46,14 @@ export class TrafficAI {
       laneX = this.dir === Math.PI / 2 ? rx - this.laneOff : rx + this.laneOff;
       laneY = car.y + Math.sin(this.dir) * 200;
     }
+    // active overtake: bias the lane target across the road center
+    if (this.overtake > 0) {
+      const shift = R / 2 - this.laneOff * 2;
+      if (horiz) laneY += this.dir === 0 ? -shift : shift;
+      else laneX += this.dir === Math.PI / 2 ? shift : -shift;
+      this.overtake -= dt;
+      this.overtaking = true;
+    } else this.overtaking = false;
 
     // steer toward lane heading (correct lateral drift + heading)
     let s = 0;
@@ -92,11 +102,16 @@ export class TrafficAI {
       const d = ahead.d;
       if (d < 34) t = -0.4;           // hard stop / slight reverse creep
       else if (d < 76) t = -0.15;     // brake
+      // confident overtake: drift to the oncoming lane when there is room
+      if (d < 90 && fwd > 60 && !this.overtaking && !this.overtake) {
+        this.overtake = 1.6;
+      }
       if (d < 60 && Math.random() < dt * 0.4 && this.honked <= 0) {
         this.honked = 2.5; car.horn = 0.4;
         game.audio?.carHorn?.();
       }
     }
+    if (this.overtake > 0) t = Math.max(t, 0.9);
 
     // panic acceleration for fleeing traffic
     if (this.panic > 0) t = Math.max(t, 0.9);

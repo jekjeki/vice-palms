@@ -95,6 +95,17 @@ export class Missions {
     const game = this.game;
     const m = this.active;
     if (!m) return;
+    if (!m.story && game.dialogue) {
+      const lines = {
+        delivery: 'DISPATCH: "All five. The boxes were, uh, decorative. Don\'t ask."',
+        taxi: 'DISPATCH: "Three fares, zero complaints. You are the city now."',
+        sweep: 'DISPATCH: "Gang\'s on foot. Walking is healthier anyway."',
+        heatrun: 'DISPATCH: "Forty-five seconds of pure legend. Well done."',
+        pilotrun: 'DISPATCH: "The pilot saluted. He was drunk, but still."',
+        vicegp: 'ORGANIZER: "Eight corners. Even the cops clapped. From a distance."',
+      }[m.def.id];
+      if (lines) game.hud.subtitle(lines, 4);
+    }
     let reward = m.def.reward;
     // timed missions pay a speed bonus
     if (m.timer !== null && m.timer !== undefined && m.timer > 0 && m.def.timer) {

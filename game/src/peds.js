@@ -55,6 +55,17 @@ export class Ped {
     }
 
     if (this.state === 'flee') {
+      // panic spread: fleeing peds shove apart so crowds scatter, not stack
+      for (const o of game.peds) {
+        if (o === this || o.state !== 'flee') continue;
+        const dx = this.x - o.x, dy = this.y - o.y;
+        const dd = dx * dx + dy * dy;
+        if (dd < 400 && dd > 0.01) {
+          const d = Math.sqrt(dd);
+          this.x += (dx / d) * 30 * dt;
+          this.y += (dy / d) * 30 * dt;
+        }
+      }
       this.fleeT -= dt;
       const away = Math.atan2(this.y - p.y, this.x - p.x);
       this.dir += angDiff(this.dir, away) * Math.min(1, dt * 3);
