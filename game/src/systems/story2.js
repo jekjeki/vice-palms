@@ -302,7 +302,8 @@ export function createStory2(game) {
       game_.onWantedBegin();
       say('Rosa', 'No cooling off this time. Run.');
     }
-    if (st.type === 'wait') a.timer = st.time;
+    // The funeral hold is the clock: standing in the circle advances `waited`
+    // in update(), so this stage gets no shared countdown to fail against.
   }
 
   function fail(reason) {
