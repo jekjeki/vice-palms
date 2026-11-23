@@ -1,19 +1,12 @@
-// serve.ts — tiny static server for game/ on http://localhost:8080.
-// Node 22 stdlib only. `npx tsx serve.ts --port 3000` style usage:
-//   node serve.ts            -> port 8080
-//   node serve.ts --port N   -> port N
+// Minimal Node stdlib static file server for game/ on http://localhost:8080
+// Usage: node serve.ts [--port N]
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { join, normalize, extname } from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
+import { join, normalize, extname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const args = process.argv.slice(2);
-let port = 8080;
-const pi = args.indexOf('--port');
-if (pi !== -1 && args[pi + 1]) port = parseInt(args[pi + 1], 10) || 8080;
-
-const ROOT = join(process.cwd(), 'game');
-
-const MIME: Record<string, string> = {
+const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), 'game');
+const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
@@ -25,44 +18,52 @@ const MIME: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
   '.txt': 'text/plain; charset=utf-8',
+  '.woff2': 'font/woff2',
 };
+let port = 8080;
+const pi = process.argv.indexOf('--port');
+if (pi > 0 && process.argv[pi + 1]) port = Number(process.argv[pi + 1]) || 8080;
 
 const server = createServer(async (req, res) => {
   try {
-    let urlPath = decodeURIComponent((req.url ?? '/').split('?')[0]!);
-    if (urlPath === '/') urlPath = '/index.html';
-    // traversal guard: resolve inside ROOT only
-    const safe = normalize(urlPath).replace(/^([/\\])+/, '');
-    const file = join(ROOT, safe);
-    if (!file.startsWith(ROOT)) {
+    let urlPath = decodeURIComponent((req.url ?? '/').split('?')[0]);
+    if (urlPath.endsWith('/')) urlPath += 'index.html';
+    const rel = normalize(urlPath.replace(/^[/\\]+/, ''));
+    const file = resolve(ROOT, rel);
+    if (!file.startsWith(resolve(ROOT) + '')) {
       res.writeHead(403).end('forbidden');
       return;
     }
-    const data = await readFile(file);
+    const s = await stat(file).catch(() => null);
+    if (!s || !s.isFile()) {
+      res.writeHead(404).end('not found');
+      return;
+    }
+    const body = await readFile(file);
     res.writeHead(200, {
       'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
+      'content-length': body.length,
       'cache-control': 'no-store',
     });
-    if (req.method === 'HEAD') res.end();
-    else res.end(data);
-  } catch {
-    res.writeHead(404, { 'content-type': 'text/plain' }).end('404 not found');
+    res.end(req.method === 'HEAD' ? undefined : body);
+  } catch (err) {
+    res.writeHead(500).end('error: ' + (err as Error).message);
   }
 });
 
 server.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
-    console.error(`port ${port} is busy — is another serve.ts already running?`);
+    console.error(`serve: port ${port} is busy — close the other server or run \`node serve.ts --port ${port + 1}\``);
     process.exit(1);
   }
-  throw err;
+  console.error('serve: ' + err.message);
+  process.exit(1);
 });
 
-server.listen(port, () => {
-  console.log(`serving game/ at http://localhost:${port}`);
-});
+server.listen(port, () => console.log(`serve: http://localhost:${port}/ (Ctrl+C to stop)`));
 
 process.on('SIGINT', () => {
+  console.log('\nserve: bye');
   server.close(() => process.exit(0));
-  process.exit(0);
+  setTimeout(() => process.exit(0), 200);
 });

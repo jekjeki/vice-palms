@@ -1,124 +1,88 @@
-// weather.js — coastal night weather: drifting rain showers, gusts that make
-// the roads slick, and the occasional thunderstorm flash. Rain lowers grip a
-// touch and doubles down on the wet-street look.
-
+// weather.js — coastal night rain: drifting intensity, screen-space streaks, thunder,
+// wet-road feedback and reduced tire grip while pouring.
 import { CFG } from './config.js';
-import { RNG, mixSeeds } from './rng.js';
-import { clamp, TAU } from './util.js';
+import { rand, clamp } from './util.js';
 
 export class Weather {
-  constructor(game, seed) {
+  constructor(game, seed = 7) {
     this.game = game;
-    this.rng = new RNG(mixSeeds(seed === undefined ? 77 : seed, 0x5A17));
-    this.rain = 0;            // 0..1 current intensity
-    this.target = 0;          // what the sky is aiming for
-    this.timer = this.rng.range(20, 60);
-    this.drops = [];          // screen-space raindrops
-    this.windX = 0.3;
-    this.windT = 0;
-    this.lightning = 0;       // flash strength
-    this.lightningT = this.rng.range(40, 120);
-    this.thunderGap = 0.25;
-    this.dripT = 0;
-    this.windT2 = 0;
+    this.t = 0;
+    this.intensity = 0;        // 0..1 current rain strength
+    this.target = 0;
+    this.drops = [];
+    this.thunderT = rand(6, 14);
+    this.flashT = 0;
+    this.cycle = 47;           // seconds between rain waves
+    this.phase = seed % this.cycle;
   }
 
-  /** Handling multiplier: rain makes the asphalt greasy. */
-  gripMult() {
-    return 1 - 0.18 * this.rain;
+  // target intensity follows a slow deterministic cycle
+  desired() {
+    const ph = ((this.game.t + this.phase) % this.cycle) / this.cycle;
+    // two rain waves per cycle, dry spells between
+    const wave = Math.sin(ph * Math.PI * 2) * 0.5 + Math.sin(ph * Math.PI * 6) * 0.2;
+    return clamp(wave * 1.35, 0, 1);
   }
 
   update(dt) {
-    const game = this.game;
-    // shower cycle
-    this.timer -= dt;
-    if (this.timer <= 0) {
-      this.timer = this.rng.range(25, 70);
-      this.target = this.rng.chance(0.45) ? this.rng.range(0.5, 1) : 0;
-    }
-    this.rain += clamp(this.target - this.rain, -dt * 0.08, dt * 0.06);
+    this.t += dt;
+    this.target = this.desired();
+    // ramp intensity toward target
+    const rate = this.target > this.intensity ? 0.08 : 0.05;
+    this.intensity += clamp(this.target - this.intensity, -rate * dt, rate * dt);
 
-    // wind drift
-    this.windT += dt;
-    this.windX = 0.25 + Math.sin(this.windT * 0.2) * 0.3 + this.rain * 0.15;
-
-    // raindrop pool: hold enough drops for the current intensity
-    const want = Math.floor(Math.min(170, this.rain * 180));
+    // maintain drop pool in screen space
+    const want = Math.floor(this.intensity * 220);
     while (this.drops.length < want) {
-      this.drops.push({
-        x: this.rng.next() * (game.viewW + 160) - 80,
-        y: this.rng.next() * game.viewH,
-        v: 620 + this.rng.next() * 260,
-        l: 9 + this.rng.next() * 9,
-      });
+      this.drops.push({ x: rand(-40, CFG.VIEW_W + 40), y: rand(-40, CFG.VIEW_H), sp: rand(700, 1100), len: rand(10, 22), drift: rand(-60, 30) });
     }
     if (this.drops.length > want) this.drops.length = want;
-
-    // move drops (screen space, they streak past)
     for (const d of this.drops) {
-      d.y += d.v * dt;
-      d.x += this.windX * d.v * dt * 0.35;
-      if (d.y > game.viewH + 20) {
-        d.y = -20;
-        d.x = this.rng.next() * (game.viewW + 160) - 80;
-      }
-      if (d.x > game.viewW + 90) d.x -= game.viewW + 180;
-      if (d.x < -90) d.x += game.viewW + 180;
+      d.y += d.sp * dt;
+      d.x += d.drift * dt;
+      if (d.y > CFG.VIEW_H + 30) { d.y = -20 - rand(0, 60); d.x = rand(-40, CFG.VIEW_W + 40); }
     }
 
-    // rain hiss: a soft looped noise tied to intensity
-    this.dripT -= dt;
-    if (this.dripT <= 0 && this.rain > 0.15) {
-      this.dripT = 0.55;
-      game.audio.playNoise(0.6, 5200, 0.02 * this.rain, 'highpass');
-    }
-    // coastal wind: stronger near the water, always a little present
-    this.windT2 = (this.windT2 || 0) - dt;
-    if (this.windT2 <= 0) {
-      this.windT2 = 1.1;
-      const south = game.cam ? clamp(game.cam.y / CFG.H, 0, 1) : 0.5;
-      const nearWater = south > 0.85 ? 0.05 : 0.018;
-      game.audio.playNoise(1.0, 300, nearWater + this.rain * 0.02, 'lowpass');
-    }
-
-    // lightning: only during heavy rain
-    this.lightning = Math.max(0, this.lightning - dt * 2.2);
-    this.thunderGap -= dt;
-    if (this.rain > 0.6) {
-      this.lightningT -= dt;
-      if (this.lightningT <= 0) {
-        this.lightningT = this.rng.range(18, 55);
-        this.lightning = this.rng.range(0.5, 1);
-        if (this.thunderGap <= 0) {
-          this.thunderGap = 1.2;
-          game.audio.playNoise(1.4, 70, 0.5, 'lowpass');
-          game.audio.playTone(48, 1.1, 0.35, 'sine', 30);
-        }
+    // thunder during heavy rain
+    if (this.intensity > 0.55) {
+      this.thunderT -= dt;
+      if (this.thunderT <= 0) {
+        this.thunderT = rand(8, 18);
+        this.flashT = 0.35;
+        this.game.audio?.thunder?.();
+        this.game.cam.shake = Math.min(CFG.SHAKE_MAX, this.game.cam.shake + 3);
       }
     }
+    this.flashT = Math.max(0, this.flashT - dt);
   }
 
-  /** Screen-space rain streaks, drawn last so they fall in front. */
-  drawRain(ctx) {
-    if (this.rain < 0.03) return;
-    const a = Math.min(0.5, this.rain * 0.55);
-    ctx.strokeStyle = `rgba(170, 200, 255, ${0.32 * a})`;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (const d of this.drops) {
-      ctx.moveTo(d.x, d.y);
-      ctx.lineTo(d.x - this.windX * d.l * 0.35, d.y - d.l);
+  // tire grip multiplier (applied inside cars.js physics)
+  grip() { return 1 - this.intensity * 0.14; }
+
+  // screen-space overlays called by render after the world pass
+  draw(ctx) {
+    if (this.intensity > 0.02) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(170,200,240,' + (0.10 + this.intensity * 0.18) + ')';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      for (const d of this.drops) {
+        ctx.moveTo(d.x, d.y);
+        ctx.lineTo(d.x + d.drift * 0.02, d.y + d.len * (0.6 + this.intensity * 0.6));
+      }
+      ctx.stroke();
+      // haze
+      ctx.fillStyle = 'rgba(120,150,200,' + this.intensity * 0.07 + ')';
+      ctx.fillRect(0, 0, CFG.VIEW_W, CFG.VIEW_H);
+      ctx.restore();
     }
-    ctx.stroke();
-    // haze of a real downpour
-    if (this.rain > 0.75) {
-      ctx.fillStyle = `rgba(40, 60, 90, ${(this.rain - 0.75) * 0.3})`;
-      ctx.fillRect(0, 0, this.game.viewW, this.game.viewH);
+    if (this.flashT > 0) {
+      const a = this.flashT * 0.5 * Math.random();
+      ctx.fillStyle = 'rgba(210,225,255,' + a + ')';
+      ctx.fillRect(0, 0, CFG.VIEW_W, CFG.VIEW_H);
     }
   }
 
-  /** Lightning joins the explosion flash pipeline. */
-  flashBonus() {
-    return this.lightning * 0.35;
-  }
+  serialize() { return { t: this.t, phase: this.phase }; }
+  deserialize(d) { if (d) { this.t = d.t ?? 0; this.phase = d.phase ?? this.phase; } }
 }

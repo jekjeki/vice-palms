@@ -1,212 +1,188 @@
-// traffic.js — lane AI for civilian cars: keep to the right lane, obey the
-// lights, queue behind the car ahead, and pick a turn at each intersection.
-
+// traffic.js — ambient lane AI: follows lanes, obeys lights, queues, turns at intersections
 import { CFG } from './config.js';
-import { CAR_SPECS, makeTrafficCar, DIR_ANG } from './cars.js';
-import { clamp, dist, angMove, vecNorm } from './util.js';
+import { clamp, angDiff, dist } from './util.js';
 
-const CIV_WEIGHTS = CAR_SPECS.map((s) => ({
-  item: s,
-  w: s.kind === 'sport' ? 2 : s.kind === 'taxi' ? 3 : s.kind === 'bus' ? 1 : s.kind === 'truck' ? 2 : 4,
-}));
+const DIRS = { E: 0, S: Math.PI / 2, W: Math.PI, N: -Math.PI / 2 };
 
-// cardinal vectors: E S W N
-const DVX = [1, 0, -1, 0];
-const DVY = [0, 1, 0, -1];
-
-export class Traffic {
-  constructor(game) {
-    this.game = game;
-    this.cars = [];           // subset of game.cars that are civilian AI
-    this.spawnTimer = 0;
-    this.rng = game.rngTraffic;
+export class TrafficAI {
+  constructor(car, dirKey) {
+    this.car = car;
+    this.dir = DIRS[dirKey] ?? 0;
+    this.laneOff = CFG.LANE_OFF;
+    this.wait = 0;
+    this.stun = 0;
+    this.turnedRecently = 0;
+    this.panic = 0;
+    this.honked = 0;
+    this.cruise = 0.62 + Math.random() * 0.3; // fraction of max speed
   }
 
-  /** Seed the streets around a point. */
-  populate(cx, cy) {
-    for (let i = 0; i < CFG.TRAFFIC_COUNT; i++) {
-      this.trySpawn(cx, cy, 200, 1100, true);
-    }
-  }
+  stun(t) { this.stun = Math.max(this.stun, t); }
 
-  trySpawn(cx, cy, rMin, rMax, initial) {
-    const game = this.game;
-    if (this.cars.length >= CFG.TRAFFIC_COUNT) return null;
-    const spot = game.world.randomLaneSpawn(this.rng, cx, cy, rMax);
-    if (!spot) return null;
-    const d = dist(spot.x, spot.y, cx, cy);
-    if (!initial && d < rMin) return null;
-    // don't spawn on top of an existing car
-    for (const c of game.cars) {
-      if (dist(c.x, c.y, spot.x, spot.y) < 70) return null;
-    }
-    const spec = this.rng.weighted(CIV_WEIGHTS);
-    const car = makeTrafficCar(spec, spot.x, spot.y, spot.dir);
-    car.speed = CFG.TRAFFIC_SPEED * this.rng.range(0.55, 0.95);
-    game.cars.push(car);
-    this.cars.push(car);
-    return car;
-  }
+  // true when travelling horizontally
+  axisH() { return Math.abs(Math.cos(this.dir)) > 0.5; }
 
-  update(dt) {
-    const game = this.game;
-    const px = game.viewX(), py = game.viewY();
+  drive(car, game, dt) {
+    if (car.state !== 'drive') return { t: 0, s: 0 };
+    this.stun = Math.max(0, this.stun - dt);
+    this.turnedRecently = Math.max(0, this.turnedRecently - dt);
+    this.panic = Math.max(0, this.panic - dt);
+    if (game.wanted >= 3) this.panic = 1.5;
 
-    this.spawnTimer -= dt;
-    if (this.spawnTimer <= 0) {
-      this.spawnTimer = 0.7;
-      // despawn cars that fell far behind or wrecked out
-      this.cars = this.cars.filter((c) => {
-        if (c.exploded || c.dead) return false;
-        if (dist(c.x, c.y, px, py) > 1500) return false;
-        return true;
-      });
-      // prune the game's master list too
-      game.cars = game.cars.filter((c) => {
-        if (c === game.player.car) return true;
-        if (c.driver === 'player') return true;
-        if (c.driver === 'cop') return true;
-        if (c.missionTag) return true;
-        if (c.parked) return dist(c.x, c.y, px, py) < 1400;
-        return true; // traffic list handles its own
-      });
-      this.trySpawn(px, py, 520, 1100, false);
+    const R = CFG.ROAD_SPACING;
+    const horiz = this.axisH();
+    const fwd = car.speedFwd;
+
+    // --- target lane center ------------------------------------------------
+    let laneY, laneX;
+    if (horiz) {
+      const ry = Math.round(car.y / R) * R;
+      laneY = this.dir === 0 ? ry + this.laneOff : ry - this.laneOff;
+      laneX = car.x + Math.cos(this.dir) * 200;
+    } else {
+      const rx = Math.round(car.x / R) * R;
+      laneX = this.dir === Math.PI / 2 ? rx - this.laneOff : rx + this.laneOff;
+      laneY = car.y + Math.sin(this.dir) * 200;
     }
 
-    for (const car of this.cars) {
-      if (car.dead || car.exploded) continue;
-      if (car.driver === 'player') continue;
-      this.driveAI(car, dt);
-      car.control(car.throttle ?? 0.4, car.steer ?? 0, false, dt, game.weather ? game.weather.gripMult() : 1);
+    // steer toward lane heading (correct lateral drift + heading)
+    let s = 0;
+    const headErr = angDiff(car.h, this.dir);
+    if (horiz) {
+      const latErr = (laneY - car.y) * (this.dir === 0 ? 1 : -1);
+      s = clamp(latErr * 0.03 + headErr * 1.6, -1, 1);
+    } else {
+      const latErr = (laneX - car.x) * (this.dir === Math.PI / 2 ? -1 : 1);
+      s = clamp(latErr * 0.03 + headErr * 1.6, -1, 1);
     }
-  }
 
-  /** Lane-following brain for one civilian car. */
-  driveAI(car, dt) {
-    const game = this.game;
-    const world = game.world;
-    const dir = car.dir;
-    const hx = DVX[dir], hy = DVY[dir];
+    // --- intersection handling ---------------------------------------------
+    let t = this.cruise * (this.panic > 0 ? 1 : 0.85);
+    const along = horiz ? car.x : car.y;
+    const moving = horiz ? Math.cos(this.dir) : Math.sin(this.dir);
+    const nextCross = moving > 0
+      ? Math.ceil((along + 10) / R) * R
+      : Math.floor((along - 10) / R) * R;
+    const dToCross = Math.abs(nextCross - along);
 
-    // --- stuck detection: too slow for too long -> respawn elsewhere
-    if (Math.abs(car.speed) < 8) {
-      car.blockedTimer += dt;
-      if (car.blockedTimer > 9) {
-        car.exploded = true;
-        car.dead = true;
-        car.hp = 0;
-        return;
-      }
-    } else car.blockedTimer = 0;
+    // traffic light: stop line 46 before center (only when light controls this axis)
+    const ix = Math.round((horiz ? nextCross : car.x) / R);
+    const iy = Math.round((horiz ? car.y : nextCross) / R);
+    const isLight = this.isControlled(ix, iy);
+    if (isLight && dToCross < 90 && dToCross > 8) {
+      const phase = world_phase(game, ix, iy);
+      const myAxis = horiz ? 'ew' : 'ns';
+      if (phase !== myAxis && fwd < 90) t = 0; // stop for red
+    }
 
-    // --- find the next intersection ahead
-    let targetIx = null;
-    let bestD = 1e9;
-    for (const ix of world.intersections) {
-      const along = (ix.x - car.x) * hx + (ix.y - car.y) * hy;
-      const across = Math.abs((ix.x - car.x) * -hy + (ix.y - car.y) * hx);
-      if (along > 8 && along < 340 && across < 40) {
-        if (along < bestD) { bestD = along; targetIx = ix; }
+    // turn decision at intersection center (not every one, keep straight bias)
+    if (dToCross < 26 && this.turnedRecently <= 0 && fwd > 10) {
+      const r = Math.random();
+      const onEdge = nextCross < R || nextCross > (horiz ? CFG.AIR_W - 40 : CFG.SAND_S - 60);
+      if (!onEdge && r < 0.28) {
+        this.turn(game);
+        this.turnedRecently = 1.2;
+        return { t: 0.4, s: 0 };
       }
     }
 
-    // --- desired speed
-    let want = CFG.TRAFFIC_SPEED * (car.spec.kind === 'bus' || car.spec.kind === 'truck' ? 0.72 : 1);
-    let stopLine = false;
-
-    if (targetIx) {
-      // light check: stop before the box on red for our axis
-      const nsGreen = world.lightNS(targetIx.x, targetIx.y, game.time);
-      const weGo = (dir === 0 || dir === 2) ? !nsGreen : nsGreen;
-      const inBox = bestD < 44;
-      if (!weGo && !inBox) {
-        if (bestD < 74) { want = 0; stopLine = true; }
-        else if (bestD < 120) want *= bestD / 120;
-      }
-      // pick a turn when we get close to the center
-      if (bestD < 52 && !car.turnTarget) {
-        const r = this.rng.next();
-        let nd;
-        if (r < 0.62) nd = dir;
-        else if (r < 0.81) nd = (dir + 3) % 4;  // left
-        else nd = (dir + 1) % 4;                // right
-        car.turnTarget = nd;
-      }
-    }
-
-    // --- queue behind the car ahead
-    const probeLen = 26 + Math.abs(car.speed) * 0.55;
-    const ahead = this.probeAhead(car, hx, hy, probeLen);
+    // --- queueing: car ahead blocks -----------------------------------------
+    const ahead = this.carAhead(car, game);
     if (ahead) {
-      const gap = ahead.d - 30;
-      want = Math.min(want, Math.max(0, gap * 2.2));
-      if (gap < 6) want = 0;
-    }
-
-    // --- player blocking the lane: honk-stop
-    const p = game.player;
-    if (p.car !== car) {
-      const pd = (p.x - car.x) * hx + (p.y - car.y) * hy;
-      const pc = Math.abs((p.x - car.x) * -hy + (p.y - car.y) * hx);
-      const pr = p.car ? 46 : 30;
-      if (pd > 0 && pd < probeLen + 30 && pc < pr) {
-        want = Math.min(want, Math.max(0, (pd - 34) * 2));
-        // leaning on the horn
-        car.honkT = (car.honkT || 0) - dt;
-        if (want < 20 && car.honkT <= 0) {
-          car.honkT = 1.6 + this.rng.next();
-          game.audio.playTone(335, 0.32, 0.09, 'square');
-          game.audio.playTone(270, 0.32, 0.07, 'square');
-        }
+      const d = ahead.d;
+      if (d < 34) t = -0.4;           // hard stop / slight reverse creep
+      else if (d < 76) t = -0.15;     // brake
+      if (d < 60 && Math.random() < dt * 0.4 && this.honked <= 0) {
+        this.honked = 2.5; car.horn = 0.4;
+        game.audio?.carHorn?.();
       }
     }
 
-    // --- steer: track lane center, then swing through the intersection
-    const lane = world.lanePos(car.x, car.y, car.turnTarget !== null && bestD < 46 ? car.turnTarget : dir);
-    const desiredAng = Math.atan2(lane.y - car.y, lane.x - car.x);
-    let steer = 0;
-    const angErr = Math.atan2(Math.sin(desiredAng - car.ang), Math.cos(desiredAng - car.ang));
-    if (Math.abs(angErr) > 0.02) steer = clamp(angErr * 2.4, -1, 1);
+    // panic acceleration for fleeing traffic
+    if (this.panic > 0) t = Math.max(t, 0.9);
+    if (this.stun > 0) t = 0;
 
-    // commit through the turn
-    if (car.turnTarget !== null && bestD < 46) {
-      const tAng = DIR_ANG[car.turnTarget];
-      const err = Math.atan2(Math.sin(tAng - car.ang), Math.cos(tAng - car.ang));
-      steer = clamp(err * 2.8, -1, 1);
-    }
-    if (bestD < 24 && car.turnTarget !== null) {
-      car.dir = car.turnTarget;
-      car.turnTarget = null;
-      // snap back onto the new lane cleanly
-      const lp = world.lanePos(car.x, car.y, car.dir);
-      car.x = car.x + (lp.x - car.x) * 0.35;
-      car.y = car.y + (lp.y - car.y) * 0.35;
-    }
-
-    // --- throttle toward want
-    const cur = car.speed;
-    let throttle = 0;
-    if (cur < want - 6) throttle = clamp((want - cur) / 60, 0.2, 1);
-    else if (cur > want + 10) throttle = -clamp((cur - want) / 80, 0.2, 1);
-    else throttle = 0.12;
-    car.throttle = throttle;
-    car.steer = steer;
+    return { t, s };
   }
 
-  /** Nearest car/obstacle ahead of `car` along its heading. */
-  probeAhead(car, hx, hy, len) {
-    const game = this.game;
-    let best = null, bestD = 1e9;
-    const ox = -hy, oy = hx; // lateral axis
+  isControlled(ix, iy) {
+    return (ix % 2 === 1) && (iy % 2 === 1);
+  }
+
+  // nearest car within a front cone
+  carAhead(car, game) {
+    let best = null;
+    const c = Math.cos(car.h), s = Math.sin(car.h);
     for (const o of game.cars) {
-      if (o === car || o.dead) continue;
+      if (o === car) continue;
       const dx = o.x - car.x, dy = o.y - car.y;
-      const along = dx * hx + dy * hy;
-      if (along <= 12 || along > len) continue;
-      const across = Math.abs(dx * ox + dy * oy);
-      if (across > 26) continue;
-      if (along < bestD) { bestD = along; best = { car: o, d: along }; }
+      const fd = dx * c + dy * s;
+      if (fd < 8 || fd > 110) continue;
+      const ld = Math.abs(-dx * s + dy * c);
+      if (ld > (car.wid + o.wid) / 2 + 4) continue;
+      if (!best || fd < best.d) best = { car: o, d: fd };
+    }
+    // also brake for the player on foot (jaywalker mercy)
+    const p = game.player;
+    if (p && p.alive && !p.inCar) {
+      const dx = p.x - car.x, dy = p.y - car.y;
+      const fd = dx * c + dy * s;
+      if (fd > 4 && fd < 90 && Math.abs(-dx * s + dy * c) < 26) {
+        if (!best || fd < best.d) best = { car: p, d: fd, player: true };
+      }
     }
     return best;
   }
+
+  turn(game) {
+    // rotate 90°, then snap onto the new lane
+    const horiz = this.axisH();
+    const dirKeys = Object.keys(DIRS);
+    const idx = dirKeys.findIndex((k) => DIRS[k] === this.dir);
+    const right = Math.random() < 0.5;
+    const nIdx = (idx + (right ? 1 : 3)) % 4;
+    this.dir = DIRS[dirKeys[nIdx]];
+    this.car.blinkT = 1.4;
+    const R = CFG.ROAD_SPACING;
+    const car = this.car;
+    if (horiz) {
+      // was horizontal -> now vertical
+      const rx = Math.round(car.x / R) * R;
+      car.x = this.dir === Math.PI / 2 ? rx - this.laneOff : rx + this.laneOff;
+    } else {
+      const ry = Math.round(car.y / R) * R;
+      car.y = this.dir === 0 ? ry + this.laneOff : ry - this.laneOff;
+    }
+    car.h = this.dir;
+  }
+}
+
+function world_phase(game, ix, iy) {
+  return game.world.lightPhase(ix, iy, game.t);
+}
+
+// spawn an ambient traffic car on the nearest lane to (x, y); returns null if blocked
+export function spawnTraffic(game, x, y, type) {
+  const R = CFG.ROAD_SPACING;
+  const ry = Math.round(y / R) * R;
+  const rx = Math.round(x / R) * R;
+  const nearH = Math.abs(y - ry) <= Math.abs(x - rx);
+  const dirKey = nearH ? (Math.random() < 0.5 ? 'E' : 'W') : (Math.random() < 0.5 ? 'S' : 'N');
+  const h = DIRS[dirKey];
+  const dir = DIRS[dirKey];
+  const horiz = Math.abs(Math.cos(dir)) > 0.5;
+  const off = CFG.LANE_OFF;
+  const px = horiz ? x : (dir === Math.PI / 2 ? rx - off : rx + off);
+  const py = horiz ? (dir === 0 ? ry + off : ry - off) : y;
+  // never spawn overlapping another car or a solid
+  for (const o of game.cars) {
+    if (Math.abs(o.x - px) < 110 && Math.abs(o.y - py) < 70) return null;
+  }
+  for (const r of game.world.nearSolids(px, py)) {
+    if (px >= r.x0 - 40 && px <= r.x1 + 40 && py >= r.y0 - 30 && py <= r.y1 + 30) return null;
+  }
+  const car = game.addCar(type, px, py, h);
+  car.driver = 'ai';
+  car.ai = new TrafficAI(car, dirKey);
+  return car;
 }

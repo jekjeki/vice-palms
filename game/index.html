@@ -3,37 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vice Palms</title>
-<meta name="description" content="Vice Palms — a neon-soaked open-world driving game. Run the city, jack cars, dodge the VCPD.">
+<title>Vice Palms — make.fun gta6-01</title>
 <style>
-  html, body {
-    margin: 0;
-    padding: 0;
-    height: 100%;
-    background: #07080f;
-    overflow: hidden;
-  }
-  #game {
-    display: block;
-    width: 100vw;
-    height: 100vh;
-    image-rendering: auto;
-    cursor: crosshair;
-  }
-  #nose {
-    position: fixed;
-    left: 8px;
-    bottom: 6px;
-    color: rgba(255,255,255,0.25);
-    font: 10px monospace;
-    user-select: none;
-    pointer-events: none;
-  }
+  html, body { margin: 0; padding: 0; background: #07070d; height: 100%; overflow: hidden; }
+  #game { display: block; margin: 0 auto; image-rendering: auto; background: #07070d; }
+  #boot { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+          color: #ff5da2; font: 700 22px "Segoe UI", system-ui, sans-serif; letter-spacing: 2px; }
 </style>
 </head>
 <body>
+<div id="boot">loading Vice Palms…</div>
 <canvas id="game" width="1280" height="720"></canvas>
-<div id="nose">VICE PALMS · no libs · no network · 100% local</div>
-<script type="module" src="src/main.js"></script>
+<script type="module" src="./src/main.js"></script>
 </body>
 </html>

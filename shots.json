@@ -1,26 +1,6 @@
 [
-  {
-    "file": "screenshots/1-start.jpg",
-    "shot": "start",
-    "seed": 7,
-    "note": "Neon title cover: sun, palms, skyline glow."
-  },
-  {
-    "file": "screenshots/2-play.jpg",
-    "shot": "play",
-    "seed": 7,
-    "note": "Downtown at night in a Banshee, traffic and streetlamps live."
-  },
-  {
-    "file": "screenshots/3-end.jpg",
-    "shot": "end",
-    "seed": 7,
-    "note": "MISSION PASSED banner over Ocean Drive after Container Run."
-  },
-  {
-    "file": "screenshots/4-chaos.jpg",
-    "shot": "chaos",
-    "seed": 7,
-    "note": "Wanted level 5: burning wreck, explosion flash, cruiser closing."
-  }
+  { "name": "1-start.jpg", "url": "/?shot=start&seed=7", "note": "title screen cover with neon Vice Palms logo over the night skyline" },
+  { "name": "2-play.jpg", "url": "/?shot=play&seed=7", "note": "mid-street gameplay: player car, traffic, peds, HUD and circular minimap" },
+  { "name": "3-end.jpg", "url": "/?shot=end&seed=7", "note": "mission complete overlay with payout and ranking text" },
+  { "name": "4-chaos.jpg", "url": "/?shot=chaos&seed=7", "note": "five-star chaos: burning wrecks, explosions, police cruisers, fleeing peds" }
 ]

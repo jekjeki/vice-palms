@@ -1,684 +1,449 @@
-// world.js — the night coastal city of Vice Palms: road grid, downtown towers,
-// Flamingo Park, Palm Beach, the North Docks (piers, containers, cranes, ship)
-// and Palm Airfield (runway, hangars, tower). Everything is generated from a
-// seed, so the city is identical on every machine and every run.
-
-import { CFG, NEON_WORDS, PLACES } from './config.js';
-import { RNG, CITY_SEED, mixSeeds } from './rng.js';
-import { clamp, circleRectPush, circleRectHit, pointInRect, dist } from './util.js';
-
-// grid codes
-export const G = {
-  PLAZA: 0, ROAD: 1, BUILDING: 2, WATER: 3, SAND: 4, GRASS: 5,
-  RUNWAY: 6, DOCKPAD: 7, PIER: 8, FENCE: 9,
-};
-
-const CAR_COLORS = [
-  '#c22f4a', '#e0e4ea', '#2d2f36', '#2f6f9e', '#d9a13b', '#5a9e4b',
-  '#8b4bd9', '#d96a2b', '#e8e2d4', '#3ec6b8', '#b0467e', '#7a8288',
-];
-
-const CONTAINER_COLORS = ['#b54248', '#3f7fae', '#c2903c', '#4d9e57', '#8a5fb0', '#c56a2e', '#5d6a75'];
+// world.js — deterministic night coastal city "Vice Palms": road grid, neon blocks, beach & park,
+// NORTH DOCKS (piers, containers, cranes, ship) and PALM AIRFIELD (runway, hangars, tower).
+import { CFG, COLORS } from './config.js';
+import { RNG } from './rng.js';
+import { clamp, pointInRect, TAU } from './util.js';
 
 export class World {
-  constructor(seed) {
-    this.seed = seed === undefined ? CITY_SEED : seed;
-    this.rng = new RNG(mixSeeds(this.seed, 0xC17B));
-    this.grid = new Uint8Array(CFG.WT * CFG.HT);
-    this.solids = [];          // AABBs that block everything
-    this.propSolids = [];      // small round solids (palms, poles)
-    this.buildings = [];       // render/collision buildings with style data
-    this.props = [];           // decorative + small-solid props
-    this.lights = [];          // neon glow sources
-    this.roadsV = [];          // {tx, ty0, ty1}
-    this.roadsH = [];          // {ty, tx0, tx1}
-    this.intersections = [];   // {tx, ty, x, y}
-    this.spawns = {};
-    this.blockBands = [];      // usable block rects (for spawning)
-    this.minimap = null;       // prerendered offscreen canvas
-    this.hash = new Map();     // spatial hash of solids
-    this.hashCell = 128;
-    this.piers = [];
-    this.cranes = [];
-    this.hangars = [];
-    this.fences = [];
-    this.pond = { x0: 74 * 32, y0: 106 * 32, x1: 80 * 32, y1: 112 * 32 };
+  constructor(seed = 20260601) {
+    this.seed = seed >>> 0;
+    this.rng = new RNG(this.seed);
+    this.solids = [];        // axis-aligned collision rects {x0,y0,x1,y1,type}
+    this.palmSolids = [];    // circular colliders {x,y,r}
+    this.water = [];         // water rects (deadly-ish: cars crash, swimmers blocked)
+    this.buildings = [];     // visual + solid blocks with windows & neon
+    this.neonSigns = [];     // {x,y,text,color,vert}
+    this.palms = [];         // decorative palm positions {x,y,s}
+    this.lamps = [];         // streetlights {x,y}
+    this.props = [];         // misc decorations {kind,x,y,...}
+    this.roadH = [];         // horizontal road y centers
+    this.roadV = [];         // vertical road x centers
+    this.lights = [];        // traffic lights {x,y,ix,iy}
+    this.spawns = { cars: [], peds: [] };
+    this.pois = {};
+    this.cell = 625;
+    this.grid = new Map();   // spatial hash of solids
+    this.generate();
   }
 
-  idx(tx, ty) { return ty * CFG.WT + tx; }
-  set(tx, ty, code) {
-    if (tx >= 0 && ty >= 0 && tx < CFG.WT && ty < CFG.HT) this.grid[this.idx(tx, ty)] = code;
-  }
-  at(tx, ty) {
-    if (tx < 0 || ty < 0 || tx >= CFG.WT || ty >= CFG.HT) return G.WATER;
-    return this.grid[this.idx(tx, ty)];
-  }
-  codeAt(px, py) {
-    return this.at(Math.floor(px / CFG.T), Math.floor(py / CFG.T));
-  }
-  isRoadPx(px, py) { return this.codeAt(px, py) === G.ROAD; }
-  isWaterPx(px, py) { return this.codeAt(px, py) === G.WATER; }
+  generate() {
+    const R = CFG.ROAD_SPACING, W = CFG.W, H = CFG.H;
+    // road grid: leave room for harbor (north), beach (south), airfield (east)
+    for (let i = 1; i <= 13; i++) this.roadV.push(i * R);          // x = 340..4420
+    for (let i = 1; i <= 10; i++) this.roadH.push(i * R);          // y = 340..3400
+    this.roadH[0] = R; // keep first row after docks land strip
 
-  // ---------------------------------------------------------------- build
+    // --- zones -----------------------------------------------------------
+    this.water.push({ x0: -200, y0: CFG.HARBOR_N - 900, x1: W + 200, y1: CFG.HARBOR_N, kind: 'harbor' });
+    this.water.push({ x0: -200, y0: CFG.OCEAN_S, x1: W + 200, y1: H + 300, kind: 'ocean' });
 
-  build() {
-    const rng = this.rng;
-    rng.reseed(mixSeeds(this.seed, 101));
-    this.fillCityBase();
-    this.carveRoads();
-    this.buildDocks(rng);
-    this.buildAirfield(rng);
-    this.buildPark(rng);
-    this.buildBeach(rng);
-    this.buildCityBlocks(rng);
-    this.buildBoundary();
-    this.buildLandmarks();
-    this.collectRoadData();
-    this.hashSolids();
-    this.pickSpawns();
-    this.prerenderMinimap();
-    return this;
-  }
+    // city block buildings (skip park & docks & airfield zones)
+    const PARK = CFG.PARK;
+    for (let bx = 0; bx < CFG.COLS; bx++) {
+      for (let by = 0; by < CFG.ROWS; by++) {
+        const x0 = bx * R + CFG.ROAD_W / 2 + 4;
+        const y0 = by * R + CFG.ROAD_W / 2 + 4;
+        const x1 = (bx + 1) * R - CFG.ROAD_W / 2 - 4;
+        const y1 = (by + 1) * R - CFG.ROAD_W / 2 - 4;
+        const cxm = (x0 + x1) / 2, cym = (y0 + y1) / 2;
+        if (cxm < CFG.HARBOR_N + 60 || cym < CFG.HARBOR_N) continue;               // docks zone
+        if (cym > CFG.SAND_S - 100) continue;                                      // beach strip
+        if (x0 >= CFG.AIR_W - 60) continue;                                        // airfield zone
+        const inPark = x0 >= PARK.x0 - 40 && x1 <= PARK.x1 + 40 && y0 >= PARK.y0 - 40 && y1 <= PARK.y1 + 40;
+        if (inPark) continue;
 
-  /** Ground fill for the whole map before districts punch holes. */
-  fillCityBase() {
-    const { WT, HT } = CFG;
-    for (let ty = 0; ty < HT; ty++) {
-      for (let tx = 0; tx < WT; tx++) {
-        this.grid[this.idx(tx, ty)] = G.PLAZA;
+        const r = this.rng;
+        // 1-3 buildings per block with alley gaps
+        const parts = r.int(1, 3);
+        let cursor = x0;
+        for (let p = 0; p < parts; p++) {
+          const span = (x1 - cursor) / (parts - p);
+          const gap = parts > 1 ? r.range(10, 26) : 0;
+          const bw = span - gap;
+          if (bw < 40) break;
+          const bh0 = y0 + (parts > 2 && p === 1 ? r.range(30, 80) : 0);
+          const bh1 = y1 - (parts > 2 && p === 1 ? r.range(30, 80) : 0);
+          const col = COLORS.building[r.int(0, COLORS.building.length - 1)];
+          const floors = r.int(2, 9);
+          const b = { x0: cursor, y0: bh0, x1: cursor + bw, y1: bh1, color: col, floors, lit: [] };
+          // window lights: deterministic per floor
+          for (let f = 0; f < floors; f++) {
+            const row = [];
+            const n = Math.max(2, Math.floor(bw / 26));
+            for (let k = 0; k < n; k++) row.push(r.f() < 0.55 ? r.int(1, 3) : 0);
+            b.lit.push(row);
+          }
+          // neon signs on avenue-facing buildings
+          if (r.f() < 0.3 && bw > 90) {
+            const names = ['PALMS', 'CLUB', 'MOTEL', '24H', 'DINER', 'BAR', 'VICE', 'HOTEL', 'GIRLZ', 'TATTOO', 'NEON', 'LIQUOR', 'ARCADE', 'SUSHI'];
+            const text = names[r.int(0, names.length - 1)];
+            const color = COLORS.neon[['pink', 'cyan', 'gold', 'lime', 'violet'][r.int(0, 4)]];
+            const onLeft = r.chance(0.5);
+            this.neonSigns.push({ x: onLeft ? b.x0 : b.x1, y: r.range(b.y0 + 30, b.y1 - 30), text, color, vert: onLeft ? 1 : -1 });
+          }
+          b.type = 'building';
+          this.buildings.push(b);
+          this.addSolid(b);
+          cursor += bw + gap;
+        }
       }
     }
-  }
 
-  /** Stamp the two-tile road lattice everywhere. */
-  carveRoads() {
-    const { WT, HT, ROAD_A, ROAD_B, SUPER } = CFG;
-    for (let s = 0; s * SUPER < WT; s++) {
-      for (let ty = 0; ty < HT; ty++) {
-        this.set(s * SUPER + ROAD_A, ty, G.ROAD);
-        this.set(s * SUPER + ROAD_A + 1, ty, G.ROAD);
-        this.set(s * SUPER + ROAD_B, ty, G.ROAD);
-        this.set(s * SUPER + ROAD_B + 1, ty, G.ROAD);
-      }
+    // --- PARK (center green with palms & paths) ---------------------------
+    for (let i = 0; i < 26; i++) {
+      const px = this.rng.range(PARK.x0 + 30, PARK.x1 - 30);
+      const py = this.rng.range(PARK.y0 + 30, PARK.y1 - 30);
+      if (Math.abs((py - (PARK.y0 + PARK.y1) / 2)) < 26 || Math.abs(px - (PARK.x0 + PARK.x1) / 2) < 26) continue;
+      this.palms.push({ x: px, y: py, s: this.rng.range(0.9, 1.35) });
+      this.palmSolids.push({ x: px, y: py, r: 7 });
     }
-    for (let s = 0; s * SUPER < HT; s++) {
-      for (let tx = 0; tx < WT; tx++) {
-        this.set(tx, s * SUPER + ROAD_A, G.ROAD);
-        this.set(tx, s * SUPER + ROAD_A + 1, G.ROAD);
-        this.set(tx, s * SUPER + ROAD_B, G.ROAD);
-        this.set(tx, s * SUPER + ROAD_B + 1, G.ROAD);
-      }
-    }
-  }
+    this.props.push({ kind: 'fountain', x: (PARK.x0 + PARK.x1) / 2, y: (PARK.y0 + PARK.y1) / 2 });
 
-  // ------------------------------------------------------------- districts
-
-  buildDocks(rng) {
-    const D = CFG.DOCKS;
-    const t = CFG.T;
-    // water to the north
-    for (let ty = D.y0; ty < 8; ty++)
-      for (let tx = D.x0; tx < D.x1; tx++) this.set(tx, ty, G.WATER);
-    // piers: pads over the water at every road column pair, planked
-    for (let s = 0; s * CFG.SUPER < D.x1; s++) {
-      const tx0 = s * CFG.SUPER + CFG.ROAD_A;
-      for (let ty = 4; ty < 8; ty++)
-        for (let dx = 0; dx < 2; dx++) this.set(tx0 + dx, ty, G.PIER);
-      this.piers.push({ tx: tx0, ty0: 4, ty1: 8 });
-      // bollards at the pier ends
-      this.propSolids.push({ x: (tx0 + 0.5) * t, y: 4.4 * t, r: 5, kind: 'bollard' });
-      this.propSolids.push({ x: (tx0 + 1.5) * t, y: 4.4 * t, r: 5, kind: 'bollard' });
-    }
-    // dock apron rows 8..19
-    for (let ty = 8; ty < 20; ty++)
-      for (let tx = D.x0; tx < D.x1; tx++) {
-        if (this.at(tx, ty) === G.ROAD) continue;
-        this.set(tx, ty, G.DOCKPAD);
-      }
-    // container stacks in the yard (rows 8..15), leaving lanes
-    for (let i = 0; i < 46; i++) {
-      const tx = rng.int(D.x0 + 2, D.x1 - 4);
-      const ty = rng.int(8, 14);
-      if (this.at(tx, ty) !== G.DOCKPAD || this.at(tx + 1, ty) !== G.DOCKPAD) continue;
-      const c = rng.pick(CONTAINER_COLORS);
-      const stack = rng.int(1, 3);
-      const x0 = tx * t, y0 = ty * t;
-      this.solids.push({ x0, y0, x1: x0 + 2 * t, y1: y0 + t, kind: 'container', color: c, stack });
-      this.set(tx, ty, G.BUILDING); this.set(tx + 1, ty, G.BUILDING);
-    }
-    // warehouses along the south edge of the yard
-    for (let bx = 0; bx < D.x1 - 8; bx += 10) {
-      if (rng.chance(0.25)) continue;
-      const x0 = (bx + 1) * t, y0 = 16 * t;
-      const w = 7 * t, h = 2.6 * t;
-      this.buildings.push({ x0, y0, x1: x0 + w, y1: y0 + h, h: 26, style: 'warehouse', seed: rng.int(0, 1e9) });
-      for (let ty = 16; ty < 19; ty++)
-        for (let tx = bx + 1; tx < bx + 8; tx++) this.set(tx, ty, G.BUILDING);
-    }
-    // a couple of old salts lounging near the pier ends
-    for (let i = 0; i < 6; i++) {
-      const pier = this.piers[i % this.piers.length];
-      if (!pier) break;
-      const px = (pier.tx + 0.5 + rng.int(0, 1)) * t;
-      const py = (pier.ty0 + rng.int(1, 3) + 0.5) * t;
-      this.props.push({ type: 'bollard', x: px, y: py, r: 3, variant: rng.int(0, 2) });
-    }
-    // two gantry cranes standing over the piers
-    this.cranes.push({ x: 22.5 * t, y: 8 * t, span: 5 * t, dir: 1 });
-    this.cranes.push({ x: 70.5 * t, y: 8 * t, span: 5 * t, dir: 1 });
-    for (const cr of this.cranes) {
-      this.solids.push({ x0: cr.x - 10, y0: cr.y - 10, x1: cr.x + 10, y1: cr.y + 34, kind: 'crane' });
-    }
-    // the cargo ship moored along the north water
-    this.solids.push({ x0: 10 * t, y0: 0.4 * t, x1: 40 * t, y1: 3.6 * t, kind: 'ship' });
-  }
-
-  buildAirfield(rng) {
-    const A = CFG.AIRFIELD;
-    const t = CFG.T;
-    for (let ty = A.y0; ty < A.y1; ty++)
-      for (let tx = A.x0; tx < A.x1; tx++) this.set(tx, ty, G.RUNWAY);
-    // runway band (slightly different tone, drawn from the code)
-    for (let ty = 84; ty < 96; ty++)
-      for (let tx = A.x0 + 2; tx < A.x1; tx++) this.set(tx, ty, G.RUNWAY);
-    // hangars
-    const hangarXs = [132, 142, 152];
-    for (const hx of hangarXs) {
-      const b = { x0: hx * t, y0: 66 * t, x1: (hx + 8) * t, y1: 74 * t, h: 30, style: 'hangar', seed: rng.int(0, 1e9) };
-      this.hangars.push(b);
-      this.buildings.push(b);
-      for (let ty = 66; ty < 74; ty++)
-        for (let tx = hx; tx < hx + 8; tx++) this.set(tx, ty, G.BUILDING);
-    }
-    // control tower
-    const tw = { x0: 146 * t, y0: 78 * t, x1: 150 * t, y1: 82 * t, h: 64, style: 'tower', seed: 77 };
-    this.buildings.push(tw);
-    for (let ty = 78; ty < 82; ty++)
-      for (let tx = 146; tx < 150; tx++) this.set(tx, ty, G.BUILDING);
-    // perimeter fence: west, north, east + gate gap on the west at the road rows
-    const fence = (x0, y0, x1, y1) => {
-      this.solids.push({ x0, y0, x1, y1, kind: 'fence' });
-      this.fences.push({ x0, y0, x1, y1 });
-    };
-    fence(A.x0 * t, A.y0 * t, (A.x0 + 1.2) * t, 102 * t);          // west up to gate
-    fence(A.x0 * t, 104 * t, (A.x0 + 1.2) * t, A.y1 * t);          // west past gate
-    fence(A.x0 * t, A.y0 * t, A.x1 * t, (A.y0 + 1) * t);           // north
-    fence((A.x1 - 1) * t, A.y0 * t, A.x1 * t, A.y1 * t);           // east
-    fence(A.x0 * t, (A.y1 - 1) * t, (132 - 1) * t, A.y1 * t);      // south-west run
-    fence(134 * t, (A.y1 - 1) * t, A.x1 * t, A.y1 * t);            // south-east run
-    // a small cargo plane parked by the hangars (drawn prop, solid core)
-    this.props.push({ type: 'plane', x: 140 * t, y: 77 * t, r: 60, solid: false, ang: 0 });
-  }
-
-  buildPark(rng) {
-    const P = CFG.PARK;
-    const t = CFG.T;
-    for (let ty = P.y0; ty < P.y1; ty++)
-      for (let tx = P.x0; tx < P.x1; tx++) {
-        if (this.at(tx, ty) === G.ROAD) continue;
-        this.set(tx, ty, G.GRASS);
-      }
-    // pond
-    for (let ty = 106; ty < 112; ty++)
-      for (let tx = 74; tx < 80; tx++) this.set(tx, ty, G.WATER);
-    // paths
-    for (let tx = 72; tx < 92; tx++) { this.set(tx, 105, G.PLAZA); this.set(tx, 117, G.PLAZA); }
-    for (let ty = 104; ty < 118; ty++) { this.set(72, ty, G.PLAZA); this.set(91, ty, G.PLAZA); }
-    this.set(80, 110, G.PLAZA); this.set(81, 110, G.PLAZA);
-    // trees in loose rows
+    // --- BEACH (south sand, palms, beach hut, lifeguard towers) -----------
     for (let i = 0; i < 40; i++) {
-      const tx = rng.int(P.x0 + 1, P.x1 - 2);
-      const ty = rng.int(P.y0 + 1, P.y1 - 2);
-      const code = this.at(tx, ty);
-      if (code !== G.GRASS) continue;
-      this.propSolids.push({ x: (tx + 0.5) * t, y: (ty + 0.5) * t, r: 7, kind: 'tree' });
-      this.props.push({ type: 'tree', x: (tx + 0.5) * t, y: (ty + 0.5) * t, r: 26, variant: rng.int(0, 2) });
+      const px = this.rng.range(120, CFG.AIR_W - 120);
+      const py = this.rng.range(CFG.SAND_S + 26, CFG.OCEAN_S - 40);
+      if (this.palms.some((p) => Math.hypot(p.x - px, p.y - py) < 90)) continue;
+      this.palms.push({ x: px, y: py, s: this.rng.range(1.0, 1.4) });
+      this.palmSolids.push({ x: px, y: py, r: 7 });
     }
-    // fountain plaza at the core
-    this.props.push({ type: 'fountain', x: 84 * t, y: 110 * t, r: 24, solid: false });
-    this.propSolids.push({ x: 84 * t, y: 110 * t, r: 12, kind: 'fountain' });
-  }
+    for (let i = 0; i < 4; i++) {
+      const x = 500 + i * 1100;
+      this.props.push({ kind: 'lifeguard', x, y: CFG.SAND_S + 90 });
+    }
+    this.props.push({ kind: 'beachhut', x: 1020, y: CFG.SAND_S + 60, w: 120, h: 70 });
+    this.addSolid({ x0: 960, y0: CFG.SAND_S + 30, x1: 1080, y1: CFG.SAND_S + 100, type: 'hut' });
 
-  buildBeach(rng) {
-    const t = CFG.T;
-    for (let ty = CFG.BEACH.y0; ty < CFG.WATER_S.y1; ty++) {
-      for (let tx = 0; tx < CFG.WT; tx++) {
-        if (this.at(tx, ty) === G.ROAD) continue;
-        this.set(tx, ty, ty < CFG.WATER_S.y0 ? G.SAND : G.WATER);
-      }
+    // --- NORTH DOCKS: piers, containers, cranes, ship ---------------------
+    const dockTop = CFG.HARBOR_N, dockBot = CFG.DOCKS_S;
+    for (let i = 0; i < 4; i++) {
+      const px = 380 + i * 980;
+      this.props.push({ kind: 'pier', x: px, y: (dockTop + dockBot) / 2, w: 70, h: dockBot - dockTop + 240 });
     }
-    // palms along the sand
+    // container stacks
+    const contCols = ['#b3452c', '#2c6cb3', '#b3922c', '#3d8a3d', '#7a3db3', '#b32c5e'];
     for (let i = 0; i < 34; i++) {
-      const tx = rng.int(1, CFG.WT - 2);
-      const ty = rng.int(CFG.BEACH.y0 + 1, CFG.WATER_S.y0 - 1);
-      if (this.at(tx, ty) !== G.SAND) continue;
-      this.propSolids.push({ x: (tx + 0.5) * t, y: (ty + 0.5) * t, r: 6, kind: 'palm' });
-      this.props.push({ type: 'palm', x: (tx + 0.5) * t, y: (ty + 0.5) * t, r: 30, variant: rng.int(0, 3) });
+      const x = this.rng.range(300, 4100);
+      const y = this.rng.range(dockTop + 60, dockBot - 60);
+      const w = this.rng.int(52, 86), h = 30;
+      const rect = { x0: x, y0: y, x1: x + w, y1: y + h, type: 'container', color: contCols[this.rng.int(0, contCols.length - 1)], stack: this.rng.int(1, 3) };
+      this.buildings.push({ x0: rect.x0, y0: rect.y0, x1: rect.x1, y1: rect.y1, color: rect.color, floors: 0, container: true, stack: rect.stack });
+      this.addSolid(rect);
     }
-    // umbrellas and towels
-    for (let i = 0; i < 16; i++) {
-      const tx = rng.int(2, CFG.WT - 3);
-      const ty = rng.int(CFG.BEACH.y0 + 2, CFG.WATER_S.y0 - 2);
-      if (this.at(tx, ty) !== G.SAND) continue;
-      this.props.push({ type: rng.chance(0.5) ? 'umbrella' : 'towel', x: (tx + 0.5) * t, y: (ty + 0.5) * t, r: 14, variant: rng.int(0, 5) });
+    // cranes
+    for (let i = 0; i < 3; i++) {
+      const x = 700 + i * 1300;
+      this.props.push({ kind: 'crane', x, y: dockTop + 10 });
+      this.addSolid({ x0: x - 12, y0: dockTop, x1: x + 12, y1: dockTop + 46, type: 'crane' });
     }
-  }
+    // cargo ship
+    this.props.push({ kind: 'ship', x: 2300, y: dockTop - 210, w: 700, h: 260 });
+    this.addSolid({ x0: 1960, y0: dockTop - 330, x1: 2660, y1: dockTop - 90, type: 'ship' });
+    this.props.push({ kind: 'dockshed', x: 3350, y: 480, w: 240, h: 130 });
+    this.addSolid({ x0: 3230, y0: 415, x1: 3470, y1: 545, type: 'shed' });
+    this.props.push({ kind: 'marina', x: 460, y: 500 });
 
-  /** Buildings fill every ordinary city block between the roads. */
-  buildCityBlocks(rng) {
-    const { WT, HT, SUPER } = CFG;
-    const inDocks = (tx, ty) => ty < CFG.DOCKS.y1 && tx < CFG.DOCKS.x1;
-    const inAir = (tx, ty) => tx >= CFG.AIRFIELD.x0 && ty >= CFG.AIRFIELD.y0 && ty < CFG.AIRFIELD.y1;
-    const inPark = (tx, ty) => tx >= CFG.PARK.x0 && tx < CFG.PARK.x1 && ty >= CFG.PARK.y0 && ty < CFG.PARK.y1;
-    const inBeach = (ty) => ty >= CFG.BEACH.y0;
+    // --- PALM AIRFIELD (east): runway, hangars, tower, fence --------------
+    const AW = CFG.AIR_W;
+    this.props.push({ kind: 'runway', x0: AW - 40, y0: 1900, x1: W, y1: 2060 });
+    this.props.push({ kind: 'runway', x0: AW - 40, y0: 1900, x1: W, y1: 2060, sec: 2 });
+    for (let i = 0; i < 3; i++) {
+      const hx = AW + 120 + i * 300, hy = 1500;
+      this.props.push({ kind: 'hangar', x: hx, y: hy, w: 220, h: 150 });
+      this.addSolid({ x0: hx - 110, y0: hy - 75, x1: hx + 110, y1: hy + 75, type: 'hangar' });
+    }
+    this.props.push({ kind: 'tower', x: AW + 260, y: 2280 });
+    this.addSolid({ x0: AW + 230, y0: 2250, x1: AW + 290, y1: 2310, type: 'tower' });
+    // perimeter fence with west gate
+    const fy0 = 1380, fy1 = 2450;
+    for (let y = fy0; y < fy1; y += 40) {
+      if (y > 1930 && y < 2040) continue; // gate
+      this.addSolid({ x0: AW - 70, y0: y, x1: AW - 58, y1: y + 24, type: 'fence' });
+    }
+    for (let x = AW - 70; x < W - 40; x += 60) {
+      this.addSolid({ x0: x, y0: fy0 - 12, x1: x + 36, y1: fy0, type: 'fence' });
+      this.addSolid({ x0: x, y0: fy1, x1: x + 36, y1: fy1 + 12, type: 'fence' });
+    }
+    this.props.push({ kind: 'plane', x: AW + 420, y: 1980 });
 
-    for (let sy = 0; sy * SUPER < HT; sy++) {
-      for (let sx = 0; sx * SUPER < WT; sx++) {
-        for (const band of [[0, 5], [8, 13]]) {
-          const x0 = sx * SUPER + band[0], x1 = sx * SUPER + band[1];
-          for (const rband of [[0, 5], [8, 13]]) {
-            const y0 = sy * SUPER + rband[0], y1 = sy * SUPER + rband[1];
-            if (x1 >= WT || y1 >= HT) continue;
-            if (inDocks(x0, y0) || inAir(x0, y0) || inPark(x0, y0) || inBeach(y0)) continue;
-            this.blockBands.push({ x0: x0 * CFG.T, y0: y0 * CFG.T, x1: (x1 + 1) * CFG.T, y1: (y1 + 1) * CFG.T });
-            this.fillBlock(x0, y0, x1, y1, rng);
+    // --- street lamps along roads ------------------------------------------
+    for (const y of this.roadH) for (let x = 200; x < CFG.AIR_W; x += 340) this.lamps.push({ x, y: y - CFG.ROAD_W / 2 - 8 });
+    for (const x of this.roadV) for (let y = 400; y < CFG.SAND_S; y += 340) this.lamps.push({ x: x + CFG.ROAD_W / 2 + 8, y });
+
+    // --- traffic lights at intersections of avenues ------------------------
+    for (let ix = 1; ix < this.roadV.length; ix += 2) {
+      for (let iy = 1; iy < this.roadH.length; iy += 2) {
+        this.lights.push({ x: this.roadV[ix], y: this.roadH[iy], ix, iy });
+      }
+    }
+
+    // --- OLD TOWN (NW brick district): alleys, market stalls, fountain ------
+    for (let bx = 1; bx <= 3; bx++) {
+      for (let by = 5; by <= 7; by++) {
+        const x0 = bx * R - 150, y0 = by * R - 150;
+        // brick tone override for buildings that were just generated there
+        for (const b of this.buildings) {
+          if (b.container) continue;
+          if (b.x0 >= x0 - 170 && b.x1 <= x0 + 510 && b.y0 >= y0 - 170 && b.y1 <= y0 + 510) {
+            b.brick = true;
+            b.color = ['#4a2a24', '#4a3324', '#3a2a2a'][(bx + by) % 3];
           }
         }
       }
     }
-  }
-
-  /** One 6x6-tile block: 1-3 buildings with alleys, maybe a lot parking lot. */
-  fillBlock(btx0, bty0, btx1, bty1, rng) {
-    const t = CFG.T;
-    const px0 = btx0 * t, py0 = bty0 * t, px1 = (btx1 + 1) * t, py1 = (bty1 + 1) * t;
-    // some blocks stay open: parking lots and plazas
-    if (rng.chance(0.14)) {
-      this.props.push({ type: 'parkinglot', x0: px0, y0: py0, x1: px1, y1: py1 });
-      return;
+    // market stalls along the old town streets
+    for (let i = 0; i < 6; i++) {
+      const sx = 500 + (i % 3) * 340 + 90;
+      const sy = 1740 + Math.floor(i / 3) * 340 + 60;
+      this.props.push({ kind: 'stall', x: sx, y: sy, color: ['#c94f6d', '#4f8ac9', '#c9a44f'][i % 3] });
+      this.addSolid({ x0: sx - 30, y0: sy - 8, x1: sx + 30, y1: sy + 8, type: 'stall' });
     }
-    const cx = (px0 + px1) / 2, cy = (py0 + py1) / 2;
-    const downtown = cx > 42 * t && cx < 118 * t && cy > 36 * t && cy < 106 * t;
-    const beachfront = cy > 118 * t && cy < 143 * t;
-    const inset = 10;
-    const usable = { x0: px0 + inset, y0: py0 + inset, x1: px1 - inset, y1: py1 - inset };
-    const layout = rng.weighted([
-      { item: 'single', w: 3 },
-      { item: 'twin', w: 4 },
-      { item: 'triple', w: 3 },
-    ]);
-    const makeB = (bx0, by0, bx1, by1) => {
-      let h;
-      if (downtown) h = rng.range(44, 118);
-      else if (beachfront) h = rng.range(52, 96);
-      else h = rng.range(18, 52);
-      const style = rng.weighted([
-        { item: 'deco', w: 4 },
-        { item: 'glass', w: 3 },
-        { item: 'brick', w: 3 },
-        { item: 'hotel', w: beachfront ? 4 : 1 },
-      ]);
-      const b = {
-        x0: bx0, y0: by0, x1: bx1, y1: by1,
-        h: Math.round(h), style, seed: rng.int(0, 1e9),
-        neon: null, sign: null,
-      };
-      if (rng.chance(style === 'hotel' ? 0.85 : 0.24)) {
-        b.neon = {
-          color: rng.pick([CFG.NIGHT.neonPink, CFG.NIGHT.neonCyan, CFG.NIGHT.neonPurple, CFG.NIGHT.neonGreen, CFG.NIGHT.neonOrange]),
-          side: rng.pick(['n', 's', 'w', 'e']),
-        };
-        this.lights.push({ x: (bx0 + bx1) / 2, y: (by0 + by1) / 2, color: b.neon.color, r: 90 });
+    this.props.push({ kind: 'oldfountain', x: 1620, y: 2080 });
+
+    // --- GLASS TOWERS (downtown east): reflective high-rises -----------------
+    for (const b of this.buildings) {
+      if (b.container || b.floors < 6) continue;
+      if (b.x0 > 2700 && b.x0 < 4100 && b.y0 > 800 && b.y0 < 2400 && RNG.hash(b.x0 + b.y0 * 3) < 0.5) {
+        b.glass = true;
+        b.color = '#1c2a3a';
       }
-      if (style === 'hotel' || (style === 'deco' && rng.chance(0.4))) {
-        b.sign = rng.pick(NEON_WORDS);
+    }
+
+    // --- construction sites (2, with crane cones and barriers) --------------
+    const sites = [{ x: 1400, y: 1740 }, { x: 3820, y: 2400 }];
+    for (const s of sites) {
+      this.props.push({ kind: 'site', x: s.x, y: s.y, w: 200, h: 140 });
+      this.addSolid({ x0: s.x - 60, y0: s.y - 40, x1: s.x + 20, y1: s.y + 30, type: 'foundation' });
+      this.props.push({ kind: 'minicrane', x: s.x + 80, y: s.y - 30 });
+      for (let i = 0; i < 8; i++) {
+        const ang = (i / 8) * TAU;
+        this.props.push({ kind: 'cone', x: s.x + Math.cos(ang) * 110, y: s.y + Math.sin(ang) * 80 });
       }
-      this.buildings.push(b);
-      for (let ty = Math.floor(by0 / t); ty < Math.ceil(by1 / t); ty++)
-        for (let tx = Math.floor(bx0 / t); tx < Math.ceil(bx1 / t); tx++)
-          this.set(tx, ty, G.BUILDING);
+      for (let i = 0; i < 4; i++) {
+        this.props.push({ kind: 'barrier', x: s.x - 110 + i * 8, y: s.y - 70 + i * 46 });
+      }
+    }
+
+    // --- plaza with fountain plaza tiles (downtown) --------------------------
+    this.props.push({ kind: 'plaza', x: 3060, y: 1720, w: 220, h: 180 });
+    for (let i = 0; i < 6; i++) {
+      this.props.push({ kind: 'planter', x: 3060 - 90 + (i % 3) * 90, y: 1620 + Math.floor(i / 3) * 210 });
+    }
+
+    // --- harbor extras: fishing boats, pallet stacks, dock lamps ------------
+    this.props.push({ kind: 'boat', x: 1250, y: 130, len: 120 });
+    this.props.push({ kind: 'boat', x: 3480, y: 90, len: 90 });
+    for (let i = 0; i < 5; i++) {
+      const x = 900 + i * 620;
+      this.props.push({ kind: 'pallets', x, y: 640 });
+      this.props.push({ kind: 'docklamp', x: x + 260, y: 300 });
+    }
+    this.addSolid({ x0: 1190, y0: 70, x1: 1310, y1: 190, type: 'boat' });
+
+    // --- airfield extras: second runway stripe + parked crew cars -----------
+    this.props.push({ kind: 'runway', x0: CFG.AIR_W - 40, y0: 2260, x1: W, y1: 2340, sec: 3 });
+    this.spawns.cars.push({ x: CFG.AIR_W + 140, y: 2200, h: 0, type: 'pickup', parked: true });
+    this.spawns.cars.push({ x: CFG.AIR_W + 240, y: 2200, h: 0, type: 'van', parked: true });
+
+    // --- beach extras: umbrellas, surfboards, more lifeguards ---------------
+    for (let i = 0; i < 14; i++) {
+      const x = this.rng.range(260, 4000);
+      this.props.push({ kind: 'umbrella', x, y: this.rng.range(CFG.SAND_S + 60, CFG.OCEAN_S - 60), color: COLORS.neon[['pink', 'cyan', 'gold'][i % 3]] });
+    }
+    for (let i = 0; i < 6; i++) {
+      this.props.push({ kind: 'surfboard', x: this.rng.range(300, 4000), y: this.rng.range(CFG.OCEAN_S - 40, CFG.OCEAN_S + 20) });
+    }
+    this.props.push({ kind: 'lifeguard', x: 2600, y: CFG.SAND_S + 90 });
+    this.props.push({ kind: 'lifeguard', x: 3400, y: CFG.SAND_S + 90 });
+
+    // --- downtown road furniture: parking meters, mailboxes, hydrants -------
+    for (const x of this.roadV) {
+      for (const y of this.roadH) {
+        if (RNG.hash(x * 3 + y * 7) < 0.12) this.props.push({ kind: 'meter', x: x - CFG.ROAD_W / 2 - 14, y: y + 44 });
+        if (RNG.hash(x * 5 + y * 11) < 0.08) this.props.push({ kind: 'mailbox', x: x + CFG.ROAD_W / 2 + 14, y: y - 44 });
+      }
+    }
+
+    // --- points of interest (missions / services) --------------------------
+    this.pois = {
+      beachhut: { x: 1020, y: CFG.SAND_S - 26 },
+      garage: { x: 2380, y: 2896 },
+      marina: { x: 460, y: 430 },
+      taxi: { x: 1700, y: 2725 },
+      phonebooth: { x: 3060, y: 1196 },
+      safehouse: { x: 748, y: 2210 },
+      police: { x: 1386, y: 1700 },
+      hospital: { x: 2074, y: 1016 },
+      docksGate: { x: 1700, y: 800 },
+      airGate: { x: CFG.AIR_W - 100, y: 1985 },
+      shipDeck: { x: 2300, y: 300 },
+      spray: { x: 1904, y: 3090 },
+      gas: { x: 1196, y: 1352 },
+      ammunation: { x: 2765, y: 1494 },
+      food: { x: 1516, y: 2680 },
     };
-    const w = usable.x1 - usable.x0, h = usable.y1 - usable.y0;
-    if (layout === 'single') {
-      makeB(usable.x0, usable.y0, usable.x1, usable.y1);
-    } else if (layout === 'twin') {
-      if (rng.chance(0.5)) {
-        const split = usable.x0 + w * rng.range(0.4, 0.6);
-        makeB(usable.x0, usable.y0, split - 6, usable.y1);
-        makeB(split + 6, usable.y0, usable.x1, usable.y1);
-      } else {
-        const split = usable.y0 + h * rng.range(0.4, 0.6);
-        makeB(usable.x0, usable.y0, usable.x1, split - 6);
-        makeB(usable.x0, split + 6, usable.x1, usable.y1);
-      }
-    } else {
-      const g = 7;
-      const a = usable.x0 + w * 0.36, b2 = usable.x0 + w * 0.64;
-      makeB(usable.x0, usable.y0, a - g / 2, usable.y0 + h * 0.62);
-      makeB(a + g / 2, usable.y0, b2 - g / 2, usable.y1);
-      makeB(b2 + g / 2, usable.y0 + h * 0.3, usable.x1, usable.y1);
-    }
-    // street furniture on the sidewalk edges
-    this.decorateBlock(btx0, bty0, btx1, bty1, rng);
-  }
 
-  /** Street lights, hydrants, dumpsters around a block's rim. */
-  decorateBlock(btx0, bty0, btx1, bty1, rng) {
-    const t = CFG.T;
-    const corners = [
-      [btx0, bty0], [btx1, bty0], [btx0, bty1], [btx1, bty1],
+    // --- service storefronts (drawn by render, used by shops.js) ------------
+    this.props.push({ kind: 'shopfront', x: 1904, y: 3160, color: '#ff5da2', label: "PAY 'N' SPRAY", w: 120, h: 70 });
+    this.props.push({ kind: 'shopfront', x: 1196, y: 1290, color: '#ffd166', label: 'OCTANE FUEL', w: 130, h: 70 });
+    this.props.push({ kind: 'shopfront', x: 2850, y: 1494, color: '#8cff5d', label: 'AMMU-NATION', w: 120, h: 70 });
+    this.props.push({ kind: 'shopfront', x: 1516, y: 2630, color: '#00e5ff', label: 'PALM DOGS', w: 96, h: 60 });
+    // storefronts are solid boxes
+    this.addSolid({ x0: 1844, y0: 3125, x1: 1964, y1: 3195, type: 'shop' });
+    this.addSolid({ x0: 1131, y0: 1255, x1: 1261, y1: 1325, type: 'shop' });
+    this.addSolid({ x0: 2790, y0: 1459, x1: 2910, y1: 1529, type: 'shop' });
+    this.addSolid({ x0: 1468, y0: 2600, x1: 1564, y1: 2660, type: 'shop' });
+    // storefronts replace any procedurally placed building on their block
+    const shopRects = [[1844, 3125, 1964, 3195], [1131, 1255, 1261, 1325], [2790, 1459, 2910, 1529], [1468, 2600, 1564, 2660]];
+    this.buildings = this.buildings.filter((b) => !shopRects.some((r) => b.x0 < r[2] && b.x1 > r[0] && b.y0 < r[3] && b.y1 > r[1]));
+
+    // --- parking lots with painted stalls + parked cars ---------------------
+    const lots = [{ x: 2260, y: 1740, cols: 5, rows: 3 }, { x: 3380, y: 2560, cols: 4, rows: 3 }];
+    for (const lot of lots) {
+      this.props.push({ kind: 'lot', x: lot.x, y: lot.y, cols: lot.cols, rows: lot.rows });
+      for (let cxi = 0; cxi < lot.cols; cxi++) {
+        for (let cyi = 0; cyi < lot.rows; cyi++) {
+          if (this.rng.f() < 0.55) continue; // some stalls empty
+          const type = ['sedan', 'coupe', 'van', 'pickup'][this.rng.int(0, 3)];
+          this.spawns.cars.push({ x: lot.x - lot.cols * 34 + cxi * 68 + 34, y: lot.y - lot.rows * 56 + cyi * 112, h: Math.PI / 2, type, parked: true });
+        }
+      }
+    }
+
+    // --- billboards on rooftops and lots ------------------------------------
+    const billArt = [
+      { text: 'DRINK PALM FIZZ', color: COLORS.neon.gold },
+      { text: 'VICE PALMS CASINO', color: COLORS.neon.pink },
+      { text: 'FLY PALM AIR', color: COLORS.neon.cyan },
+      { text: 'GATOR GYM 24H', color: COLORS.neon.lime },
+      { text: 'NEON WAX MOTORS', color: COLORS.neon.violet },
+      { text: 'HARBOR SIDE SUITES', color: COLORS.neon.red },
     ];
-    for (const [tx, ty] of corners) {
-      const px = (tx + 0.5) * t, py = (ty + 0.5) * t;
-      if (rng.chance(0.5)) {
-        this.propSolids.push({ x: px, y: py, r: 3.5, kind: 'streetlight' });
-        this.props.push({ type: 'streetlight', x: px, y: py, r: 4 });
-        if (rng.chance(0.5)) {
-          this.lights.push({ x: px, y: py, color: '#ffb35c', r: 70, kind: 'street' });
-        }
-      } else if (rng.chance(0.4)) {
-        this.props.push({ type: 'hydrant', x: px, y: py, r: 4 });
-        this.propSolids.push({ x: px, y: py, r: 5, kind: 'hydrant', primed: true });
+    const billSpots = [[880, 1080], [2060, 780], [3080, 1760], [4060, 1080], [540, 2720], [3720, 3060]];
+    billSpots.forEach((s, i) => this.props.push({ kind: 'billboard', x: s[0], y: s[1], art: billArt[i % billArt.length] }));
+
+    // --- bus stops -----------------------------------------------------------
+    for (const [x, y] of [[1046, 1046], [2404, 1046], [1046, 2750], [3406, 2404]]) {
+      this.props.push({ kind: 'busstop', x, y });
+    }
+
+    // --- street litter: dumpsters, hydrants, benches ------------------------
+    for (let i = 0; i < 46; i++) {
+      const x = this.rng.range(300, 4100), y = this.rng.range(700, 3400);
+      // only on sidewalks
+      const ry = Math.round(y / CFG.ROAD_SPACING) * CFG.ROAD_SPACING;
+      if (Math.abs(y - ry) > 40 && Math.abs(y - ry) < 46) continue;
+      const kind = this.rng.pick(['dumpster', 'hydrant', 'bench', 'bin']);
+      this.props.push({ kind, x, y: y < ry ? ry - 42 : ry + 42 });
+      if (kind === 'dumpster') this.addSolid({ x0: x - 16, y0: (y < ry ? ry - 50 : ry + 34), x1: x + 16, y1: (y < ry ? ry - 34 : ry + 50), type: 'dumpster' });
+    }
+    // rooftop AC units on tall buildings (visual only)
+    for (const b of this.buildings) {
+      if (b.container || b.floors < 5) continue;
+      b.ac = this.rng.f() < 0.6;
+    }
+
+    // --- beach extras: volleyball court + boardwalk --------------------------
+    this.props.push({ kind: 'court', x: 2600, y: CFG.SAND_S + 110 });
+    this.props.push({ kind: 'boardwalk', x0: 300, x1: 4100, y: CFG.SAND_S + 14 });
+
+    // --- airfield extras: fuel drums + windsock ------------------------------
+    for (let i = 0; i < 8; i++) {
+      this.props.push({ kind: 'drums', x: CFG.AIR_W + 140 + (i % 4) * 70, y: 2140 + Math.floor(i / 4) * 60 });
+    }
+    this.props.push({ kind: 'windsock', x: CFG.AIR_W + 60, y: 1840 });
+
+    // --- hidden packages (12 collectibles tucked around town) ----------------
+    // snap each to the nearest sidewalk so they are always reachable on foot
+    const snapSidewalk = (x, y) => {
+      const R = CFG.ROAD_SPACING;
+      const rx = Math.round(x / R) * R, ry = Math.round(y / R) * R;
+      if (Math.abs(y - ry) <= Math.abs(x - rx)) return { x: clamp(x, 120, 4160), y: ry + (y > ry ? 1 : -1) * 42 };
+      return { x: rx + (x > rx ? 1 : -1) * 42, y: clamp(y, 400, 3360) };
+    };
+    this.hidden = [
+      [462, 560], [1216, 428], [2066, 348], [3216, 560], [4088, 460],
+      [560, 1420], [1790, 1745], [3060, 2078], [4150, 2350], [836, 3080],
+      [2470, 3220], [3690, 2870],
+    ].map(([hx, hy]) => { const s = snapSidewalk(hx, hy); return [s.x, s.y]; });
+
+    // --- spawn tables (deterministic) --------------------------------------
+    const carTypes = ['sedan', 'sedan', 'taxi', 'van', 'pickup', 'coupe', 'sport', 'truck', 'bus', 'sedan', 'coupe', 'taxi'];
+    for (const y of this.roadH) {
+      for (let x = 240; x < CFG.AIR_W - 60; x += 480) {
+        const jitter = (RNG.hash(x * 7 + y) - 0.5) * 120;
+        const type = carTypes[Math.floor(RNG.hash(x + y * 3) * carTypes.length) % carTypes.length];
+        this.spawns.cars.push({ x: x + jitter, y: y + CFG.LANE_OFF, h: 0, type });
+        this.spawns.cars.push({ x: x + 240 + jitter, y: y - CFG.LANE_OFF, h: Math.PI, type: carTypes[Math.floor(RNG.hash(x * 5 + y) * carTypes.length) % carTypes.length] });
       }
     }
-    if (rng.chance(0.3)) {
-      const dx = (btx0 + rng.int(1, 4) + 0.5) * t;
-      const dy = (bty0 + 0.3) * t;
-      this.props.push({ type: 'dumpster', x: dx, y: dy, r: 8 });
-      this.propSolids.push({ x: dx, y: dy, r: 8, kind: 'dumpster' });
-    }
-    // bus bench on a road-facing edge
-    if (rng.chance(0.28)) {
-      const bx = (btx0 + rng.int(1, 4) + 0.5) * t;
-      const by = (bty1 + 0.6) * t;
-      this.props.push({ type: 'bench', x: bx, y: by });
-    }
-    // hot dog cart, rare and beloved
-    if (rng.chance(0.12)) {
-      const hx = (btx1 - 0.6) * t;
-      const hy = (bty0 + rng.int(1, 4) + 0.5) * t;
-      this.props.push({ type: 'hotdog', x: hx, y: hy });
-      this.propSolids.push({ x: hx, y: hy, r: 7, kind: 'hotdog' });
-    }
-  }
-
-  buildBoundary() {
-    const W = CFG.W, H = CFG.H;
-    this.solids.push({ x0: -40, y0: -40, x1: W + 40, y1: 0, kind: 'boundary' });
-    this.solids.push({ x0: -40, y0: H, x1: W + 40, y1: H + 40, kind: 'boundary' });
-    this.solids.push({ x0: -40, y0: -40, x1: 0, y1: H + 40, kind: 'boundary' });
-    this.solids.push({ x0: W, y0: -40, x1: W + 40, y1: H + 40, kind: 'boundary' });
-  }
-
-  /** Two bespoke landmarks: the Coral Tower penthouse and Rico's Garage. */
-  buildLandmarks() {
-    const t = CFG.T;
-    // The Coral Tower: a round tower plaza near the penthouse spawn
-    const cx = PLACES.penthouse.x, cy = PLACES.penthouse.y + 64;
-    this.props.push({ type: 'coraltower', x: cx, y: cy, r: 46 });
-    this.propSolids.push({ x: cx, y: cy, r: 38, kind: 'coraltower' });
-    // Rico's Garage front: roll door + painted sign by the garage spawn
-    const gx = PLACES.garage.x, gy = PLACES.garage.y;
-    this.props.push({ type: 'garagefront', x: gx, y: gy - 40, r: 40 });
-    this.solids.push({ x0: gx - 34, y0: gy - 48, x1: gx + 34, y1: gy - 30, kind: 'garagedoor' });
-  }
-
-  /** Road corridors + intersections from the stamped lattice. */
-  collectRoadData() {
-    const { WT, HT } = CFG;
-    // vertical corridors: contiguous road columns
-    for (let tx = 0; tx < WT; tx++) {
-      if (this.at(tx, 80) !== G.ROAD) continue;
-      let ty0 = 0;
-      for (let ty = 0; ty < HT; ty++) {
-        const road = this.at(tx, ty) === G.ROAD;
-        const prevRoad = ty > 0 ? this.at(tx, ty - 1) === G.ROAD : false;
-        if (road && !prevRoad) ty0 = ty;
-        if (!road && prevRoad) this.roadsV.push({ tx, ty0, ty1: ty });
+    for (const x of this.roadV) {
+      for (let y = 420; y < CFG.SAND_S - 100; y += 520) {
+        const type = carTypes[Math.floor(RNG.hash(x * 11 + y) * carTypes.length) % carTypes.length];
+        this.spawns.cars.push({ x: x - CFG.LANE_OFF, y: y + 60, h: Math.PI / 2, type });
+        this.spawns.cars.push({ x: x + CFG.LANE_OFF, y: y + 300, h: -Math.PI / 2, type });
       }
-      if (this.at(tx, HT - 1) === G.ROAD) this.roadsV.push({ tx, ty0, ty1: HT });
     }
-    for (let ty = 0; ty < HT; ty++) {
-      if (this.at(80, ty) !== G.ROAD) continue;
-      let tx0 = 0;
-      for (let tx = 0; tx < WT; tx++) {
-        const road = this.at(tx, ty) === G.ROAD;
-        const prevRoad = tx > 0 ? this.at(tx - 1, ty) === G.ROAD : false;
-        if (road && !prevRoad) tx0 = tx;
-        if (!road && prevRoad) this.roadsH.push({ ty, tx0, tx1: tx });
+    for (const y of this.roadH) {
+      for (let x = 180; x < CFG.AIR_W; x += 170) {
+        this.spawns.peds.push({ x, y: y - CFG.ROAD_W / 2 - 14, dir: RNG.hash(x + y) > 0.5 ? 0 : Math.PI });
+        this.spawns.peds.push({ x: x + 85, y: y + CFG.ROAD_W / 2 + 14, dir: RNG.hash(x * 3 + y) > 0.5 ? 0 : Math.PI });
       }
-      if (this.at(WT - 1, ty) === G.ROAD) this.roadsH.push({ ty, tx0, tx1: WT });
     }
-    // intersections: where a vertical pair meets a horizontal pair
-    const seen = new Set();
-    for (const v of this.roadsV) {
-      for (const h of this.roadsH) {
-        if (h.tx0 <= v.tx && v.tx < h.tx1 && v.ty0 <= h.ty && h.ty < v.ty1) {
-          const key = `${v.tx}:${h.ty}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          this.intersections.push({
-            tx: v.tx, ty: h.ty,
-            x: (v.tx + 1) * CFG.T,
-            y: (h.ty + 1) * CFG.T,
-          });
-          // a signal post on each of two opposite corners
-          const ix = (v.tx + 1) * CFG.T, iy = (h.ty + 1) * CFG.T;
-          if (h.tx0 < v.tx && v.ty0 < h.ty) {
-            this.props.push({ type: 'trafficlight', x: ix + 22, y: iy - 22, ix: v.tx + 1, iy: h.ty + 1, axis: 'ns' });
-            this.props.push({ type: 'trafficlight', x: ix - 22, y: iy + 22, ix: v.tx + 1, iy: h.ty + 1, axis: 'ew' });
-          }
-        }
+    // taxi for the taxi stand mission
+    this.spawns.cars.push({ x: 1700, y: 2760, h: 0, type: 'taxi' });
+  }
+
+  addSolid(r) {
+    this.solids.push(r);
+    const c = this.cell;
+    for (let gx = Math.floor(r.x0 / c); gx <= Math.floor(r.x1 / c); gx++) {
+      for (let gy = Math.floor(r.y0 / c); gy <= Math.floor(r.y1 / c); gy++) {
+        const k = gx + ',' + gy;
+        let arr = this.grid.get(k);
+        if (!arr) { arr = []; this.grid.set(k, arr); }
+        arr.push(r);
       }
     }
   }
 
-  hashSolids() {
-    this.hash.clear();
-    const c = this.hashCell;
-    for (const s of this.solids) {
-      const gx0 = Math.floor(s.x0 / c), gx1 = Math.floor(s.x1 / c);
-      const gy0 = Math.floor(s.y0 / c), gy1 = Math.floor(s.y1 / c);
-      for (let gx = gx0; gx <= gx1; gx++)
-        for (let gy = gy0; gy <= gy1; gy++) {
-          const key = gx + ':' + gy;
-          let arr = this.hash.get(key);
-          if (!arr) { arr = []; this.hash.set(key, arr); }
-          arr.push(s);
-        }
+  // solids near a point (spatial hash lookup)
+  nearSolids(x, y) {
+    const c = this.cell, gx = Math.floor(x / c), gy = Math.floor(y / c), out = [];
+    for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+      const arr = this.grid.get((gx + i) + ',' + (gy + j));
+      if (arr) out.push(...arr);
     }
-    // intersection tile set for crosswalk painting
-    this.intersectionSet = new Set();
-    for (const ix of this.intersections) {
-      for (let dx = -1; dx <= 2; dx++) {
-        for (let dy = -1; dy <= 2; dy++) {
-          this.intersectionSet.add(`${ix.tx + dx}:${ix.ty + dy}`);
-        }
-      }
-    }
-  }
-
-  /** Solid rects near a point (deduped, may share objects). */
-  solidsNear(px, py, r, out) {
-    out.length = 0;
-    const c = this.hashCell;
-    const gx0 = Math.floor((px - r) / c), gx1 = Math.floor((px + r) / c);
-    const gy0 = Math.floor((py - r) / c), gy1 = Math.floor((py + r) / c);
-    const seen = new Set();
-    for (let gx = gx0; gx <= gx1; gx++)
-      for (let gy = gy0; gy <= gy1; gy++) {
-        const arr = this.hash.get(gx + ':' + gy);
-        if (!arr) continue;
-        for (const s of arr) {
-          if (seen.has(s)) continue;
-          seen.add(s);
-          out.push(s);
-        }
-      }
     return out;
   }
 
-  // ------------------------------------------------------------ collision
-
-  /**
-   * Move a circle from (px,py) toward (nx,ny) and resolve against solids,
-   * round props and water. Returns the corrected position.
-   */
-  collideCircle(px, py, nx, ny, r) {
-    let x = nx, y = ny;
-    const near = [];
-    this.solidsNear(x, y, r + 12, near);
-    const push = { px: 0, py: 0, depth: 0 };
-    for (let pass = 0; pass < 3; pass++) {
-      let moved = false;
-      for (const s of near) {
-        if (!circleRectHit(x, y, r, s)) continue;
-        if (circleRectPush(x, y, r, s, push)) {
-          x += push.px; y += push.py;
-          moved = true;
-        }
-      }
-      if (!moved) break;
-    }
-    // round props
-    for (const p of this.propSolids) {
-      const dx = x - p.x, dy = y - p.y;
-      const rr = r + p.r;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < rr * rr && d2 > 1e-9) {
-        const d = Math.sqrt(d2);
-        x = p.x + (dx / d) * rr;
-        y = p.y + (dy / d) * rr;
-      }
-    }
-    // water blocks walkers and cars alike
-    if (this.isWaterPx(x, y)) {
-      x = px; y = py;
-      if (this.isWaterPx(x, y)) {
-        // both blocked: step back toward the last dry spot
-        x = (px + nx) / 2; y = (py + ny) / 2;
-      }
-    }
-    x = clamp(x, r, CFG.W - r);
-    y = clamp(y, r, CFG.H - r);
-    return { x, y };
-  }
-
-  /** Straight-line clearance check used by AI and bullets. */
-  lineClear(ax, ay, bx, by) {
-    const steps = Math.ceil(dist(ax, ay, bx, by) / 24);
-    for (let i = 1; i < steps; i++) {
-      const t = i / steps;
-      const x = ax + (bx - ax) * t;
-      const y = ay + (by - ay) * t;
-      const code = this.codeAt(x, y);
-      if (code === G.BUILDING || code === G.WATER) return false;
-    }
-    return true;
-  }
-
-  // ------------------------------------------------------------- spawning
-
-  pickSpawns() {
-    for (const [key, p] of Object.entries(PLACES)) {
-      this.spawns[key] = { x: p.x, y: p.y, label: p.label };
-    }
-    // nudge any spawn that landed inside something solid
-    for (const s of Object.values(this.spawns)) {
-      const near = [];
-      this.solidsNear(s.x, s.y, 64, near);
-      for (let i = 0; i < 24 && near.some((r) => circleRectHit(s.x, s.y, 12, r)); i++) {
-        s.y += 24;
-        this.solidsNear(s.x, s.y, 64, near);
-      }
-    }
-  }
-
-  /**
-   * A random road lane point near (cx, cy) within `radius`, with a travel
-   * direction that keeps to the right-hand lane.
-   */
-  randomLaneSpawn(rng, cx, cy, radius) {
-    for (let i = 0; i < 40; i++) {
-      const ang = rng.angle();
-      const d = rng.range(120, radius);
-      const x = clamp(cx + Math.cos(ang) * d, 64, CFG.W - 64);
-      const y = clamp(cy + Math.sin(ang) * d, 64, CFG.H - 64);
-      const tx = Math.floor(x / CFG.T), ty = Math.floor(y / CFG.T);
-      // vertical road: columns tx..tx+1 both road
-      if (this.at(tx, ty) === G.ROAD && this.at(tx + 1, ty) === G.ROAD && this.at(tx - 1, ty) === G.ROAD) {
-        const centerX = (tx + 1) * CFG.T;
-        const south = rng.chance(0.5);
-        return { x: south ? centerX - 16 : centerX + 16, y, dir: south ? 1 : 3 };
-      }
-      if (this.at(tx, ty) === G.ROAD && this.at(tx, ty + 1) === G.ROAD && this.at(tx, ty - 1) === G.ROAD) {
-        const centerY = (ty + 1) * CFG.T;
-        const east = rng.chance(0.5);
-        return { x, y: east ? centerY + 16 : centerY - 16, dir: east ? 0 : 2 };
-      }
-    }
+  isWater(x, y) {
+    for (const w of this.water) if (pointInRect(x, y, w)) return w.kind;
     return null;
   }
 
-  /** Lane world position for a corridor position and direction. */
-  lanePos(x, y, dir) {
-    const t = CFG.T;
-    if (dir === 0 || dir === 2) { // horizontal movement, snap to lane y
-      const ty = Math.floor(y / t);
-      if (this.at(Math.floor(x / t), ty) === G.ROAD && this.at(Math.floor(x / t), ty + 1) === G.ROAD) {
-        const centerY = (ty + 1) * t;
-        return { x, y: dir === 0 ? centerY + 16 : centerY - 16 };
-      }
-      return { x, y };
-    }
-    const tx = Math.floor(x / t);
-    if (this.at(tx, Math.floor(y / t)) === G.ROAD && this.at(tx + 1, Math.floor(y / t)) === G.ROAD) {
-      const centerX = (tx + 1) * t;
-      return { x: dir === 1 ? centerX - 16 : centerX + 16, y };
-    }
-    return { x, y };
+  inZone(x, y) {
+    if (y < CFG.DOCKS_S && y > -100 && x < 4200) return 'docks';
+    if (x >= CFG.AIR_W - 60) return 'airfield';
+    if (y >= CFG.SAND_S - 40) return 'beach';
+    const P = CFG.PARK;
+    if (x >= P.x0 && x <= P.x1 && y >= P.y0 && y <= P.y1) return 'park';
+    return 'city';
   }
 
-  /** Traffic light: true when north-south traffic may go at time t. */
-  lightNS(ix, iy, t) {
-    const phase = Math.floor(t / CFG.LIGHT_PERIOD) + Math.floor(ix / (CFG.SUPER * CFG.T)) + Math.floor(iy / (CFG.SUPER * CFG.T));
-    return (phase & 1) === 0;
-  }
-
-  /** Display region name for the HUD. */
-  regionName(px, py) {
-    const tx = px / CFG.T, ty = py / CFG.T;
-    if (pointInRect(tx, ty, { x0: CFG.DOCKS.x0, y0: CFG.DOCKS.y0, x1: CFG.DOCKS.x1, y1: CFG.DOCKS.y1 })) return 'NORTH DOCKS';
-    if (pointInRect(tx, ty, { x0: CFG.AIRFIELD.x0, y0: CFG.AIRFIELD.y0, x1: CFG.AIRFIELD.x1, y1: CFG.AIRFIELD.y1 })) return 'PALM AIRFIELD';
-    if (pointInRect(tx, ty, { x0: CFG.PARK.x0, y0: CFG.PARK.y0, x1: CFG.PARK.x1, y1: CFG.PARK.y1 })) return 'FLAMINGO PARK';
-    if (ty >= CFG.BEACH.y0) return 'PALM BEACH';
-    if (ty > 118) return 'OCEAN DRIVE';
-    if (tx > 118) return 'EAST VICE';
-    if (tx < 42) return 'WEST VICE';
-    if (ty < 40) return 'LITTLE HAVANA';
-    return 'DOWNTOWN';
-  }
-
-  // -------------------------------------------------------------- minimap
-
-  prerenderMinimap() {
-    const scale = 2; // 2px per tile
-    const cv = document.createElement('canvas');
-    cv.width = CFG.WT * scale;
-    cv.height = CFG.HT * scale;
-    const c = cv.getContext('2d');
-    const colors = {
-      [G.PLAZA]: '#20242e', [G.ROAD]: '#3c4250', [G.BUILDING]: '#14161c',
-      [G.WATER]: '#12365c', [G.SAND]: '#6d5c3a', [G.GRASS]: '#1d4a2c',
-      [G.RUNWAY]: '#2a2e36', [G.DOCKPAD]: '#2a2e36', [G.PIER]: '#3a3026',
-      [G.FENCE]: '#444',
-    };
-    for (let ty = 0; ty < CFG.HT; ty++) {
-      for (let tx = 0; tx < CFG.WT; tx++) {
-        c.fillStyle = colors[this.at(tx, ty)] || '#20242e';
-        c.fillRect(tx * scale, ty * scale, scale, scale);
-      }
+  // world-space to nearest road lane center for a given direction of travel
+  snapLane(pos, dir) {
+    const R = CFG.ROAD_SPACING, off = CFG.LANE_OFF;
+    if (dir === 0 || dir === Math.PI) {
+      const ry = Math.round(pos.y / R) * R;
+      return dir === 0 ? ry + off : ry - off;
     }
-    this.minimap = cv;
+    const rx = Math.round(pos.x / R) * R;
+    return dir === Math.PI / 2 ? rx - off : rx + off;
+  }
+
+  // green phase for an intersection at time t: 'ns' or 'ew'
+  lightPhase(ix, iy, t) {
+    return ((Math.floor(t / 7) + ix * 3 + iy * 7) % 2) === 0 ? 'ns' : 'ew';
   }
 }
