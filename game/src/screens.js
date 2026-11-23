@@ -1,378 +1,486 @@
-// ---------------------------------------------------------------------------
-// screens.js — title, pause, WASTED/BUSTED overlays and the localStorage
-// save slot (save / continue / delete).
-// ---------------------------------------------------------------------------
+// screens.js — title, pause, wasted/busted overlays and the localStorage
+// save system (continue / delete save).
 
 import { CFG } from './config.js';
-import { VIEW } from './view.js';
-import { fmtMoney } from './util.js';
+import { fmtMoney, clamp, TAU } from './util.js';
+import { CONTROLS } from './input.js';
+import { engineBannerLines } from './hud.js';
 
-const FONT = '"Segoe UI", Arial, sans-serif';
+const SAVE_KEY = 'vicepalms_save_v1';
 
-// ------------------------------------------------------------- save helpers
-export function saveGameState(game) {
+export function hasSave() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return false;
+    const d = JSON.parse(raw);
+    return d && typeof d === 'object' && typeof d.money === 'number';
+  } catch {
+    return false;
+  }
+}
+
+export function readSave() {
+  try {
+    return JSON.parse(localStorage.getItem(SAVE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+export function writeSave(game) {
   const p = game.player;
   const data = {
     v: 1,
+    t: Date.now(),
     money: p.money,
     health: p.health,
     armor: p.armor,
     ammo: p.ammo,
-    x: p.x, y: p.y,
-    mission: game.missions.storyIndex,
-    sides: game.missions.sidesDone,
-    savedAt: Date.now(),
+    weapon: p.weapon,
+    x: p.x,
+    y: p.y,
+    storyIndex: game.missions.storyIndex,
+    sideDone: game.missions.sideDone,
+    heat: game.police.heat,
+    place: game.world.regionName(p.x, p.y),
+    tokens: game.tokens ? game.tokens.serialize() : [],
   };
-  try { localStorage.setItem(CFG.SAVE_KEY, JSON.stringify(data)); return true; } catch (e) { return false; }
-}
-
-export function loadSaveState() {
   try {
-    const raw = localStorage.getItem(CFG.SAVE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch (e) { return null; }
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+  } catch {
+    // storage full/blocked: saving is best-effort
+  }
 }
 
 export function deleteSave() {
-  try { localStorage.removeItem(CFG.SAVE_KEY); } catch (e) { /* ignore */ }
+  try {
+    localStorage.removeItem(SAVE_KEY);
+  } catch { /* nothing to delete */ }
 }
 
-export function hasSave() {
-  return !!loadSaveState();
+// ---------------------------------------------------------------- title
+
+export const TITLE_ITEMS = ['new', 'continue', 'delete', 'controls'];
+
+export function drawTitle(ctx, game) {
+  const W = game.viewW, H = game.viewH;
+  const t = game.time;
+
+  if (game.world && game.attractMode) {
+    // live city pan behind the logo
+    game.renderer.draw(ctx);
+    ctx.fillStyle = 'rgba(8, 7, 18, 0.60)';
+    ctx.fillRect(0, 0, W, H);
+    drawSun(ctx, W, H, t, 0.85);
+  } else {
+    // backdrop: deep water gradient + palms silhouette
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#0a0716');
+    grad.addColorStop(0.55, '#16102a');
+    grad.addColorStop(1, '#251436');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    drawSun(ctx, W, H, t, 1);
+    // water strip
+    ctx.fillStyle = '#0c1f3a';
+    const sunY = H * 0.34, sunR = 110;
+    ctx.fillRect(0, sunY + sunR * 0.72, W, H - (sunY + sunR * 0.72));
+    ctx.strokeStyle = 'rgba(120, 220, 255, 0.14)';
+    for (let i = 0; i < 12; i++) {
+      const y = sunY + sunR * 0.72 + 8 + i * 14;
+      const wob = Math.sin(t * 1.8 + i * 1.7) * 40;
+      ctx.beginPath();
+      ctx.moveTo(W / 2 - 190 + wob, y);
+      ctx.lineTo(W / 2 + 190 + wob, y);
+      ctx.stroke();
+    }
+    // palm silhouettes
+    drawPalm(ctx, 150, H * 0.62, 1.4, t);
+    drawPalm(ctx, W - 150, H * 0.62, 1.4, t + 3);
+    drawPalm(ctx, 260, H * 0.7, 0.9, t + 1.4);
+    drawPalm(ctx, W - 260, H * 0.7, 0.9, t + 2.2);
+  }
+
+  // logo
+  drawTitleLogo(ctx, W, H, t);
+  drawTitleMenu(ctx, game, W, H);
 }
 
-// ------------------------------------------------------------------- screens
-export class Screens {
-  constructor(game) {
-    this.game = game;
-    this.pauseChoice = 0;
+function drawSun(ctx, W, H, t, alpha) {
+  const sunY = H * 0.34;
+  const sunR = 110;
+  const sg = ctx.createLinearGradient(0, sunY - sunR, 0, sunY + sunR);
+  sg.addColorStop(0, '#ff4fd8');
+  sg.addColorStop(0.5, '#a45bff');
+  sg.addColorStop(1, '#37f5ff');
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.arc(W / 2, sunY, sunR, 0, TAU);
+  ctx.clip();
+  ctx.fillStyle = sg;
+  ctx.fillRect(W / 2 - sunR, sunY - sunR, sunR * 2, sunR * 2);
+  // sun slats
+  ctx.fillStyle = 'rgba(10, 7, 22, 0.9)';
+  for (let i = 0; i < 7; i++) {
+    const y = sunY + 8 + i * 16;
+    ctx.fillRect(W / 2 - sunR, y, sunR * 2, 4 + i);
+  }
+  ctx.restore();
+  ctx.globalCompositeOperation = 'lighter';
+  const glow = ctx.createRadialGradient(W / 2, sunY, sunR * 0.4, W / 2, sunY, sunR * 2.1);
+  glow.addColorStop(0, `rgba(255, 79, 216, ${0.16 * alpha})`);
+  glow.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawTitleLogo(ctx, W, H, t) {
+  ctx.textAlign = 'center';
+  const pulse = 0.5 + 0.5 * Math.sin(t * 2.2);
+  ctx.font = 'bold 88px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillText('VICE PALMS', W / 2 + 4, H * 0.26 + 4);
+  ctx.fillStyle = '#ff4fd8';
+  ctx.fillText('VICE PALMS', W / 2, H * 0.26);
+  ctx.font = 'bold 20px "Courier New", monospace';
+  ctx.fillStyle = `rgba(55, 245, 255, ${0.6 + pulse * 0.4})`;
+  ctx.fillText('AN OPEN CITY OF NEON AND BAD DECISIONS', W / 2, H * 0.26 + 34);
+}
+
+function drawTitleMenu(ctx, game, W, H) {
+  // menu
+  const items = menuItems(game);
+  ctx.font = 'bold 22px "Courier New", monospace';
+  items.forEach((it, i) => {
+    const y = H * 0.56 + i * 34;
+    const sel = i === game.menuIndex;
+    ctx.fillStyle = sel ? '#ffd23d' : 'rgba(255,255,255,0.62)';
+    const label = sel ? `\u25B8 ${it.label} \u25C2` : it.label;
+    ctx.fillText(label, W / 2, y);
+  });
+
+  // overlays: controls sheet or the how-to-play spread
+  if (game.howToOpen) {
+    drawHowTo(ctx, game, W, H);
+  } else if (game.menuIndex === items.length - 1 || game.showControls) {
+    drawControls(ctx, W / 2, H * 0.56 + items.length * 34 + 10);
+  } else {
+    ctx.font = '12px "Courier New", monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.fillText('Up/Down to choose · Enter to select · H for how to play', W / 2, H - 16);
   }
 
-  /** returns an action string if the title screen consumed the input */
-  updateTitle(input) {
-    const g = this.game;
-    if (input.wasPressed('Enter', 'Space', 'KeyE')) {
-      if (this.titleChoice === 1 && hasSave()) {
-        deleteSave();
-        g.refreshTitleChoices();
-      } else {
-        return this.titleChoice === 0 && hasSave() ? 'continue' : 'new';
-      }
-    }
-    if (input.wasPressed('KeyW', 'ArrowUp')) {
-      this.titleChoice = Math.max(0, this.titleChoice - 1);
-    }
-    if (input.wasPressed('KeyS', 'ArrowDown')) {
-      this.titleChoice = Math.min(this.titleMax(), this.titleChoice + 1);
-    }
-    // mouse
-    const items = this.titleItems();
-    for (let i = 0; i < items.length; i++) {
-      if (input.mouse.clicked && this._hitItem(input, items, i)) {
-        if (items[i].action === 'delete') { deleteSave(); g.refreshTitleChoices(); return null; }
-        return items[i].action;
-      }
-    }
-    return null;
+  // save hint
+  if (hasSave()) {
+    const s = readSave();
+    ctx.font = '12px "Courier New", monospace';
+    ctx.fillStyle = 'rgba(125, 255, 138, 0.55)';
+    ctx.textAlign = 'right';
+    ctx.fillText(`saved: ${fmtMoney(s.money)} · ${s.place || 'Vice Palms'}`, W - 20, H - 16);
+    ctx.textAlign = 'center';
   }
+  // colophon
+  ctx.font = '10px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.28)';
+  ctx.textAlign = 'left';
+  ctx.fillText('VICE PALMS v1.0 · make.fun gta6-01 · a fresh full rebuild · no libs, no network', 14, H - 32);
+  // rotating street wisdom, bottom-right
+  ctx.textAlign = 'right';
+  ctx.font = 'italic 11px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(255, 210, 90, 0.45)';
+  ctx.fillText(titleTip(game.time), W - 20, H - 32);
+  ctx.textAlign = 'center';
+}
 
-  titleItems() {
-    const items = [{ label: 'NEW GAME', action: 'new' }];
-    if (hasSave()) items.unshift({ label: 'CONTINUE', action: 'continue' });
-    items.push({ label: 'DELETE SAVE', action: 'delete' });
-    return items;
+function menuItems(game) {
+  const list = [{ key: 'new', label: 'START NEW GAME' }];
+  if (hasSave()) list.push({ key: 'continue', label: 'CONTINUE' });
+  if (hasSave()) list.push({ key: 'delete', label: 'DELETE SAVE' });
+  list.push({ key: 'controls', label: 'CONTROLS' });
+  return list;
+}
+
+/** Rebuild the menu list fresh each frame and clamp the index. */
+export function updateMenu(game) {
+  const items = menuItems(game);
+  if (game.menuIndex >= items.length) game.menuIndex = items.length - 1;
+  if (game.menuIndex < 0) game.menuIndex = 0;
+  return items;
+}
+
+export function activateMenuItem(game) {
+  const items = menuItems(game);
+  const key = items[game.menuIndex].key;
+  if (key === 'new') {
+    deleteSave();
+    game.startNewGame();
+  } else if (key === 'continue') {
+    game.continueGame();
+  } else if (key === 'delete') {
+    deleteSave();
+    game.menuIndex = 0;
   }
+  // 'controls' just highlights the sheet
+}
 
-  titleMax() { return this.titleItems().length - 1; }
+function drawControls(ctx, cx, y0) {
+  ctx.font = 'bold 13px "Courier New", monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(55, 245, 255, 0.85)';
+  ctx.fillText('CONTROLS', cx, y0);
+  ctx.font = '12px "Courier New", monospace';
+  CONTROLS.forEach((row, i) => {
+    const y = y0 + 18 + i * 16;
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.textAlign = 'right';
+    ctx.fillText(row[0], cx - 10, y);
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.textAlign = 'left';
+    ctx.fillText(row[1], cx + 10, y);
+  });
+  ctx.textAlign = 'center';
+}
 
-  _hitItem(input, items, i) {
-    const y0 = 380 + i * 46;
-    return input.mouse.x > VIEW.w / 2 - 140 && input.mouse.x < VIEW.w / 2 + 140
-      && input.mouse.y > y0 && input.mouse.y < y0 + 38;
-  }
+/** Two-column survival guide behind the H key. */
+export function drawHowTo(ctx, game, W, H) {
+  ctx.fillStyle = 'rgba(4, 5, 10, 0.86)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 30px "Courier New", monospace';
+  ctx.fillStyle = '#ffd23d';
+  ctx.fillText('HOW TO PLAY', W / 2, 64);
+  ctx.font = '13px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.fillText('H or Esc to close', W / 2, 88);
 
-  drawTitle(g, game) {
-    const items = this.titleItems();
-    // backdrop: the game world darkened (camera drifts over the city)
-    g.fillStyle = 'rgba(6,8,14,0.78)';
-    g.fillRect(0, 0, VIEW.w, VIEW.h);
-
-    // save-slot card (bottom-left) — what you'd continue into
-    const save = loadSaveState();
-    if (save) {
-      g.save();
-      g.globalAlpha = 0.8;
-      g.fillStyle = 'rgba(10,14,20,0.6)';
-      g.fillRect(26, VIEW.h - 130, 250, 78);
-      g.strokeStyle = 'rgba(124,232,160,0.5)';
-      g.strokeRect(26, VIEW.h - 130, 250, 78);
-      g.textAlign = 'left';
-      g.font = `bold 12px ${FONT}`;
-      g.fillStyle = '#7ce8a0';
-      g.fillText('SAVE SLOT', 38, VIEW.h - 110);
-      g.font = `12px ${FONT}`;
-      g.fillStyle = 'rgba(225,232,245,0.85)';
-      g.fillText(`cash ${fmtMoney(save.money || 0)} · mission ${1 + (save.mission || 0)}/6`, 38, VIEW.h - 90);
-      g.fillStyle = 'rgba(200,215,235,0.5)';
-      const ago = Math.max(0, Math.round((Date.now() - (save.savedAt || Date.now())) / 60000));
-      g.fillText(`saved ${ago === 0 ? 'just now' : ago + ' min ago'}`, 38, VIEW.h - 72);
-      g.restore();
-    }
-
-    // big logo
-    g.textAlign = 'center';
-    g.font = `bold 92px ${FONT}`;
-    g.fillStyle = '#ff4d9d';
-    g.shadowColor = '#ff4d9d';
-    g.shadowBlur = 34;
-    g.fillText('VICE PALMS', VIEW.w / 2, 208);
-    g.shadowColor = '#3fd9ff';
-    g.shadowBlur = 22;
-    g.fillStyle = '#3fd9ff';
-    g.font = `bold 30px ${FONT}`;
-    g.fillText('a night in the neon city', VIEW.w / 2, 254);
-    g.shadowBlur = 0;
-
-    g.font = `14px ${FONT}`;
-    g.fillStyle = 'rgba(200,215,235,0.55)';
-    g.fillText('make.fun bounty gta6-01 · fresh rebuild v2', VIEW.w / 2, 296);
-
-    // menu
-    g.font = `bold 24px ${FONT}`;
-    items.forEach((it, i) => {
-      const y = 380 + i * 46;
-      const sel = this.titleChoice === i;
-      g.fillStyle = sel ? '#ffd23e' : 'rgba(225,232,245,0.75)';
-      g.fillText((sel ? '▶ ' : '') + it.label, VIEW.w / 2, y + 26);
-    });
-
-    g.font = `12px ${FONT}`;
-    g.fillStyle = 'rgba(200,215,235,0.4)';
-    g.fillText('W/S or mouse to choose · ENTER to play · M mutes audio', VIEW.w / 2, VIEW.h - 24);
-    // build credit, bottom-left
-    g.textAlign = 'left';
-    g.fillStyle = 'rgba(200,215,235,0.3)';
-    g.font = `11px ${FONT}`;
-    g.fillText('VICE PALMS v2.0 · fresh rebuild · rico says hi', 16, VIEW.h - 16);
-    // twin palm silhouettes framing the logo (pure canvas, cheap and proud)
-    for (const side of [{ x: 150, f: 1 }, { x: VIEW.w - 150, f: -1 }]) {
-      const sway = Math.sin(performance.now() / 900 + side.x) * 3;
-      g.strokeStyle = 'rgba(90,70,50,0.85)';
-      g.lineWidth = 10;
-      g.beginPath();
-      g.moveTo(side.x, VIEW.h);
-      g.quadraticCurveTo(side.x + 12 * side.f, VIEW.h - 160, side.x + sway * side.f, VIEW.h - 250);
-      g.stroke();
-      g.strokeStyle = 'rgba(60,140,80,0.9)';
-      g.lineWidth = 7;
-      const tx = side.x + sway * side.f, ty = VIEW.h - 250;
-      for (let i = 0; i < 6; i++) {
-        const a = -Math.PI / 2 + (i - 2.5) * 0.6 * side.f;
-        g.beginPath();
-        g.moveTo(tx, ty);
-        g.quadraticCurveTo(tx + Math.cos(a) * 55 * side.f, ty + Math.sin(a) * 55, tx + Math.cos(a) * 95 * side.f, ty + Math.sin(a) * 95 + 22);
-        g.stroke();
-      }
-    }
-    g.textAlign = 'center';
-  }
-
-  drawPause(g, game) {
-    g.fillStyle = 'rgba(6,8,14,0.72)';
-    g.fillRect(0, 0, VIEW.w, VIEW.h);
-    g.textAlign = 'center';
-    g.font = `bold 54px ${FONT}`;
-    g.fillStyle = '#3fd9ff';
-    g.fillText('PAUSED', VIEW.w / 2, 240);
-
-    const items = ['RESUME', 'SAVE GAME', 'DELETE SAVE', 'QUIT TO TITLE'];
-    g.font = `bold 20px ${FONT}`;
-    items.forEach((label, i) => {
-      const y = 330 + i * 44;
-      const sel = this.pauseChoice === i;
-      g.fillStyle = sel ? '#ffd23e' : 'rgba(225,232,245,0.72)';
-      g.fillText((sel ? '▶ ' : '') + label, VIEW.w / 2, y);
-    });
-
-    // stats sidebar
-    const s = game.stats || {};
-    const rows = [
-      ['Cash earned', fmtMoney(s.earned || 0)],
-      ['Missions passed', String(s.missions || 0)],
-      ['Cars wrecked', String(s.wrecks || 0)],
-      ['Cars jacked', String(s.jacks || 0)],
-      ['Pedestrians down', String(s.kills || 0)],
-      ['Distance driven', (s.distance || 0).toFixed(1) + ' km'],
-      ['District', game.lastArea || '—'],
-    ];
-    g.textAlign = 'left';
-    g.font = `bold 13px ${FONT}`;
-    g.fillStyle = '#3fd9ff';
-    g.fillText('RAP SHEET', 72, 300);
-    g.font = `13px ${FONT}`;
-    rows.forEach(([k, v], i) => {
-      g.fillStyle = 'rgba(200,212,230,0.55)';
-      g.fillText(k, 72, 326 + i * 22);
-      g.fillStyle = 'rgba(240,244,250,0.9)';
-      g.textAlign = 'right';
-      g.fillText(v, 300, 326 + i * 22);
-      g.textAlign = 'left';
-    });
-
-    g.textAlign = 'center';
-    g.font = `12px ${FONT}`;
-    g.fillStyle = 'rgba(200,215,235,0.4)';
-    g.fillText('W/S select · ENTER confirm · ESC resume', VIEW.w / 2, VIEW.h - 30);
-    g.textAlign = 'left';
-  }
-
-  /** returns 'resume' | 'save' | 'delete' | 'quit' | null */
-  updatePause(input) {
-    if (input.wasPressed('Escape')) return 'resume';
-    if (input.wasPressed('KeyW', 'ArrowUp')) this.pauseChoice = (this.pauseChoice + 3) % 4;
-    if (input.wasPressed('KeyS', 'ArrowDown')) this.pauseChoice = (this.pauseChoice + 1) % 4;
-    if (input.wasPressed('Enter', 'Space')) {
-      return ['resume', 'save', 'delete', 'quit'][this.pauseChoice];
-    }
-    return null;
-  }
-
-  /** mugshot caption under BUSTED — the desk sergeant's booking log */
-  static MUGLINES = [
-    'Booked: OCN-114. Charge: "general vibes".',
-    'Booked: OCN-207. Property returned in worse shape.',
-    'Booked: OCN-311. Prints match three other nights.',
-    'Booked: OCN-404. Lawyer not found.',
+  const cols = [
+    {
+      title: 'THE CITY', color: '#37f5ff', lines: [
+        'Yellow marker — story job. Green — side work.',
+        'Blue ring — Ammu-Nation: walk in to buy ammo,',
+        'then armor. Green box — courier runs.',
+        'Pay \u2019n\u2019 Spray bays: sit still, $300 fixes the',
+        'car and cools the heat.',
+        'Ten palm tokens hide across town. Find all 10',
+        'for a thousand bucks and full armor.',
+        'Save at Esc. The map is on M.',
+      ],
+    },
+    {
+      title: 'THE HEAT', color: '#ff5c5c', lines: [
+        'Crimes raise the stars; cops converge.',
+        '1 star: one cruiser. 2+: they shoot on foot.',
+        '3+: roadblocks. 4+: Enforcer SUVs and the',
+        'searchlight chopper. 5: spike strips.',
+        'Break line of sight and the heat decays.',
+        'Busted: bail is $150. Wasted: hospital is $100.',
+        'Tip: the handbrake (Space) is a lifestyle.',
+      ],
+    },
   ];
+  cols.forEach((col, c) => {
+    const x = W / 2 + (c === 0 ? -240 : 240);
+    ctx.font = 'bold 17px "Courier New", monospace';
+    ctx.fillStyle = col.color;
+    ctx.fillText(col.title, x, 140);
+    ctx.font = '13px "Courier New", monospace';
+    ctx.textAlign = 'left';
+    col.lines.forEach((line, i) => {
+      ctx.fillStyle = 'rgba(255,255,255,0.78)';
+      ctx.fillText(line, x - 150, 172 + i * 22);
+    });
+    ctx.textAlign = 'center';
+  });
 
-  drawDeath(g, game, kind) {
-    // grayscale wash + big text
-    g.fillStyle = kind === 'WASTED' ? 'rgba(30,4,8,0.62)' : 'rgba(6,10,30,0.62)';
-    g.fillRect(0, 0, VIEW.w, VIEW.h);
-    g.textAlign = 'center';
-    g.font = `bold 96px ${FONT}`;
-    const t = game.deathT || 0;
-    const scale = 1 + Math.min(t * 0.4, 0.35);
-    g.save();
-    g.translate(VIEW.w / 2, VIEW.h / 2);
-    g.scale(scale, scale);
-    g.fillStyle = kind === 'WASTED' ? '#c23b4e' : '#4d6bff';
-    g.shadowColor = '#000';
-    g.shadowBlur = 26;
-    g.fillText(kind, 0, 20);
-    g.restore();
-    g.shadowBlur = 0;
-    g.font = `16px ${FONT}`;
-    g.fillStyle = 'rgba(230,236,245,0.75)';
-    if (kind === 'WASTED') {
-      const fee = CFG.RESPAWN_FEE * Math.max(1, game.police.wanted);
-      const causes = {
-        explosion: 'Cooked in your own ride.',
-        drowned: 'The Atlantic wins again.',
-        shot: 'Outgunned on the street.',
-        hurt: 'The night caught up with you.',
-      };
-      const line = causes[game.deathCause] || 'The night caught up with you.';
-      g.fillText(line + `  Fee: ${fmtMoney(fee)}`, VIEW.w / 2, VIEW.h / 2 + 80);
-    } else {
-      const mug = Screens.MUGLINES[Math.floor(game.time * 0.31) % Screens.MUGLINES.length];
-      g.fillText(`Busted. Bail: ${fmtMoney(CFG.RESPAWN_FEE * Math.max(1, game.police.wanted))} — ${mug}`, VIEW.w / 2, VIEW.h / 2 + 80);
-    }
-    if (t > 1.4) {
-      g.fillStyle = 'rgba(255,220,120,0.9)';
-      g.font = `bold 15px ${FONT}`;
-      g.fillText('press ENTER', VIEW.w / 2, VIEW.h / 2 + 130);
-    }
-    g.textAlign = 'left';
+  // story teaser + the full roster
+  ctx.font = 'bold 15px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(255, 79, 216, 0.9)';
+  ctx.fillText('THE STORY: Rico is back in Vice Palms, and the city owes him money.', W / 2, H - 200);
+  const roster = [
+    '1 · Homecoming — meet Rico at Dock 4',
+    '2 · Container Run — a Banshee out of the yard',
+    '3 · Palm Beach Pickup — the package on the sand',
+    '4 · Airfield Run — a briefcase behind Gate 2',
+    '5 · Dock Wars — three Vegas cars, one message',
+    '6 · The Last Palm — stop the traitor on the runway',
+  ];
+  ctx.font = '12px "Courier New", monospace';
+  ctx.textAlign = 'left';
+  roster.forEach((line, i) => {
+    ctx.fillStyle = i < 3 ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.35)';
+    ctx.fillText(line, W / 2 - 220, H - 174 + i * 19);
+  });
+  ctx.textAlign = 'center';
+  ctx.font = '13px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fillText('…plus Taxi Rush, Vigilante, Beach Dash and the Bank Run for spare cash.', W / 2, H - 46);
+}
+
+/** Rotating street wisdom for the title's bottom-right corner. */
+export const TITLE_TIPS = [
+  'TIP: tap Space mid-corner to swing the tail out.',
+  'TIP: cops lose you faster in the park. Trees help.',
+  'TIP: spike strips at 5 stars — swerve the belt.',
+  'TIP: the chopper counts as eyes. Break the beam.',
+  'TIP: courier streaks stack. Do not crash the package.',
+  'TIP: a respray is cheaper than a funeral.',
+  'TIP: boats live at the pier ends. Bring nothing you love.',
+  'TIP: buses stop for nothing. Especially not for you.',
+];
+
+export function titleTip(t) {
+  return TITLE_TIPS[Math.floor(t / 4) % TITLE_TIPS.length];
+}
+
+function drawPalm(ctx, x, y, s, t) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  const sway = Math.sin(t * 1.1) * 4;
+  ctx.strokeStyle = '#0a0d16';
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.quadraticCurveTo(8, -40, 14 + sway * 0.4, -78);
+  ctx.stroke();
+  ctx.lineWidth = 5;
+  for (let i = 0; i < 7; i++) {
+    const a = -Math.PI * 0.15 - (i / 6) * Math.PI * 0.7 + sway * 0.01;
+    ctx.beginPath();
+    ctx.moveTo(14, -78);
+    ctx.quadraticCurveTo(14 + Math.cos(a) * 34, -78 + Math.sin(a) * 26 - 10, 14 + Math.cos(a) * 58, -70 + Math.sin(a) * 34 + 8);
+    ctx.stroke();
   }
+  ctx.restore();
+}
 
-  drawHelp(g, game) {
-    g.font = `13px ${FONT}`;
-    g.textAlign = 'left';
-    g.fillStyle = 'rgba(200,215,235,0.5)';
-    g.fillText('F jack/exit · SHIFT sprint · 1 fists · 2 pistol · M mute · ESC pause', 20, VIEW.h - 34);
+// ---------------------------------------------------------------- pause
+
+export const PAUSE_ITEMS = ['resume', 'save', 'sound', 'delete', 'title'];
+
+export function pauseAction(game, key) {
+  if (key === 'resume') {
+    game.state = 'play';
+  } else if (key === 'save') {
+    writeSave(game);
+    game.hud.subtitle('Game saved.', 2);
+    game.state = 'play';
+  } else if (key === 'sound') {
+    if (game.audio.muted) game.audio.requestUnmute();
+    else game.audio.setMuted(true);
+  } else if (key === 'delete') {
+    deleteSave();
+    game.hud.subtitle('Save deleted.', 2);
+  } else if (key === 'title') {
+    game.toTitle();
   }
+}
 
-  /** F1 overlay — page 1: controls, page 2: survival tips */
-  drawHelpOverlay(g, page = 1) {
-    g.fillStyle = 'rgba(6,8,14,0.82)';
-    g.fillRect(0, 0, VIEW.w, VIEW.h);
-    const cx = VIEW.w / 2;
-    g.textAlign = 'center';
-    g.font = `bold 30px ${FONT}`;
-    g.fillStyle = '#3fd9ff';
-    g.fillText('STREET MANUAL — 1/2', cx, 92);
-    g.font = `14px ${FONT}`;
-    g.fillStyle = 'rgba(225,232,245,0.9)';
-    const lines = [
-      '',
-      'ON FOOT',
-      'WASD move · SHIFT sprint (stamina) · mouse aims · click / SPACE attacks',
-      '1 fists · 2 pistol · F enter nearest car (or jack its driver)',
-      '',
-      'DRIVING',
-      'W/S gas & brake/reverse · A/D steer · SPACE handbrake (drifts!)',
-      'F exit · H horn (or siren in a cruiser) · R radio station',
-      'engine damage saps top speed — wrecks burn, then blow',
-      '',
-      'THE HEAT',
-      'Crimes raise stars; cruisers ram at 1+, foot cops shoot at 2+,',
-      'roadblocks at 3+, the air unit at 4+. Break line of sight to cool off.',
-      'Cops who reach you on foot BUST you. Dying is WASTED. Both cost money.',
-    ];
-    let y = 140;
-    for (const line of lines) {
-      const isHead = line === line.toUpperCase() && line.length > 3;
-      g.fillStyle = isHead ? '#ffd23e' : 'rgba(225,232,245,0.88)';
-      g.font = isHead ? `bold 15px ${FONT}` : `14px ${FONT}`;
-      g.fillText(line, cx, y);
-      y += line === '' ? 12 : 24;
-    }
-    g.fillStyle = 'rgba(200,215,235,0.4)';
-    g.font = `12px ${FONT}`;
-    g.fillText('F1 close · see TAB for the city chart', cx, VIEW.h - 28);
-    g.textAlign = 'left';
+export function drawPause(ctx, game) {
+  const W = game.viewW, H = game.viewH;
+  ctx.fillStyle = 'rgba(4, 5, 9, 0.78)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 52px "Courier New", monospace';
+  ctx.fillStyle = '#37f5ff';
+  ctx.fillText('PAUSED', W / 2, H * 0.3);
+  ctx.font = 'bold 20px "Courier New", monospace';
+  const items = [
+    { key: 'resume', label: 'RESUME' },
+    { key: 'save', label: 'SAVE GAME' },
+    { key: 'sound', label: game.audio.muted ? 'SOUND: OFF' : 'SOUND: ON' },
+    { key: 'delete', label: 'DELETE SAVE' },
+    { key: 'title', label: 'QUIT TO TITLE' },
+  ];
+  items.forEach((it, i) => {
+    const y = H * 0.42 + i * 32;
+    const sel = i === game.menuIndex;
+    ctx.fillStyle = sel ? '#ffd23d' : 'rgba(255,255,255,0.62)';
+    ctx.fillText(sel ? `\u25B8 ${it.label} \u25C2` : it.label, W / 2, y);
+  });
+  ctx.font = '12px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.fillText('Esc resumes · M opens the city map · progress autosaves after each mission', W / 2, H - 30);
+  // engine banner, bottom-left of the pause card
+  ctx.textAlign = 'left';
+  ctx.font = '10px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.fillText(engineBannerLines().join('  '), 24, H - 12);
+  ctx.textAlign = 'center';
+  drawStatsPanel(ctx, game, W, H);
+}
+
+/** Night-report stats card on the right edge of the pause screen. */
+function drawStatsPanel(ctx, game, W, H) {
+  if (!game.stats) return;
+  const rows = game.stats.rows();
+  const px = W - 250, py = H * 0.2;
+  const w = 218, rh = 17;
+  const h = rows.length * rh + 40;
+  ctx.fillStyle = 'rgba(8, 10, 16, 0.85)';
+  ctx.fillRect(px, py, w, h);
+  ctx.strokeStyle = 'rgba(255, 210, 90, 0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(px + 0.5, py + 0.5, w - 1, h - 1);
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 12px "Courier New", monospace';
+  ctx.fillStyle = '#ffd23d';
+  ctx.fillText('THE NIGHT SO FAR', px + 12, py + 20);
+  ctx.font = '11px "Courier New", monospace';
+  rows.forEach((row, i) => {
+    const y = py + 40 + i * rh;
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.fillText(row[0], px + 12, y);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillText(row[1], px + w - 12, y);
+    ctx.textAlign = 'left';
+  });
+  ctx.textAlign = 'center';
+}
+
+// ------------------------------------------------------- wasted / busted
+
+export function drawWasted(ctx, game) {
+  const W = game.viewW, H = game.viewH;
+  const t = game.wastedT;
+  const a = clamp(t * 1.4, 0, 0.82);
+  ctx.fillStyle = `rgba(30, 0, 0, ${a})`;
+  ctx.fillRect(0, 0, W, H);
+  if (t > 0.4) {
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 76px "Courier New", monospace';
+    ctx.globalAlpha = clamp((t - 0.4) * 2, 0, 1);
+    ctx.fillStyle = '#0a0202';
+    ctx.fillText('WASTED', W / 2 + 3, H / 2 + 3);
+    ctx.fillStyle = '#ff5c5c';
+    ctx.fillText('WASTED', W / 2, H / 2);
+    ctx.font = 'bold 16px "Courier New", monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.fillText(`Hospital fees: ${fmtMoney(Math.min(game.player.money, CFG.FEE_WASTED))}`, W / 2, H / 2 + 44);
+    ctx.globalAlpha = 1;
   }
+}
 
-  /** page 2 — how to actually get rich in Vice Palms */
-  drawTipsOverlay(g) {
-    g.fillStyle = 'rgba(6,8,14,0.82)';
-    g.fillRect(0, 0, VIEW.w, VIEW.h);
-    const cx = VIEW.w / 2;
-    g.textAlign = 'center';
-    g.font = `bold 30px ${FONT}`;
-    g.fillStyle = '#ffd23e';
-    g.fillText('STREET MANUAL — 2/2', cx, 92);
-    g.font = `14px ${FONT}`;
-    const lines = [
-      '',
-      'MAKING ENDS MEET',
-      'Story missions (cyan markers) pay the big money and save automatically.',
-      'Side hustles (green markers) repeat forever: taxi fares, rampages, parcels.',
-      'Cash pickups glow on the sidewalk. The garage pads your ride for free.',
-      '',
-      'STAYING ALIVE',
-      'A respray at the safehouse cools the heat — if nobody saw you drive in.',
-      'Rain makes the streets slick: longer stops, wider drifts.',
-      'The air unit counts as eyes. Break the beam, then break line of sight.',
-      '',
-      'CIVICS',
-      'Traffic lights: north-south goes first, then east-west. Crosswalks: paint.',
-      'The park pond is not a shortcut. The sea is not a shortcut either.',
-      'Seagulls cannot be run over. Do not feel bad about trying.',
-    ];
-    let y = 140;
-    for (const line of lines) {
-      const isHead = line === line.toUpperCase() && line.length > 3;
-      g.fillStyle = isHead ? '#3fd9ff' : 'rgba(225,232,245,0.88)';
-      g.font = isHead ? `bold 15px ${FONT}` : `14px ${FONT}`;
-      g.fillText(line, cx, y);
-      y += line === '' ? 12 : 24;
-    }
-    g.fillStyle = 'rgba(200,215,235,0.4)';
-    g.font = `12px ${FONT}`;
-    g.fillText('F1 close', cx, VIEW.h - 28);
-    g.textAlign = 'left';
+export function drawBusted(ctx, game) {
+  const W = game.viewW, H = game.viewH;
+  const t = game.wastedT;
+  const a = clamp(t * 1.4, 0, 0.82);
+  ctx.fillStyle = `rgba(0, 8, 30, ${a})`;
+  ctx.fillRect(0, 0, W, H);
+  if (t > 0.4) {
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 76px "Courier New", monospace';
+    ctx.globalAlpha = clamp((t - 0.4) * 2, 0, 1);
+    ctx.fillStyle = '#02060f';
+    ctx.fillText('BUSTED', W / 2 + 3, H / 2 + 3);
+    ctx.fillStyle = '#5c9dff';
+    ctx.fillText('BUSTED', W / 2, H / 2);
+    ctx.font = 'bold 16px "Courier New", monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.fillText(`Bail: ${fmtMoney(Math.min(game.player.money, CFG.FEE_BUSTED))}`, W / 2, H / 2 + 44);
+    ctx.globalAlpha = 1;
   }
 }

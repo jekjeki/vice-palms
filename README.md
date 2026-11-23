@@ -2,106 +2,89 @@
 [![rank](https://make.fun/badge/gta6-01/jekjeki/vice-palms/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/jekjeki/vice-palms/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-# VICE PALMS — a night in the neon city
+# Vice Palms
 
-A top-down open-city crime playground in the GTA 1/2 tradition, built from
-scratch in vanilla JavaScript + Canvas 2D + WebAudio. No engines, no
-libraries, no network — everything is drawn and synthesized in code.
-
-## Play
-
-```bash
-npm run serve        # → http://localhost:8080   (node serve.ts)
-```
-
-`serve.ts` is a zero-dependency Node 22 stdlib static server (`--port N` to
-move off 8080). Open the URL, press ENTER, cause trouble.
+A neon-soaked, top-down open-world driving game in the spirit of the classics —
+built from scratch in vanilla JavaScript on canvas 2D. No libraries, no network,
+no build step. One `game/` folder of ES modules, a static server, and you are
+cruising Ocean Drive at 2 a.m.
 
 ## The city
 
-A 4096×4096 night map, seeded and fully deterministic:
+Vice Palms is a seeded, deterministic night city:
 
-- **Downtown** — 9×7 road grid with traffic lights, crosswalks and a working
-  intersection signal cycle; extruded buildings with lit windows, rooftop AC
-  units, glowing billboards and flickering neon signage.
-- **Memorial Park** — pond, fountain, flowerbeds, benches, and enough trees
-  to hide behind.
-- **North Docks** — container yards, working cranes, moored cargo ship, two
-  public piers you can walk and drive.
-- **Palm Airfield** — lit runway, three hangars, control tower, one very
-  stealable supercar.
-- **Ocean Drive & the beaches** — boardwalk, umbrellas, towels, strollers,
-  and water you can swim in (the Atlantic always wins eventually).
+- **Downtown** — a road grid of pseudo-3D towers with lit windows, neon trim and
+  rooftop signs (PALMS, CASINO, LIQUOR…).
+- **North Docks** — piers over black water, container stacks, two gantry
+  cranes and a moored cargo ship.
+- **Palm Airfield** — a fenced runway with hangars, a control tower and a
+  parked cargo plane behind Gate 2.
+- **Flamingo Park** — grass, a pond, a fountain, and trees you can crash into.
+- **Palm Beach** — sand, palms, umbrellas and the Ocean Drive strip.
 
-## Systems
+## What you do
 
-- **Driving** — arcade physics with a 4-speed auto gearbox, speed-sensitive
-  steering, handbrake drifts, per-corner collisions, damage that pulls the
-  steering, saps top speed, catches fire and finally explodes.
-- **Traffic** — lane-following AI with individual driver personalities,
-  signal obedience, queueing, pedestrian braking, turn signals and
-  stuck-reversal recovery.
-- **Pedestrians** — walkers, joggers, dog walkers, beach strollers; they
-  chatter, panic, scream, flee, get run over and report your crimes.
-- **The heat** — wanted 1–5: ramming cruisers at 1★, foot cops that shoot at
-  2★, roadblocks with cones at 3★, the helicopter and its searchlight at 4★.
-  Out-of-sight decay, WASTED/BUSTED, respawn fees, and a safehouse respray
-  that cools the paint and the heat.
-- **Missions** — six chained story missions (Rico returns to Vice Palms) with
-  letterboxed cutscenes, plus three repeatable side hustles: Taxi Dash,
-  Rampage and Special Delivery. Timers, checkpoints, fail/retry, payouts.
-- **Audio** — everything synthesized: engine, gearbox, gunfire, sirens,
-  explosions, skids, footsteps, seagull-adjacent ocean ambience, thunder,
-  a helicopter rotor, and a 4-station pattern-sequenced radio (R to switch).
-- **Rain** — a deterministic clear → drizzle → storm cycle with lightning,
-  thunder, puddles, wet-road sheen and grip loss.
-- **The rest** — pistol + fists with mouse aiming, health/armour/ammo/cash
-  pickups, a circular minimap, a full TAB city chart, F1 street manual,
-  localStorage save/continue/delete, and a deterministic staged-scene system
-  for screenshots (`?shot=start|play|end|chaos&seed=N`).
-
-## Screenshots
-
-| | |
-|---|---|
-| ![title](screenshots/1-start.jpg) | ![play](screenshots/2-play.jpg) |
-| ![end](screenshots/3-end.jpg) | ![chaos](screenshots/4-chaos.jpg) |
-
-## Repo layout
-
-```
-game/            the entire game (index.html + src/*.js, vanilla ES modules)
-serve.ts         static server for game/ on :8080
-main.ts          make.fun packager: copies game/ + screenshots/, writes dossier.json
-shots.json       the four staged screenshot entries
-vendor/          make.fun kit (untouched)
-screenshots/     1-start / 2-play / 3-end / 4-chaos (1280×720 JPEG ≤ 256 KiB)
-```
-
-## Build & verify
-
-```bash
-node serve.ts --port 8080          # serve the game
-mkdir out; $env:MAKEFUN_OUTPUT_DIR="out"; node main.ts   # build dossier.json
-```
+- Drive 8 vehicle types with arcade physics: grip, drift, handbrake slides,
+  crash damage, smoke, fire and explosions. Steal one of five moored boats
+  for the harbor cruise instead.
+- Walk, sprint, punch, and shoot a pistol with ammo. Aim with the mouse.
+  Stock up at the two Ammu-Nation storefronts.
+- Jack cars (F), run from the VCPD through a 5-star wanted system: pursuit
+  cruisers that ram, Enforcer SUVs and a searchlight chopper at four stars,
+  roadblocks at three, spike strips at five, foot cops that chase and shoot,
+  and heat that decays when you slip out of sight. Get busted or wasted, pay
+  the fee, respawn.
+- Play the 6-chapter story: **Rico returns to Vice Palms** — Homecoming,
+  Container Run, Palm Beach Pickup, Airfield Run, Dock Wars, The Last Palm —
+  plus 4 side jobs (Taxi Rush, Vigilante, Beach Dash, Bank Run), endless
+  courier runs, and 10 hidden palm tokens with a completion bonus.
+- Weather rolls in: rain slicks the roads, lightning cracks, puddles pool.
+- Pay 'n' Spray garages fix your car and cool the heat for $300.
+- Save and continue via localStorage; progress autosaves after every mission.
 
 ## Controls
 
-| Input | Action |
-|---|---|
-| WASD | move / drive |
-| SHIFT | sprint (stamina) |
-| F | enter / exit / carjack |
-| Mouse + click | aim + fire (pistol), fists up close |
+| Key | Action |
+| --- | --- |
+| W A S D / arrows | walk · drive |
+| Shift | sprint |
+| Mouse | aim (on foot) |
+| Left click / Ctrl | punch · shoot |
 | 1 / 2 | fists / pistol |
-| SPACE | handbrake (in car), attack (on foot) |
-| H | horn / siren |
-| R | radio station |
-| TAB | city chart |
-| F1 | street manual |
-| M | mute |
-| ESC | pause (save / delete save / quit) |
+| E | enter / exit car or boat |
+| F | carjack |
+| Space | handbrake |
+| R | radio station (Shift-R back) |
+| M | city map |
+| V / P | camera zoom / photo mode |
+| F | fps meter |
+| Esc | pause |
 
-## License
+## Run it
 
-See [LICENSE](LICENSE).
+```
+node serve.ts            # http://localhost:8080  (--port N to change)
+node main.ts             # builds out/dossier.json (MAKEFUN_OUTPUT_DIR to override)
+```
+
+Requires Node 22+. Everything runs locally; the game never touches the network.
+
+## Staged screenshots
+
+`?shot=start|play|end|chaos&seed=N` renders the four deterministic scenes that
+live in `screenshots/` — audio muted, camera staged, sim stepped to settle.
+
+## Layout
+
+```
+game/index.html        entry page
+game/src/*.js          config, rng, util, input, audio, world, cars, traffic,
+                       peds, player, police, missions, render, hud, screens,
+                       shots, game, main, weather, radio, helicopter, tokens,
+                       mapscreen, barks, stats, boats, pigeons, gunshops,
+                       delivery
+serve.ts               static file server
+main.ts                dossier builder
+shots.json             the 4 staged shot entries
+vendor/                makefun kit (untouched)
+```

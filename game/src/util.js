@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
-// util.js — small math / geometry / formatting helpers shared everywhere.
-// ---------------------------------------------------------------------------
+// util.js — small pure helpers shared by every subsystem.
 
 export const TAU = Math.PI * 2;
 
@@ -12,20 +10,9 @@ export function lerp(a, b, t) {
   return a + (b - a) * t;
 }
 
-/** frame-rate independent exponential approach */
-export function damp(a, b, lambda, dt) {
-  return lerp(a, b, 1 - Math.exp(-lambda * dt));
-}
-
-export function wrapAngle(a) {
-  a %= TAU;
-  if (a > Math.PI) a -= TAU;
-  if (a < -Math.PI) a += TAU;
-  return a;
-}
-
-export function angleDamp(a, b, lambda, dt) {
-  return a + wrapAngle(b - a) * (1 - Math.exp(-lambda * dt));
+/** Frame-rate independent smoothing factor. */
+export function damp(rate, dt) {
+  return 1 - Math.exp(-rate * dt);
 }
 
 export function dist2(ax, ay, bx, by) {
@@ -34,171 +21,165 @@ export function dist2(ax, ay, bx, by) {
 }
 
 export function dist(ax, ay, bx, by) {
-  return Math.hypot(bx - ax, by - ay);
+  return Math.sqrt(dist2(ax, ay, bx, by));
 }
 
-export function len(x, y) {
-  return Math.hypot(x, y);
+/** Normalize an angle into [-PI, PI). */
+export function angNorm(a) {
+  while (a > Math.PI) a -= TAU;
+  while (a < -Math.PI) a += TAU;
+  return a;
 }
 
-export function aabb(x, y, w, h) {
-  return { x, y, w, h, x2: x + w, y2: y + h, cx: x + w / 2, cy: y + h / 2 };
+/** Shortest-way angle interpolation. */
+export function angLerp(a, b, t) {
+  return a + angNorm(b - a) * t;
 }
 
-export function rectContains(r, x, y) {
-  return x >= r.x && x < r.x2 && y >= r.y && y < r.y2;
+/** Move angle a toward b by up to maxStep radians. */
+export function angMove(a, b, maxStep) {
+  const d = angNorm(b - a);
+  if (Math.abs(d) <= maxStep) return angNorm(b);
+  return angNorm(a + Math.sign(d) * maxStep);
 }
 
-export function rectsOverlap(a, b) {
-  return a.x < b.x2 && a.x2 > b.x && a.y < b.y2 && a.y2 > b.y;
+export function vecLen(vx, vy) {
+  return Math.sqrt(vx * vx + vy * vy);
 }
 
-export function circleRect(cx, cy, r, rect) {
-  const nx = clamp(cx, rect.x, rect.x2);
-  const ny = clamp(cy, rect.y, rect.y2);
+/** Set (out.len, out.nx, out.ny) for a vector without allocating. */
+export function vecNorm(vx, vy, out) {
+  const len = vecLen(vx, vy);
+  if (len > 1e-6) {
+    out.nx = vx / len;
+    out.ny = vy / len;
+    out.len = len;
+  } else {
+    out.nx = 0; out.ny = 0; out.len = 0;
+  }
+  return out;
+}
+
+export function aabbOverlap(a, b) {
+  return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+}
+
+export function pointInRect(px, py, r) {
+  return px >= r.x0 && px < r.x1 && py >= r.y0 && py < r.y1;
+}
+
+/**
+ * Push a circle out of an AABB. Returns a mutation target {px, py, depth}
+ * when they overlap, null otherwise. Cheap and allocation-free when `out`
+ * is reused.
+ */
+export function circleRectPush(cx, cy, r, rect, out) {
+  const nx = clamp(cx, rect.x0, rect.x1);
+  const ny = clamp(cy, rect.y0, rect.y1);
+  const dx = cx - nx, dy = cy - ny;
+  const d2 = dx * dx + dy * dy;
+  if (d2 > r * r) return null;
+  if (d2 > 1e-9) {
+    const d = Math.sqrt(d2);
+    const push = r - d;
+    out.px = (dx / d) * push;
+    out.py = (dy / d) * push;
+    out.depth = push;
+  } else {
+    // centre inside the rect: escape along the shallowest axis
+    const l = cx - rect.x0, ri = rect.x1 - cx, t = cy - rect.y0, b = rect.y1 - cy;
+    const m = Math.min(l, ri, t, b);
+    if (m === l) { out.px = -(l + r); out.py = 0; }
+    else if (m === ri) { out.px = ri + r; out.py = 0; }
+    else if (m === t) { out.px = 0; out.py = -(t + r); }
+    else { out.px = 0; out.py = b + r; }
+    out.depth = r + m;
+  }
+  return out;
+}
+
+/** Closest point on a segment to a point. Writes into out {x, y, t}. */
+export function closestOnSeg(px, py, ax, ay, bx, by, out) {
+  const abx = bx - ax, aby = by - ay;
+  const ab2 = abx * abx + aby * aby;
+  let t = ab2 > 1e-9 ? ((px - ax) * abx + (py - ay) * aby) / ab2 : 0;
+  t = clamp(t, 0, 1);
+  out.x = ax + abx * t;
+  out.y = ay + aby * t;
+  out.t = t;
+  return out;
+}
+
+/** True when a circle overlaps a rect at all. */
+export function circleRectHit(cx, cy, r, rect) {
+  const nx = clamp(cx, rect.x0, rect.x1);
+  const ny = clamp(cy, rect.y0, rect.y1);
   const dx = cx - nx, dy = cy - ny;
   return dx * dx + dy * dy <= r * r;
 }
 
-/**
- * Push a circle out of an AABB along the shallowest axis.
- * Returns {x, y} correction or null when not overlapping.
- */
-export function circleRectPushout(cx, cy, r, rect) {
-  if (cx + r <= rect.x || cx - r >= rect.x2 || cy + r <= rect.y || cy - r >= rect.y2) return null;
-  const left = cx - (rect.x - r);
-  const right = (rect.x2 + r) - cx;
-  const top = cy - (rect.y - r);
-  const bottom = (rect.y2 + r) - cy;
-  const m = Math.min(left, right, top, bottom);
-  if (m === left) return { x: -left, y: 0 };
-  if (m === right) return { x: right, y: 0 };
-  if (m === top) return { x: 0, y: -top };
-  return { x: 0, y: bottom };
-}
-
-/** squared distance from point P to segment AB */
-export function segDist2(px, py, ax, ay, bx, by) {
-  const dx = bx - ax, dy = by - ay;
-  const l2 = dx * dx + dy * dy;
-  let t = l2 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0;
-  t = clamp(t, 0, 1);
-  const qx = ax + dx * t, qy = ay + dy * t;
-  return dist2(px, py, qx, qy);
-}
-
-/** does segment AB cross any solid? returns true/false — used for bullets & sight */
-export function segBlocked(solids, circles, ax, ay, bx, by, step = 26) {
-  const d = dist(ax, ay, bx, by);
-  const n = Math.max(1, Math.ceil(d / step));
-  for (let i = 1; i <= n; i++) {
-    const t = i / n;
-    const x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
-    for (const s of solids) {
-      if (x >= s.x && x <= s.x2 && y >= s.y && y <= s.y2) return true;
-    }
-    for (const c of circles) {
-      const r = c.r;
-      if (dist2(x, y, c.x, c.y) <= r * r) return true;
-    }
-  }
-  return false;
-}
-
+/** Simple $ formatter: 1234 -> "$1,234". */
 export function fmtMoney(n) {
-  const neg = n < 0;
-  n = Math.abs(Math.round(n));
-  let s = String(n);
-  if (n >= 1000000) s = (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
-  else if (n >= 10000) s = (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
-  else s = n.toLocaleString('en-US');
-  return (neg ? '-$' : '$') + s;
+  const v = Math.max(0, Math.round(n));
+  let s = String(v);
+  let out = '';
+  while (s.length > 3) {
+    out = ',' + s.slice(-3) + out;
+    s = s.slice(0, -3);
+  }
+  return '$' + s + out;
 }
 
-export function fmtTime(s) {
-  s = Math.max(0, Math.ceil(s));
+/** mm:ss timer text, seconds in. */
+export function fmtTime(sec) {
+  const s = Math.max(0, Math.ceil(sec));
   const m = Math.floor(s / 60);
-  return m + ':' + String(s % 60).padStart(2, '0');
+  const r = s % 60;
+  return `${m}:${r < 10 ? '0' : ''}${r}`;
 }
 
-/** darken/lighten a #rrggbb colour by factor f (0..2, 1 = unchanged) */
-export function shade(hex, f) {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  const cr = clamp(Math.round(r * f), 0, 255);
-  const cg = clamp(Math.round(g * f), 0, 255);
-  const cb = clamp(Math.round(b * f), 0, 255);
-  return '#' + ((1 << 24) | (cr << 16) | (cg << 8) | cb).toString(16).slice(1);
+/** Speed in mph given px/s (tuned so ~118 px/s cruise feels like ~35 mph). */
+export function pxToMph(v) {
+  return Math.abs(v) * 0.3;
 }
 
-/** #rrggbb + alpha → rgba() string */
-export function rgba(hex, a) {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r},${g},${b},${a})`;
+/** Inclusive integer range helper. */
+export function irand(a, b) {
+  return a + Math.floor(Math.random() * (b - a + 1));
 }
 
-/** ease a value with smoothstep */
-export function smooth(t) {
-  t = clamp(t, 0, 1);
-  return t * t * (3 - 2 * t);
+/** Unique-ish ids for effects and entities. */
+let nextId = 1;
+export function uid() {
+  return nextId++;
 }
 
-export function pickWeighted(rng, entries) {
-  return rng.weighted(entries);
+/** Pick a colour channel string from a small palette. */
+export function pickColor(list, r) {
+  return list[Math.floor(r * list.length) % list.length];
 }
 
-/** shortest signed angle from a to b (radians) */
-export function angleTo(a, b) {
-  return wrapAngle(b - a);
+/** True when two circles overlap. */
+export function circleHit(ax, ay, ar, bx, by, br) {
+  const dx = bx - ax, dy = by - ay;
+  const rr = ar + br;
+  return dx * dx + dy * dy <= rr * rr;
 }
 
-/** Manhattan distance — how the city grid thinks */
-export function manhattan(ax, ay, bx, by) {
-  return Math.abs(bx - ax) + Math.abs(by - ay);
+/** Serialize a rect-ish object compactly for save files. */
+export function compactRect(r) {
+  return [Math.round(r.x0), Math.round(r.y0), Math.round(r.x1), Math.round(r.y1)];
 }
 
-/** in-place Fisher-Yates with an RNG (deterministic with a seeded rng) */
-export function shuffle(arr, rng) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(rng.next() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
+/** Fade helper: 0..1 over dur, hold at ends. */
+export function fade01(t, dur) {
+  return clamp(t / dur, 0, 1);
 }
 
-/** fixed-timestep accumulator: returns whole steps to run (max 5) */
-export function stepsFor(dt, fixed, acc) {
-  acc.v += dt;
-  let n = 0;
-  while (acc.v >= fixed && n < 5) {
-    acc.v -= fixed;
-    n++;
-  }
-  if (n === 5) acc.v = 0; // fell too far behind — drop the backlog
-  return n;
-}
-
-/** ease-out cubic for UI slides */
-export function easeOut(t) {
-  const u = 1 - clamp(t, 0, 1);
-  return 1 - u * u * u;
-}
-
-/** format a compass heading in degrees */
-export function headingDeg(angle) {
-  let d = Math.round((angle * 180 / Math.PI + 90) % 360);
-  if (d < 0) d += 360;
-  return d;
-}
-
-/** rough canvas text width helper for panels */
-export function textWidth(g, str, font) {
-  g.save();
-  g.font = font;
-  const w = g.measureText(str).width;
-  g.restore();
-  return w;
-}
+/** Ease functions used by screens and flashes. */
+export const ease = {
+  outCubic: (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3),
+  inCubic: (t) => Math.pow(clamp(t, 0, 1), 3),
+  outQuad: (t) => 1 - (1 - clamp(t, 0, 1)) * (1 - clamp(t, 0, 1)),
+  pulse: (t) => 0.5 + 0.5 * Math.sin(t * TAU),
+};

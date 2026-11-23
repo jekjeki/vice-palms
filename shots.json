@@ -1,6 +1,26 @@
 [
-  { "name": "1-start", "file": "screenshots/1-start.jpg", "url": "http://localhost:8080/?shot=start&seed=7", "width": 1280, "height": 720, "description": "Title screen — neon logo over the city" },
-  { "name": "2-play", "file": "screenshots/2-play.jpg", "url": "http://localhost:8080/?shot=play&seed=7", "width": 1280, "height": 720, "description": "Night drive through downtown, HUD up" },
-  { "name": "3-end", "file": "screenshots/3-end.jpg", "url": "http://localhost:8080/?shot=end&seed=7", "width": 1280, "height": 720, "description": "Mission passed at the marina" },
-  { "name": "4-chaos", "file": "screenshots/4-chaos.jpg", "url": "http://localhost:8080/?shot=chaos&seed=7", "width": 1280, "height": 720, "description": "Four stars, cruisers, burning wrecks" }
+  {
+    "file": "screenshots/1-start.jpg",
+    "shot": "start",
+    "seed": 7,
+    "note": "Neon title cover: sun, palms, skyline glow."
+  },
+  {
+    "file": "screenshots/2-play.jpg",
+    "shot": "play",
+    "seed": 7,
+    "note": "Downtown at night in a Banshee, traffic and streetlamps live."
+  },
+  {
+    "file": "screenshots/3-end.jpg",
+    "shot": "end",
+    "seed": 7,
+    "note": "MISSION PASSED banner over Ocean Drive after Container Run."
+  },
+  {
+    "file": "screenshots/4-chaos.jpg",
+    "shot": "chaos",
+    "seed": 7,
+    "note": "Wanted level 5: burning wreck, explosion flash, cruiser closing."
+  }
 ]

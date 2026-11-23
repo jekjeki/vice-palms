@@ -1,319 +1,308 @@
-// ---------------------------------------------------------------------------
-// player.js — the hood. Walk, sprint, take cover, throw fists, fire the
-// pistol with mouse aim, jack cars with F, ride, bail, bleed.
-// ---------------------------------------------------------------------------
+// player.js — the protagonist on foot and behind the wheel: walking, sprinting,
+// aiming, fists and pistol, entering and carjacking cars, health and armor.
 
 import { CFG } from './config.js';
-import { clamp, dist2, wrapAngle, angleDamp } from './util.js';
-import { CAR_BLURBS } from './cars.js';
+import { clamp, dist, angLerp, angNorm, TAU } from './util.js';
+import { tryEnterBoat as game_tryBoat } from './boats.js';
+
+/** Spiral out from a boat to the closest tile you can actually stand on. */
+function game_nearestLand(game, x, y) {
+  for (let r = 24; r <= 220; r += 16) {
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * TAU;
+      const lx = x + Math.cos(a) * r;
+      const ly = y + Math.sin(a) * r;
+      if (!game.world.isWaterPx(lx, ly)) return { x: lx, y: ly };
+    }
+  }
+  return null;
+}
 
 export class Player {
-  constructor(x, y, angle = 0) {
+  constructor(x, y) {
     this.x = x;
     this.y = y;
-    this.angle = angle;
-    this.vx = 0;
-    this.vy = 0;
-    this.health = CFG.HEALTH_MAX;
+    this.ang = -Math.PI / 2;
+    this.aimAng = -Math.PI / 2;
+    this.r = CFG.PLAYER_R;
+    this.health = CFG.PLAYER_HP;
     this.armor = 0;
-    this.money = 250;
-    this.ammo = 34;
-    this.weapon = 'pistol';       // 'fist' | 'pistol'
-    this.inCar = null;            // Car reference while driving
-    this.fireCd = 0;
+    this.money = 0;
+    this.ammo = CFG.AMMO_START;
+    this.weapon = 0;          // 0 fists, 1 pistol
+    this.car = null;          // Car | null
+    this.carEnterT = 0;       // brief animation lock
+    this.punchT = 0;
+    this.shootT = 0;
     this.walkPhase = 0;
-    this.hurtT = 0;
-    this.skin = '#d8ae86';
-    this.shirt = '#3fd9ff';
-    this.pants = '#2e3440';
-    this.exitCd = 0;
-    this.jackCd = 0;
-    this.aimAngle = angle;
-    this.dead = false;
-    this.stamina = 100;
+    this.moving = false;
     this.sprinting = false;
-    this.swimming = false;
-    this.swimT = 0;
+    this.dead = false;
+    this.bustT = 0;
+    this.lastDmgT = 0;
+    this.invulT = 0;
+    this.stepT = 0;
   }
 
-  get radius() { return CFG.PLAYER_R; }
+  get inCar() { return this.car !== null; }
 
   update(dt, game) {
-    this.fireCd = Math.max(0, this.fireCd - dt);
-    this.hurtT = Math.max(0, this.hurtT - dt);
-    this.exitCd = Math.max(0, this.exitCd - dt);
-    this.jackCd = Math.max(0, this.jackCd - dt);
-    if (this.inCar) {
-      this.x = this.inCar.x;
-      this.y = this.inCar.y;
-      this.angle = this.inCar.angle;
-      this.driveControls(dt, game);
-      return;
+    if (this.dead) return;
+    const input = game.input;
+
+    // weapon switching
+    if (input.pressed('Digit1')) this.weapon = 0;
+    if (input.pressed('Digit2') && this.ammo > 0) this.weapon = 1;
+
+    this.punchT = Math.max(0, this.punchT - dt);
+    this.shootT = Math.max(0, this.shootT - dt);
+    this.invulT = Math.max(0, this.invulT - dt);
+
+    if (this.car) {
+      this.drive(dt, game);
+    } else {
+      this.walk(dt, game);
+      this.tryEnterCar(dt, game);
+      this.combat(dt, game);
     }
-    this.footControls(dt, game);
+
+    // regen a sliver of health when untouched for a while
+    this.lastDmgT += dt;
+    if (this.lastDmgT > 12 && this.health < CFG.PLAYER_HP) {
+      this.health = Math.min(CFG.PLAYER_HP, this.health + dt * 4);
+    }
   }
 
-  footControls(dt, game) {
+  walk(dt, game) {
     const input = game.input;
-    const world = game.world;
-
-    // ---- aim: mouse if it moved, else movement facing
-    const worldMouse = game.renderer.screenToWorld(input.mouse.x, input.mouse.y);
-    if (input.mouse.moved || input.mouse.down) {
-      this.aimAngle = Math.atan2(worldMouse.y - this.y, worldMouse.x - this.x);
-    }
-
-    // ---- movement
-    let mx = 0, my = 0;
-    if (input.isDown('KeyW', 'ArrowUp')) my -= 1;
-    if (input.isDown('KeyS', 'ArrowDown')) my += 1;
-    if (input.isDown('KeyA', 'ArrowLeft')) mx -= 1;
-    if (input.isDown('KeyD', 'ArrowRight')) mx += 1;
-    const mag = Math.hypot(mx, my);
-
-    // swimming? (sea covers most of the north; piers are safe)
-    this.swimming = game.world.isWater(this.x, this.y) && !game.world.onPier(this.x, this.y);
-    if (this.swimming) {
-      this.swimT = (this.swimT || 0) + dt;
-      if (this.swimT > 6) this.health -= dt * 3;   // cold water gets you eventually
-      if (this.health <= 0) game.onPlayerDeath('drowned');
-    } else {
-      this.swimT = 0;
-    }
-
-    // sprint stamina
-    const wantSprint = input.isDown('ShiftLeft', 'ShiftRight') && mag > 0;
-    if (wantSprint && this.stamina > 0 && !this.swimming) {
-      this.stamina = Math.max(0, this.stamina - dt * 22);
-      this.sprinting = true;
-    } else {
-      this.stamina = Math.min(100, this.stamina + dt * (mag > 0 ? 9 : 16));
-      this.sprinting = false;
-      if (this.stamina <= 0) this.sprinting = false;
-    }
-
-    const speed = this.swimming ? 74 : (this.sprinting ? CFG.SPRINT : CFG.WALK);
-    if (mag > 0) {
-      mx /= mag; my /= mag;
-      this.x += mx * speed * dt;
-      this.y += my * speed * dt;
-      if (!(input.mouse.moved || input.mouse.down)) {
-        this.angle = wrapAngle(Math.atan2(my, mx));
+    const mv = input.moveVec();
+    const sprint = input.sprinting();
+    this.sprinting = sprint && (mv.x !== 0 || mv.y !== 0);
+    const spd = CFG.WALK_SPEED * (this.sprinting ? CFG.SPRINT_MULT : 1);
+    let len = Math.hypot(mv.x, mv.y);
+    this.moving = len > 0;
+    if (this.moving) {
+      const nx = mv.x / len, ny = mv.y / len;
+      // face movement direction unless aiming with the mouse
+      if (!this.aimingThisFrame) this.ang = angLerp(this.ang, Math.atan2(ny, nx), Math.min(1, dt * 12));
+      const px = this.x, py = this.y;
+      const res = game.world.collideCircle(this.x, this.y, this.x + nx * spd * dt, this.y + ny * spd * dt, this.r);
+      this.x = res.x; this.y = res.y;
+      this.walkPhase += dt * (this.sprinting ? 13 : 8);
+      if (game.time - this.stepT > (this.sprinting ? 0.26 : 0.38)) {
+        this.stepT = game.time;
       }
-      this.walkPhase += dt * (this.sprinting ? 14 : this.swimming ? 6 : 9);
-      // kicked-up heel dust when sprinting on dry land
-      if (this.sprinting && !this.swimming && Math.random() < dt * 14) {
-        game.fx.smokePuff(this.x - mx * 8, this.y - my * 8, '#3a3f48', 2);
+      void px; void py;
+    }
+    // aim at the mouse (world space), even while standing still
+    this.aimingThisFrame = false;
+    const m = input.mouse;
+    if (m.x !== 0 || m.y !== 0) {
+      const wx = game.cam.x - game.viewW / 2 + m.x / game.cam.zoom;
+      const wy = game.cam.y - game.viewH / 2 + m.y / game.cam.zoom;
+      const d = dist(this.x, this.y, wx, wy);
+      if (d > 4) {
+        const want = Math.atan2(wy - this.y, wx - this.x);
+        this.aimAng = want;
+        this.ang = angLerp(this.ang, want, Math.min(1, dt * 18));
+        this.aimingThisFrame = true;
       }
-    } else {
-      this.walkPhase += dt * 2;
-    }
-    if (input.mouse.moved || input.mouse.down) {
-      this.angle = this.aimAngle;
-    } else if (this.weapon === 'pistol' && input.mouse.down) {
-      this.angle = this.aimAngle;
-    }
-
-    // ---- world collision
-    const fixed = world.collide(this.x, this.y, CFG.PLAYER_R);
-    if (fixed) { this.x = fixed.x; this.y = fixed.y; }
-
-    // ---- footsteps (soft ticks, faster when sprinting)
-    this.stepAcc = (this.stepAcc || 0) + dt * (mag > 0 ? (this.sprinting ? 2.4 : 1.5) : 0);
-    if (this.stepAcc > 1) {
-      this.stepAcc = 0;
-      game.audio.footstep(this.swimming);
-      if (this.swimming) game.fx.ripple(this.x, this.y);
-    }
-
-    // ---- weapons
-    if (this.fireCd <= 0 && (input.mouse.down || input.mouse.clicked || input.isDown('Space'))) {
-      this.fire(game);
-    }
-    if (input.wasPressed('Digit1')) this.weapon = 'fist';
-    if (input.wasPressed('Digit2')) this.weapon = 'pistol';
-
-    // ---- vehicle interaction
-    if (input.wasPressed('KeyF') && this.jackCd <= 0) {
-      this.tryCarInteract(game);
     }
   }
 
-  driveControls(dt, game) {
+  drive(dt, game) {
     const input = game.input;
-    const car = this.inCar;
-    // engine audio
-    game.audio.engineUpdate(car.speed01, input.isDown('KeyW', 'ArrowUp') ? 1 : 0);
-    if (input.wasPressed('KeyF') && this.exitCd <= 0) {
-      this.exitCar(game);
+    const car = this.car;
+    if (!car || car.exploded) {
+      this.exitCar(game, true);
       return;
     }
-    // horn / siren toggle for fun
-    if (input.wasPressed('KeyH') && car.type === 'police') car.siren = !car.siren;
-    if (input.wasPressed('KeyH') && car.type !== 'police') this.honk(game);
-    // shooting from the car: allow pistol fire out the window
-    if (this.fireCd <= 0 && (input.mouse.clicked || input.wasPressed('Space'))) {
-      this.fireFromCar(game);
-    }
+    const throttle = input.throttleAxis();
+    const steer = input.steerAxis();
+    const hb = input.handbrake();
+    const gm = game.weather ? game.weather.gripMult() : 1;
+    car.control(throttle, steer, hb, dt, gm);
+    this.x = car.x;
+    this.y = car.y;
+    this.ang = car.ang;
+    // exit
+    if (input.consume('KeyE')) this.exitCar(game);
   }
 
-  fire(game) {
+  tryEnterCar(dt, game) {
     const input = game.input;
-    if (this.weapon === 'fist') {
-      this.fireCd = CFG.FIST_CD;
-      this.punch(game);
+    if (!input.consume('KeyE')) return;
+    let best = null, bd = CFG.ENTER_RANGE;
+    for (const c of game.cars) {
+      if (c.dead || c.exploded || c.driver === 'cop') continue;
+      const d = dist(this.x, this.y, c.x, c.y);
+      if (d < bd) { bd = d; best = c; }
+    }
+    if (best) {
+      this.enterCar(game, best);
       return;
     }
-    if (this.ammo <= 0) {
-      // dry click — swap to fists so the player notices
-      this.weapon = 'fist';
-      return;
-    }
-    this.ammo--;
-    this.fireCd = CFG.PISTOL_CD;
-    const a = this.aimAngle;
-    const mx = this.x + Math.cos(a) * 16, my = this.y + Math.sin(a) * 16;
-    game.fx.muzzleFlash(mx, my, a);
-    game.fx.muzzleSmoke(mx, my);
-    game.fx.casing(this.x + Math.cos(a + Math.PI / 2) * 8, this.y + Math.sin(a + Math.PI / 2) * 8);
-    game.audio.gunshot();
-    game.bullet(this.x, this.y, a, { from: 'player', dmgPed: CFG.PISTOL_DMG_PED, dmgCar: CFG.PISTOL_DMG_CAR, range: CFG.PISTOL_RANGE });
-    game.police.gunfireHeard(this.x, this.y);
-    game.peds.panicNear(this.x, this.y, 240, game);
-    game.traffic.panicNear(this.x, this.y, 240);
-    game.shake(1.2);
+    // nothing on wheels? maybe there is a boat at the pier
+    game_tryBoat(this, game);
   }
 
-  fireFromCar(game) {
-    if (this.ammo <= 0) return;
-    const worldMouse = game.renderer.screenToWorld(game.input.mouse.x, game.input.mouse.y);
-    const a = Math.atan2(worldMouse.y - this.y, worldMouse.x - this.x);
-    this.ammo--;
-    this.fireCd = CFG.PISTOL_CD * 1.4;
-    game.fx.muzzleFlash(this.x + Math.cos(a) * 24, this.y + Math.sin(a) * 24, a);
-    game.audio.gunshot();
-    game.bullet(this.x, this.y, a, { from: 'player', dmgPed: CFG.PISTOL_DMG_PED, dmgCar: CFG.PISTOL_DMG_CAR, range: CFG.PISTOL_RANGE });
-    game.police.gunfireHeard(this.x, this.y);
-    game.peds.panicNear(this.x, this.y, 240, game);
-    game.shake(1.0);
+  /** Try to carjack the nearest occupied car (F). */
+  tryCarjack(dt, game) {
+    const input = game.input;
+    if (this.car) return;
+    if (!input.consume('KeyF')) return;
+    let best = null, bd = CFG.CARJACK_RANGE;
+    for (const c of game.cars) {
+      if (c.dead || c.exploded || c.driver === 'player') continue;
+      if (c.driver !== 'ai' && c.driver !== 'cop') continue;
+      const d = dist(this.x, this.y, c.x, c.y);
+      if (d < bd) { bd = d; best = c; }
+    }
+    if (!best) return;
+    const wasCop = best.driver === 'cop';
+    best.driver = 'player';
+    best.parked = false;
+    best.throttle = 0;
+    best.steer = 0;
+    // the driver bails and flees
+    game.spawnBailPed(best.x + Math.cos(best.ang) * -24, best.y + Math.sin(best.ang) * -24, wasCop);
+    this.enterCar(game, best);
+    game.audio.jack();
+    game.police.crime(wasCop ? CFG.HEAT_COP : CFG.HEAT_JACK, best.x, best.y);
+    if (game.stats) game.stats.bump('jacked');
+    if (game.barks) game.barks.onJack({ id: best.id, x: best.x, y: best.y }, wasCop);
+    game.hud.subtitle(wasCop ? 'You jacked a police cruiser!' : 'Nice ride.', 2.2);
+    game.cam.shake = Math.min(6, game.cam.shake + 3);
+  }
+
+  enterCar(game, car) {
+    this.car = car;
+    car.driver = 'player';
+    car.parked = false;
+    car.frozen = false;
+    this.x = car.x;
+    this.y = car.y;
+    this.ang = car.ang;
+    this.aimAng = car.ang;
+    game.audio.jack();
+    if (car.siren) car.siren = false;
+  }
+
+  exitCar(game, forced) {
+    const car = this.car;
+    if (!car) return;
+    this.car = null;
+    car.driver = null;
+    car.throttle = 0;
+    car.steer = 0;
+    // step out beside the door
+    const ox = Math.cos(car.ang + Math.PI / 2) * CFG.EXIT_OFFSET;
+    const oy = Math.sin(car.ang + Math.PI / 2) * CFG.EXIT_OFFSET;
+    let ex = car.x + ox, ey = car.y + oy;
+    if (car.spec && car.spec.kind === 'boat') {
+      // no doors on water: hop to the nearest dry tile
+      const spot = game_nearestLand(game, car.x, car.y);
+      if (spot) { ex = spot.x; ey = spot.y; }
+    }
+    const res = game.world.collideCircle(car.x, car.y, ex, ey, this.r);
+    this.x = res.x; this.y = res.y;
+    this.ang = car.ang;
+    if (forced) game.hud.subtitle('Bail out!', 1.5);
+  }
+
+  combat(dt, game) {
+    const input = game.input;
+    this.tryCarjack(dt, game);
+
+    if (!input.fired()) return;
+    if (this.weapon === 0) this.punch(game);
+    else this.shoot(game);
   }
 
   punch(game) {
-    const a = this.angle;
-    const px = this.x + Math.cos(a) * 18, py = this.y + Math.sin(a) * 18;
+    if (this.punchT > 0) return;
+    this.punchT = CFG.PUNCH_COOLDOWN;
     game.audio.punch();
-    // hit peds
-    for (const p of game.peds.list) {
-      if (p.state === 'dead') continue;
-      if (dist2(px, py, p.x, p.y) < 24 * 24) {
-        p.hurt(CFG.FIST_DMG, this.x, this.y, game);
-        game.fx.impactSparks(p.x, p.y, 80);
-        return;
+    // hit cars and peds in a short arc ahead
+    const fx = Math.cos(this.ang), fy = Math.sin(this.ang);
+    const hx = this.x + fx * CFG.PUNCH_RANGE * 0.7;
+    const hy = this.y + fy * CFG.PUNCH_RANGE * 0.7;
+    let hit = false;
+    const ped = game.peds.near(hx, hy, CFG.PUNCH_RANGE);
+    if (ped) {
+      ped.damage(CFG.PUNCH_DMG, game, 'punch');
+      game.effects.push({ type: 'hit', x: ped.x, y: ped.y, t: 0, dur: 0.2 });
+      hit = true;
+    }
+    for (const c of game.cars) {
+      if (c.dead || c.exploded) continue;
+      if (dist(hx, hy, c.x, c.y) < CFG.PUNCH_RANGE + 12) {
+        c.damageSilent(CFG.PUNCH_DMG * 0.4, 'melee');
+        game.effects.push({ type: 'spark', x: hx, y: hy, t: 0, dur: 0.2, n: 3 });
+        hit = true;
+        break;
       }
     }
-    // hit cars (dents)
-    for (const c of game.allCars()) {
-      if (c.wrecked) continue;
-      if (c.containsPoint(px, py)) {
-        c.damage(6);
-        game.fx.impactSparks(px, py, 60);
-        game.police.crime(px, py, 2, 'vandal');
-        return;
-      }
+    // cop on foot
+    const cop = game.police.copNear(hx, hy, CFG.PUNCH_RANGE);
+    if (cop) {
+      game.police.damageCop(cop, CFG.PUNCH_DMG, game);
+      hit = true;
     }
+    if (hit) game.cam.shake = Math.min(5, game.cam.shake + 1.5);
   }
 
-  tryCarInteract(game) {
-    // nearest enterable car within reach
-    let best = null, bd = Infinity;
-    for (const c of game.allCars()) {
-      if (c.wrecked) continue;
-      const d = dist2(this.x, this.y, c.x, c.y);
-      if (d < 70 * 70 && d < bd) { bd = d; best = c; }
+  shoot(game) {
+    if (this.shootT > 0) return;
+    if (this.ammo <= 0) {
+      this.weapon = 0;
+      game.hud.subtitle('Out of ammo!', 1.6);
+      return;
     }
-    if (!best) return;
-    this.jackCd = 0.4;
-    this.exitCd = 0.6;
-    if (best.jack(game)) {
-      this.inCar = best;
-      best.parked = false;
-      this.jackCd = 0;      // (drive handlers keep their own cooldowns)
-      game.stats.jacks++;
-      game.audio.engineStart();
-      game.police.crime(this.x, this.y, best.driver === 'player' ? 0 : 0, 'enter');
-    }
+    this.shootT = CFG.GUN_COOLDOWN;
+    this.ammo--;
+    const spread = (Math.random() - 0.5) * 0.05;
+    const a = this.aimAng + spread;
+    const fx = Math.cos(this.ang), fy = Math.sin(this.ang);
+    game.bullets.push({
+      x: this.x + fx * 14, y: this.y + fy * 14,
+      dx: Math.cos(a) * CFG.GUN_SPEED, dy: Math.sin(a) * CFG.GUN_SPEED,
+      t: 0, dur: CFG.GUN_RANGE / CFG.GUN_SPEED, from: 'player',
+    });
+    game.audio.gunshot();
+    game.peds.gunfire(this.x, this.y, 260);
+    game.cam.shake = Math.min(4, game.cam.shake + 1.2);
+    // muzzle flash effect
+    game.effects.push({ type: 'muzzle', x: this.x + fx * 16, y: this.y + fy * 16, t: 0, dur: 0.06, ang: a });
   }
 
-  exitCar(game) {
-    const car = this.inCar;
-    if (!car) return;
-    // pop out on the left side, or right if blocked
-    const side = car.angle - Math.PI / 2;
-    let ex = car.x + Math.cos(side) * (car.spec.wid / 2 + 14);
-    let ey = car.y + Math.sin(side) * (car.spec.wid / 2 + 14);
-    if (game.world.solidHit(ex, ey, CFG.PLAYER_R)) {
-      ex = car.x - Math.cos(side) * (car.spec.wid / 2 + 14);
-      ey = car.y - Math.sin(side) * (car.spec.wid / 2 + 14);
-    }
-    const fixed = game.world.collide(ex, ey, CFG.PLAYER_R);
-    if (fixed) { ex = fixed.x; ey = fixed.y; }
-    this.x = ex; this.y = ey;
-    this.inCar = null;
-    car.driver = null;
-    car.parked = true;
-    car.speed *= 0.2;
-    this.exitCd = 0.5;
-    game.audio.engineStop();
-  }
-
-  /** H key while driving: horn (traffic scatters a touch) */
-  honk(game) {
-    if (!this.inCar) return false;
-    return this.inCar.tryHorn(game);
-  }
-
-  enterCar(car, game) {
-    this.inCar = car;
-    car.driver = 'player';
-    car.parked = false;
-    game.audio.engineStart();
-  }
-
-  damage(n, game, cause = 'hurt') {
-    if (this.dead) return;
-    // armor soaks first
+  /** Bullets and explosions land here. */
+  damage(n, game, cause) {
+    if (this.dead || this.invulT > 0) return;
     if (this.armor > 0) {
-      const soak = Math.min(this.armor, n * 0.7);
-      this.armor -= soak;
-      n -= soak;
+      const absorbed = Math.min(this.armor, n * 0.7);
+      this.armor -= absorbed;
+      n -= absorbed;
     }
     this.health -= n;
-    this.hurtT = 0.4;
-    game.audio.hurt();
-    game.shake(2.5);
-    game.fx.blood(this.x, this.y, 4);
+    this.lastDmgT = 0;
+    game.cam.shake = Math.min(8, game.cam.shake + n * 0.12);
     if (this.health <= 0) {
       this.health = 0;
       this.dead = true;
-      game.onPlayerDeath(cause);
+      game.onPlayerDead(cause);
     }
   }
 
-  heal(n) {
-    this.health = clamp(this.health + n, 0, CFG.HEALTH_MAX);
+  giveAmmo(n) {
+    this.ammo = Math.min(CFG.AMMO_MAX, this.ammo + n);
   }
 
-  addArmor(n) {
-    this.armor = clamp(this.armor + n, 0, CFG.ARMOR_MAX);
+  giveArmor(n) {
+    this.armor = Math.min(CFG.PLAYER_ARMOR_MAX, this.armor + n);
   }
 
-  addAmmo(n) {
-    this.ammo += n;
-  }
-
-  addMoney(n) {
-    const before = this.money;
-    this.money = Math.max(0, this.money + n);
-    return this.money - before; // actual delta (clamped at zero)
+  giveHealth(n) {
+    this.health = Math.min(CFG.PLAYER_HP, this.health + n);
   }
 }

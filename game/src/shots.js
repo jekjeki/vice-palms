@@ -1,153 +1,131 @@
-// ---------------------------------------------------------------------------
-// shots.js — deterministic staged scenes for the four required screenshots.
-// URL contract: ?shot=start|play|end|chaos&seed=N
-// Each scene seeds the world, places entities, runs a fixed number of sim
-// steps, then freezes the simulation and frames the camera. Audio is muted.
-// ---------------------------------------------------------------------------
+// shots.js — deterministic staged scenes for the four dossier screenshots.
+// `?shot=start|play|end|chaos&seed=N` places the city, actors and camera,
+// advances the sim a fixed number of steps, and mutes the audio.
 
-import { Car } from './cars.js';
-import { Ped } from './peds.js';
-import { Heli } from './heli.js';
-import { RNG } from './rng.js';
-import { CFG } from './config.js';
-import { clamp, dist2 } from './util.js';
-
-const STEPS = { start: 12, play: 90, end: 30, chaos: 240 };
-
-export function readShotParams() {
-  const q = new URLSearchParams(location.search);
-  const shot = q.get('shot');
-  if (!shot || !STEPS[shot]) return null;
-  const seedRaw = q.get('seed') || '7';
-  return { shot, seed: Number(seedRaw) || 7, steps: STEPS[shot] };
-}
-
-export function applyShot(game, params) {
-  game.muted = true;
-  game.audio.setMuted(true);
-  const shot = params.shot;
-  const stage = new RNG((params.seed * 2654435761) >>> 0);
-
-  if (shot === 'start') {
-    // title screen: frozen neon downtown under the logo + menu
-    game.state = 'title';
-    game.renderer.cam.x = 2040;
-    game.renderer.cam.y = 2680;
-    game.renderer.cam.zoom = 0.9;
-    runSteps(game, 12);
-    game.state = 'title';
-    game.pendingShot = true;
-    return;
-  }
-
-  if (shot === 'play') {
-    game.startPlaythrough('new', { silent: true });
-    // light drizzle for atmosphere
-    game.weather.cycleIdx = 1;
-    game.weather.intensity = 1;
-    game.weather.timer = 999;
-    game.weather.wet = 0.5;
-    game.weather._retargetDrops();
-    // player in a sports car, mid-drive downtown
-    const car = game.spawnTempCar('sports', 2040, 2905, -Math.PI / 2);
-    game.player.enterCar(car, game);
-    car.speed = 260;
-    game.police.crime(0, 0, 0, 'none'); // clean
-    game.missions.say('RICO: smooth streets tonight, primo. Keep it that way.', 6);
-    runSteps(game, params.steps);
-    framePlayer(game);
-    game.pendingShot = true;
-    return;
-  }
-
-  if (shot === 'end') {
-    game.startPlaythrough('new', { silent: true });
-    // mission-passed tableau at the marina, cash on screen
-    const car = game.spawnTempCar('sedan', 3400, 3960, 0);
-    game.player.enterCar(car, game);
-    game.missions.state = 'idle';
-    game.missions.storyIndex = 2;
-    game.player.addMoney(750);
-    game.hud.showToast('MISSION PASSED — Container Run — $750', 999);
-    runSteps(game, params.steps);
-    game.renderer.cam.zoom = 1.0;
-    framePlayer(game);
-    game.pendingShot = true;
-    return;
-  }
-  if (shot === 'chaos') {
-    game.startPlaythrough('new', { silent: true });
-    const car = game.spawnTempCar('super', 1640, 2680, -Math.PI / 2);
-    game.player.enterCar(car, game);
-    // heat + wrecks + fire, staged tight around the camera
-    game.police.crime(car.x, car.y, 150, 'staged');
-    game.police.spawnCd = 0.2;
-    const a = game.spawnTempCar('sedan', 1780, 2560, 0.3);
-    a.hp = 0; a.catchFire();
-    const b = game.spawnTempCar('van', 1500, 2800, Math.PI);
-    b.hp = 0; b.catchFire();
-    for (let i = 0; i < 6; i++) {
-      const ped = new Ped(1600 + stage.range(-200, 200), 2500 + stage.range(-200, 200), stage);
-      ped.state = 'flee';
-      ped.panicT = 8;
-      ped.panicFrom = { x: 1700, y: 2600 };
-      game.peds.list.push(ped);
-    }
-    runSteps(game, params.steps);
-    // frozen fireball next to the player for the cover
-    game.fx.explosion(car.x + 90, car.y - 60, game);
-    game.fx.flash = 0.09;
-    // make sure the air unit is overhead in the frame
-    if (!game.police.helis.list.length) {
-      game.police.helis.list.push(new Heli(car.x + 240, car.y - 200, stage));
-    }
-    framePlayer(game);
-    game.pendingShot = true;
-    return;
-  }
-}
-
-/** exported for the test harness: staged invariants per scene */
-export function verifyShot(game, shot) {
-  switch (shot) {
-    case 'start': return game.state === 'title';
-    case 'play': return !!game.player.inCar && !game.player.inCar.wrecked;
-    case 'end': return game.hud.toastT > 0;
-    case 'chaos': return game.police.wanted >= 4;
-    default: return true;
-  }
-}
-
-/** run a quick self-check that all staged scenes respond — dev/CI helper */
-export async function verifyAll(baseUrl = location.origin) {
-  const out = [];
-  for (const scene of ['start', 'play', 'end', 'chaos']) {
-    try {
-      const res = await fetch(`${baseUrl}/?shot=${scene}&seed=7`);
-      out.push(`${scene}: ${res.ok ? 'ok' : 'HTTP ' + res.status}`);
-    } catch (e) {
-      out.push(`${scene}: ${e.message}`);
-    }
-  }
-  return out;
-}
+import { CFG, PLACES } from './config.js';
+import { CAR_SPECS, placeCar, makeParkedCar, DIR_ANG, POLICE_SPEC } from './cars.js';
+import { writeSave } from './screens.js';
+import { dist } from './util.js';
 
 export const SHOT_NAMES = ['start', 'play', 'end', 'chaos'];
 
-function runSteps(game, n) {
-  game.state = 'playing';
-  for (let i = 0; i < n; i++) {
-    game.step(1 / 60);
+/**
+ * Prepare the game for a staged screenshot. Returns the number of fixed-step
+ * sim ticks to run before the shot is taken (0 for static titles).
+ */
+export function stageShot(game, shot, seed) {
+  game.audio.setMuted(true);
+  game.shotMode = shot;
+  const T = CFG.T;
+
+  if (shot === 'start') {
+    game.toTitle();
+    game.menuIndex = 0;
+    return 0;
   }
-  game.frozen = true; // render-only after this point
+
+  if (shot === 'play') {
+    game.startNewGame(seed);
+    // player cruising a Banshee down a downtown avenue
+    const p = game.player;
+    p.money = 1240;
+    const car = placeCar(CAR_SPECS[0], 23.5 * T, 84 * T, DIR_ANG[3], {
+      color: '#3ec6b8', driver: 'player', headlights: true,
+    });
+    game.cars.push(car);
+    p.car = car;
+    p.x = car.x;
+    p.y = car.y;
+    p.ang = car.ang;
+    car.speed = 120;
+    // keep the staged block busy: respawn traffic around the camera
+    game.traffic.cars = [];
+    game.cars = game.cars.filter((c) => c.driver !== 'ai');
+    game.traffic.populate(car.x, car.y);
+    dressStreet(game, seed);
+    // clear wanted level for a clean shot
+    game.police.clear();
+    game.cam.x = car.x;
+    game.cam.y = car.y;
+    game.hud.subtitle('Vice Palms at night — the city is yours.', 5);
+    return 150; // ~2.5 s of sim to settle traffic and lights
+  }
+
+  if (shot === 'end') {
+    // mission-passed banner over a beachfront scene
+    game.startNewGame(seed);
+    const p = game.player;
+    p.money = 3740;
+    game.missions.storyIndex = 2;
+    const car = placeCar(CAR_SPECS[2], 24.5 * T, 143.4 * T, DIR_ANG[0], {
+      color: '#c22f4a', driver: 'player',
+    });
+    game.cars.push(car);
+    p.car = car;
+    p.x = car.x;
+    p.y = car.y;
+    game.cam.x = car.x;
+    game.cam.y = car.y;
+    game.hud.missionPassed('Container Run', 800);
+    writeSave(game);
+    return 60;
+  }
+
+  if (shot === 'chaos') {
+    // five stars, an exploding car, a cruiser bearing down
+    game.startNewGame(seed);
+    const p = game.player;
+    p.money = 820;
+    p.x = 30 * T;
+    p.y = 86 * T;
+    p.ang = 0.6;
+    p.weapon = 1;
+    p.ammo = 40;
+    // burning wreck next to the player
+    const wreck = makeParkedCar(CAR_SPECS[4], 31.4 * T, 86.8 * T, DIR_ANG[2], '#8a3c42');
+    wreck.hp = 10;
+    wreck.onFire = true;
+    game.cars.push(wreck);
+    // cruiser closing in
+    const cruiser = placeCar(POLICE_SPEC, 35 * T, 84.5 * T, DIR_ANG[2], {
+      color: '#20242e', driver: 'cop', headlights: true,
+    });
+    cruiser.siren = true;
+    game.cars.push(cruiser);
+    // another traffic car fleeing
+    const civ = placeCar(CAR_SPECS[6], 27 * T, 89 * T, DIR_ANG[0], {
+      color: '#e0e4ea', driver: 'ai', dir: 0,
+    });
+    game.cars.push(civ);
+    // staged explosion going off
+    game.effects.push({ type: 'boom', x: 31.4 * T, y: 86.8 * T, t: 0, dur: 0.9 });
+    game.flash = 0.8;
+    game.cam.shake = 9;
+    game.police.heat = CFG.STAR_TABLE[4] + 10;
+    game.police.updateStars();
+    game.police.flashT = 1;
+    game.hud.big('WANTED LEVEL 5', 4, '#ff5c5c');
+    game.cam.x = p.x;
+    game.cam.y = p.y;
+    return 40;
+  }
+
+  return 0;
 }
 
-/** snap the camera onto the player (with driving lookahead) for a staged shot */
-function framePlayer(game) {
-  const p = game.player;
-  const c = p.inCar;
-  const lx = c ? Math.cos(c.angle) * c.speed * 0.32 : 0;
-  const ly = c ? Math.sin(c.angle) * c.speed * 0.32 : 0;
-  game.renderer.cam.x = p.x + lx;
-  game.renderer.cam.y = p.y + ly;
+/** Park a few cars along the road for the play shot. */
+function dressStreet(game, seed) {
+  const T = CFG.T;
+  const spots = [
+    [21.9, 80, 3, 2], [21.9, 88, 3, 4], [25.2, 76, 1, 5],
+    [25.2, 92, 1, 3], [21.9, 96, 3, 6],
+  ];
+  spots.forEach((s, i) => {
+    const spec = CAR_SPECS[(i + seed) % CAR_SPECS.length];
+    const car = makeParkedCar(spec, s[0] * T, s[1] * T, DIR_ANG[s[2]], spec.colors[i % spec.colors.length]);
+    game.cars.push(car);
+  });
+  // a few peds on the sidewalks near the camera
+  game.peds.list.length = 0;
+  game.peds.populate(game.player.x, game.player.y);
 }

@@ -1,413 +1,372 @@
-// ---------------------------------------------------------------------------
-// cars.js — arcade vehicle physics for all 9 types (8 civilian + cruiser).
-// Handles acceleration/braking, speed-sensitive steering, handbrake drifts,
-// lateral slip, a 4-speed auto gearbox feeding the engine audio, world & car-
-// to-car collisions, damage states (smoke → fire → explosion → wreck) and
-// headlights. Rendering lives in render.js.
-// ---------------------------------------------------------------------------
+// cars.js — the 8 vehicle types plus their arcade physics. Grip, drift,
+// handbrake, damage with smoke/fire/explosion and headlights all live here.
+// Rendering is render.js's job; this file is pure simulation.
 
-import { CAR_SPECS, CFG } from './config.js';
-import { RNG } from './rng.js';
-import { clamp, wrapAngle, TAU } from './util.js';
+import { CFG } from './config.js';
+import { clamp, dist, angMove, vecNorm } from './util.js';
+import { uid } from './util.js';
 
-// showroom blurbs — the HUD name plate quotes these on entry
-export const CAR_BLURBS = {
-  compact: 'Blista — rental-grade zip',
-  sedan: 'Primo — the honest workhorse',
-  taxi: 'Cabby — the meter is the boss',
-  sports: 'Banshee — loud in all the right ways',
-  super: 'Infernus — neon sunset included',
-  van: 'Burrito — tastes like cargo',
-  pickup: 'Bobcat — fence-post approved',
-  bus: 'Coach — 44 grudges aboard',
-  police: 'Cruiser — you did NOT earn this',
+/**
+ * The vehicle roster. Values are tuned per class; `w`/`h` are the body
+ * footprint in px, `accel` px/s², `top` px/s forward.
+ */
+export const CAR_SPECS = [
+  { id: 'banshee', name: 'Banshee', kind: 'sport', w: 46, h: 22, accel: 300, top: 250, rev: 90, grip: 5.6, drift: 0.55, mass: 1.0, hp: 90, colors: ['#e6e2da', '#c22f4a', '#3ec6b8', '#2d2f36'] },
+  { id: 'stinger', name: 'Stinger', kind: 'sport', w: 48, h: 23, accel: 320, top: 262, rev: 92, grip: 5.2, drift: 0.6, mass: 1.0, hp: 85, colors: ['#d9a13b', '#8b4bd9', '#e8e2d4', '#c22f4a'] },
+  { id: 'idaho', name: 'Idaho', kind: 'car', w: 44, h: 21, accel: 190, top: 190, rev: 80, grip: 6.4, drift: 0.4, mass: 1.1, hp: 110, colors: ['#2f6f9e', '#b0467e', '#5a9e4b', '#d9d3c8'] },
+  { id: 'cabby', name: 'Cabby', kind: 'taxi', w: 46, h: 22, accel: 185, top: 185, rev: 78, grip: 6.2, drift: 0.38, mass: 1.15, hp: 115, colors: ['#e8c53a'] },
+  { id: 'moonbeam', name: 'Moonbeam', kind: 'van', w: 50, h: 24, accel: 150, top: 165, rev: 70, grip: 6.8, drift: 0.3, mass: 1.4, hp: 140, colors: ['#d9d3c8', '#5a9e4b', '#c56a2e'] },
+  { id: 'bobcat', name: 'Bobcat', kind: 'pickup', w: 48, h: 23, accel: 200, top: 195, rev: 82, grip: 6.0, drift: 0.45, mass: 1.25, hp: 120, colors: ['#c22f4a', '#2d2f36', '#3f7fae'] },
+  { id: 'bus', name: 'Coach', kind: 'bus', w: 76, h: 26, accel: 110, top: 150, rev: 55, grip: 7.4, drift: 0.22, mass: 2.2, hp: 220, colors: ['#e0e4ea', '#3f7fae'] },
+  { id: 'rumpo', name: 'Rumpo', kind: 'truck', w: 66, h: 26, accel: 130, top: 160, rev: 60, grip: 7.0, drift: 0.25, mass: 1.9, hp: 180, colors: ['#c56a2e', '#5d6a75'] },
+];
+
+export const POLICE_SPEC = {
+  id: 'cruiser', name: 'VCPD Cruiser', kind: 'police', w: 48, h: 23,
+  accel: 260, top: 240, rev: 88, grip: 6.0, drift: 0.45, mass: 1.2, hp: 130,
+  colors: ['#20242e'],
 };
 
-let nextId = 1;
+export const POLICE_SUV = {
+  id: 'enforcer', name: 'VCPD Enforcer', kind: 'police', w: 56, h: 26,
+  accel: 230, top: 225, rev: 80, grip: 6.6, drift: 0.3, mass: 1.7, hp: 200,
+  colors: ['#20242e'],
+};
+
+/** Heading angle for a cardinal traffic direction. */
+export const DIR_ANG = [0, Math.PI / 2, Math.PI, -Math.PI / 2]; // E S W N
+
+const CORNERS = [{}, {}, {}, {}]; // scratch
 
 export class Car {
-  constructor(type, x, y, angle = 0, variant = 0) {
-    const spec = CAR_SPECS[type] || CAR_SPECS.sedan;
-    this.id = nextId++;
-    this.type = type;
+  constructor(spec, x, y, ang, opts) {
+    opts = opts || {};
+    this.id = uid();
     this.spec = spec;
     this.x = x;
     this.y = y;
-    this.angle = angle;          // heading (radians, 0 = +x)
-    this.speed = 0;              // forward px/s
-    this.slide = 0;              // lateral px/s
-    this.steerVis = 0;           // front wheel visual angle
-    this.hp = spec.hp;
+    this.ang = ang;
+    this.vx = 0;
+    this.vy = 0;
+    this.speed = 0;          // signed forward speed
+    this.steerVis = 0;       // visual wheel angle
+    this.color = opts.color || spec.colors[0];
+    this.hp = opts.hp !== undefined ? opts.hp : spec.hp;
     this.maxHp = spec.hp;
-    this.wrecked = false;
-    this.burn = 0;               // burning fuse before explosion (s), 0 = stable
+    this.driver = opts.driver || null;   // 'player' | 'ai' | 'cop' | null
+    this.parked = !!opts.parked;
+    this.dir = opts.dir !== undefined ? opts.dir : 0;   // ai cardinal direction
+    this.aiState = 'cruise';
+    this.turnTarget = null;
+    this.stopped = false;
+    this.blockedTimer = 0;
+    this.frozen = !!opts.frozen;
+    this.dead = false;
+    this.onFire = false;
     this.exploded = false;
-    this.variant = variant;      // colour index
-    this.driver = null;          // 'player' | 'ai' | 'cop' | null
-    this.parked = false;
-    this.lightsOn = true;
+    this.sinkTimer = 0;
+    this.smokeTimer = 0;
+    this.headlights = opts.headlights !== undefined ? opts.headlights : true;
     this.siren = false;
-    this.skidTimer = 0;
-    this.handbraking = false;
-    this.lastImpact = 0;         // timestamp of last hard hit (for camera)
-    this.impactMag = 0;
-    this.missionTag = null;      // missions can pin identity (e.g. 'target')
-    this.occupiedBy = null;      // ped reference when an AI driver is inside
-    this.radius = Math.max(spec.len, spec.wid) * 0.52;
-    this.honkCd = 0;
-    this.gear = 1;
-    this.rpm = 0.12;
-    this.stuckT = 0;
-    this.horn = false;
-    this.braking = false;
-    this.reversing = false;
-    this.lastImpactCorner = -1;
+    this.sirenPitch = 0;
+    this.lightT = Math.random() * 6;
+    this.hitFlash = 0;
+    this.wobble = 0;
+    this.burnT = 0;
+    this.missionTag = opts.missionTag || null;   // 'target' | 'escape' | 'fare' | 'gang' | 'vigilante'
+    this.escapeT = 0;
+    this.sunk = false;
+    this.lastHitBy = null;
+    this.tireT = 0;
+    this.handbrakeVis = 0;
+    this._out = { nx: 0, ny: 0, len: 0 };
   }
 
-  get dead() { return this.wrecked; }
-  get speed01() { return Math.abs(this.speed) / this.spec.max; }
-  get damage01() { return 1 - this.hp / this.maxHp; }
+  get w() { return this.spec.w; }
+  get h() { return this.spec.h; }
+  get wrecked() { return this.hp <= 0; }
 
-  corners() {
-    const c = Math.cos(this.angle), s = Math.sin(this.angle);
-    const hl = this.spec.len / 2, hw = this.spec.wid / 2;
-    const fx = c * hl, fy = s * hl, rx = s * hw, ry = -c * hw;
-    return [
-      { x: this.x + fx + rx, y: this.y + fy + ry },
-      { x: this.x + fx - rx, y: this.y + fy - ry },
-      { x: this.x - fx + rx, y: this.y - fy + ry },
-      { x: this.x - fx - rx, y: this.y - fy - ry },
-    ];
+  corners(out) {
+    const c = Math.cos(this.ang), s = Math.sin(this.ang);
+    const hw = this.spec.w / 2, hh = this.spec.h / 2;
+    const pts = out || CORNERS;
+    pts[0].x = this.x + c * hw - s * hh; pts[0].y = this.y + s * hw + c * hh;
+    pts[1].x = this.x + c * hw + s * hh; pts[1].y = this.y + s * hw - c * hh;
+    pts[2].x = this.x - c * hw + s * hh; pts[2].y = this.y - s * hw - c * hh;
+    pts[3].x = this.x - c * hw - s * hh; pts[3].y = this.y - s * hw + c * hh;
+    return pts;
   }
 
-  containsPoint(px, py) {
-    const dx = px - this.x, dy = py - this.y;
-    const c = Math.cos(-this.angle), s = Math.sin(-this.angle);
-    const lx = dx * c - dy * s, ly = dx * s + dy * c;
-    return Math.abs(lx) <= this.spec.len / 2 + 2 && Math.abs(ly) <= this.spec.wid / 2 + 2;
+  /** Forward unit vector. */
+  fwd(out) {
+    out.x = Math.cos(this.ang); out.y = Math.sin(this.ang);
+    return out;
   }
 
-  /**
-   * One physics step. ctl = {throttle:-1..1, steer:-1..1, handbrake:bool}
-   * Returns impact magnitude if the car hit the world this frame.
-   */
-  step(dt, ctl, worldRef) {
-    if (this.wrecked) { this.speed *= 0.9; this.slide *= 0.9; this._integrate(dt); return 0; }
+  /** Apply throttle/steer/handbrake from a driver. */
+  control(throttle, steer, handbrake, dt, gripMult) {
     const spec = this.spec;
-
-    // ---- longitudinal
-    if (ctl.throttle > 0) {
-      this.speed += spec.accel * ctl.throttle * dt;
-    } else if (ctl.throttle < 0) {
-      if (this.speed > 10) this.speed += spec.brake * ctl.throttle * dt;   // braking
-      else this.speed = Math.max(this.speed - spec.accel * 0.5 * dt, -spec.rev); // reverse
+    const gm = gripMult === undefined ? 1 : gripMult;
+    // forward speed integrates throttle
+    if (throttle > 0) {
+      this.speed += spec.accel * throttle * dt;
+    } else if (throttle < 0) {
+      if (this.speed > 12) this.speed -= CFG.BRAKE_FORCE * dt;   // braking
+      else this.speed = Math.max(-spec.rev, this.speed + spec.accel * 0.55 * throttle * dt);
     }
-    this.braking = ctl.throttle < 0 && this.speed > 10;
-    this.reversing = this.speed < -5;
-    // rolling drag + top speed clamp (damaged engines breathe harder)
-    const drag = ctl.throttle === 0 ? 1.6 : 0.55;
-    this.speed -= this.speed * drag * dt;
-    const topLimit = this.spec.max * (0.55 + 0.45 * (this.hp / this.maxHp));
-    this.speed = clamp(this.speed, -spec.rev, topLimit);
-
-    // ---- gearbox (automatic; feeds the engine audio pitch)
-    const abs = Math.abs(this.speed);
-    this.gear = abs < 1 ? 1 : Math.min(4, 1 + Math.floor(abs / (spec.max / 4.2)));
-    const gearFloor = (this.gear - 1) * (spec.max / 4.2);
-    const gearSpan = spec.max / 4.2;
-    this.rpm = clamp((abs - gearFloor) / gearSpan, 0.12, 1);
-
-    // ---- steering (speed sensitive, reversed when backing up)
-    const spd01 = clamp(Math.abs(this.speed) / spec.max, 0, 1);
-    const steerAuth = spec.turn * (0.32 + 0.68 * (1 - spd01 * 0.55));
-    const dir = this.speed >= 0 ? 1 : -1;
-    this.steerVis = clamp(ctl.steer, -1, 1);
-    const yaw = ctl.steer * steerAuth * spd01 * 1.6 * dir;
-
-    // ---- grip & drift (rain, handbrake and damage all soften grip)
-    const weatherGrip = ctl.grip !== undefined ? ctl.grip : 1;
-    const dmgGrip = 1 - this.damage01 * 0.2;
-    this.handbraking = !!ctl.handbrake && Math.abs(this.speed) > 60;
-    const grip = (ctl.handbrake ? spec.grip * 0.22 : spec.grip) * weatherGrip * dmgGrip;
-    // lateral slip picked up while turning hard or handbraking
-    const slipGen = (ctl.handbrake ? 2.6 : 1.0) * Math.abs(yaw) * Math.abs(this.speed) * 0.02;
-    this.slide += (slipGen * 60 - this.slide) * (grip * dt);
-    this.slide *= Math.pow(0.86, dt * 60 * (ctl.handbrake ? 0.35 : 1));
-    this.slide = clamp(this.slide, -spec.max * 0.55, spec.max * 0.55);
-
-    this.angle = wrapAngle(this.angle + yaw * dt + this.handlingNoise() * dt * (this.speed >= 0 ? 1 : -1));
-    this._integrate(dt);
-
-    // skid audio + marks
-    if (Math.abs(this.slide) > 60 && Math.abs(this.speed) > 80) {
-      this.skidTimer -= dt;
-      return 0; // slide handled by caller for skid marks
+    // drag toward zero when coasting
+    if (throttle === 0) {
+      const drag = CFG.CAR_DRAG * spec.mass * dt;
+      if (Math.abs(this.speed) <= drag) this.speed = 0;
+      else this.speed -= Math.sign(this.speed) * drag;
     }
-    return 0;
+    this.speed = clamp(this.speed, -spec.rev, spec.top);
+
+    // steering scales with speed: nothing at standstill, softer at top speed
+    const spdF = clamp(Math.abs(this.speed) / 90, 0, 1);
+    const steerRate = CFG.STEER_RATE * (1 - 0.35 * clamp(Math.abs(this.speed) / spec.top, 0, 1));
+    const dirSign = this.speed < 0 ? -1 : 1;
+    if (Math.abs(this.speed) > 4) {
+      this.ang = angMove(this.ang, this.ang + steer * steerRate * dt * dirSign * (handbrake ? 1.5 : 1), steerRate * dt * (handbrake ? 1.6 : 1));
+    }
+    this.steerVis = clamp(this.steerVis + (steer * 0.5 - this.steerVis) * Math.min(1, dt * 10), -0.5, 0.5);
+
+    // velocity: mostly along heading; lateral component decays by grip
+    const fx = Math.cos(this.ang), fy = Math.sin(this.ang);
+    let latX = this.vx - fx * this.speed;
+    let latY = this.vy - fy * this.speed;
+    const gripBase = spec.grip * (handbrake ? CFG.HANDBRAKE_GRIP : 1) * gm;
+    const latKill = Math.min(1, dt * gripBase);
+    latX -= latX * latKill;
+    latY -= latY * latKill;
+    this.vx = fx * this.speed + latX;
+    this.vy = fy * this.speed + latY;
+    this.handbrakeVis = handbrake ? 1 : Math.max(0, this.handbrakeVis - dt * 4);
+
+    // drift check for tire marks + screech
+    const latLen = Math.hypot(latX, latY);
+    if (latLen > 55 && Math.abs(this.speed) > 60) this.tireT += dt;
+    else this.tireT = 0;
   }
 
-  _integrate(dt) {
-    const c = Math.cos(this.angle), s = Math.sin(this.angle);
-    this.x += (c * this.speed - s * this.slide) * dt;
-    this.y += (s * this.speed + c * this.slide) * dt;
-  }
+  /** Integrate position and resolve against the world and other cars. */
+  step(dt, game) {
+    if (this.dead) return;
+    if (this.frozen && this.driver !== 'player') return;
 
-  /** push out of world solids; returns impact px/s or 0 */
-  collideWorld(worldRef) {
-    let worst = 0;
-    let worstCorner = -1;
-    const pts = this.corners();
-    for (let ci = 0; ci < pts.length; ci++) {
-      const p = pts[ci];
-      // water is a hard wall for cars
-      if (worldRef.isWater(p.x, p.y) && !worldRef.onPier(p.x, p.y)) {
-        const fixed = this._resolveWater(worldRef);
-        if (fixed) worst = Math.max(worst, Math.abs(this.speed));
-        continue;
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    this.lightT += dt;
+    if (this.hitFlash > 0) this.hitFlash -= dt * 3;
+
+    this.collideWorld(game);
+    this.collideCars(game, dt);
+
+    // fire damage
+    if (this.onFire && !this.exploded) {
+      this.burnT += dt;
+      this.damageSilent(CFG.BURN_RATE * dt, 'fire');
+      this.smokeTimer -= dt;
+      if (this.smokeTimer <= 0) {
+        this.smokeTimer = 0.08;
+        game.effects.push({ type: 'flame', x: this.x + (Math.random() - 0.5) * 14, y: this.y + (Math.random() - 0.5) * 10, t: 0, dur: 0.5, vy: -26 });
       }
-      const hit = worldRef.collide(p.x, p.y, 2, { water: false });
-      if (hit) {
-        worstCorner = ci;
-        const dx = hit.x - p.x, dy = hit.y - p.y;
-        this.x += dx; this.y += dy;
-        const impact = Math.abs(this.speed);
-        if (impact > 60) {
-          const along = Math.abs(dx) + Math.abs(dy);
-          this.speed *= along > 0 ? -0.3 : -0.3;
-          this.slide *= 0.5;
-          this.damage(impact * CFG.CAR_HIT_DMG * 0.8);
-          worst = Math.max(worst, impact);
-        } else {
-          this.speed *= 0.85;
+    }
+    if (this.wrecked && !this.exploded) this.explode(game);
+  }
+
+  collideWorld(game) {
+    const world = game.world;
+    const near = [];
+    world.solidsNear(this.x, this.y, Math.max(this.spec.w, this.spec.h) * 0.6 + 24, near);
+    const pts = this.corners(CORNERS);
+    for (const s of near) {
+      for (let i = 0; i < 4; i++) {
+        const p = pts[i];
+        if (p.x < s.x0 || p.x > s.x1 || p.y < s.y0 || p.y > s.y1) continue;
+        // push out along the shallowest axis
+        const dl = p.x - s.x0, dr = s.x1 - p.x, dt2 = p.y - s.y0, db = s.y1 - p.y;
+        const m = Math.min(dl, dr, dt2, db);
+        let px = 0, py = 0;
+        if (m === dl) px = -dl; else if (m === dr) px = dr;
+        else if (m === dt2) py = -dt2; else py = db;
+        this.x += px; this.y += py;
+        // kill velocity into the wall
+        const vn = this.vx * Math.sign(px || 0) + this.vy * Math.sign(py || 0);
+        if (px !== 0) { this.vx *= -0.28; this.vy *= 0.86; }
+        if (py !== 0) { this.vy *= -0.28; this.vx *= 0.86; }
+        const impact = Math.abs(vn) + Math.abs(this.speed) * 0.2;
+        if (impact > 130) {
+          this.damageSilent((impact - 130) * 0.05, 'crash');
+          game.audio.crash(clamp(impact / 400, 0, 1));
+          if (this.driver === 'player') game.cam.shake = Math.min(10, game.cam.shake + impact * 0.012);
+          game.effects.push({ type: 'spark', x: p.x, y: p.y, t: 0, dur: 0.3, n: 4 });
         }
-        // re-check the other corners after the push
-        break;
+        // resync
+        this.speed *= 0.8;
+        this.corners(pts);
       }
     }
-    if (worst > 0) {
-      this.impactMag = worst;
-      this.lastImpact = performance.now() / 1000;
-      this.tagImpactCorner(worstCorner);
-    }
-    return worst;
-  }
-
-  _resolveWater(worldRef) {
-    // nudge back toward the map interior
-    const mid = CFG.WORLD / 2;
-    if (this.y < CFG.WATER_N) { this.y = CFG.WATER_N + this.spec.wid; }
-    if (this.x > CFG.WATER_E) { this.x = CFG.WATER_E - this.spec.wid; }
-    this.speed *= -0.25;
-    return true;
-  }
-
-  damage(amount) {
-    if (this.wrecked) return false;
-    this.hp -= amount;
-    if (this.hp <= 0) {
-      this.hp = 0;
-      return this.catchFire();
-    }
-    return false;
-  }
-
-  /** reached 0 hp → burning; explodes after a short fuse */
-  catchFire() {
-    if (this.wrecked) return true;
-    this.burn = this.burn > 0 ? this.burn : 2.4;
-    return true;
-  }
-
-  explode() {
-    if (this.exploded) return false;
-    this.exploded = true;
-    this.wrecked = true;
-    this.burn = 0;
-    this.hp = 0;
-    this.driver = null;
-    this.lightsOn = false;
-    this.siren = false;
-    this.hue = CFG.COL.wreck;
-    return true;
-  }
-
-  /** burning countdown; caller triggers the boom */
-  updateBurn(dt) {
-    if (this.wrecked || this.burn <= 0) return false;
-    this.burn -= dt;
-    if (this.burn <= 0) return true; // explode now
-    return false;
-  }
-
-  /** occupied by the player? kick the AI driver out first (carjack) */
-  jack(game) {
-    if (this.driver === 'player') return false;
-    if (this.driver === 'ai') {
-      game.peds.spawnFleeingDriver(this);
-      this.driver = null;
-      game.police.crime(this.x, this.y, 12, 'carjack');
-    }
-    this.driver = 'player';
-    game.audio.jack();
-    return true;
-  }
-
-  seatBeltHeal() { /* cars don't heal; placeholder for future pickups */ }
-
-  /** engine audio feed: [rpm01, load01] */
-  engineState() {
-    return [this.rpm || 0, clamp(Math.abs(this.speed) / this.spec.max, 0, 1)];
-  }
-
-  /** true when the AI has been wedged against geometry too long */
-  isStuck(dt) {
-    if (Math.abs(this.speed) < 12) this.stuckT += dt;
-    else this.stuckT = 0;
-    return this.stuckT > 2.2;
-  }
-
-  /** reverse-and-straighten recovery used by AI drivers */
-  unstuckStep(dt) {
-    this.stuckT = 0;
-    this.step(dt, { throttle: -1, steer: -this.unstuckSide || 1, handbrake: false }, null);
-    if (this.unstuckSide === undefined) this.unstuckSide = 1;
-    if (Math.random() < dt) this.unstuckSide *= -1;
-  }
-
-  // ------------------------------------------------------------ flavour API
-  /** full name for toasts/log: "Banshee (scorched)" */
-  describe() {
-    const state = this.wrecked ? ' (wreck)'
-      : this.burn > 0 ? ' (on fire!)'
-      : this.damage01 > 0.6 ? ' (beat up)'
-      : this.damage01 > 0.25 ? ' (scratched)' : '';
-    return this.spec.name + state;
-  }
-
-  /** honk: returns true if the honk actually fired (cooldown respected) */
-  tryHorn(game) {
-    if (this.honkCd > 0 || this.wrecked) return false;
-    this.honkCd = 1.4;
-    game.audio.honk();
-    // peds in front shuffle along
-    game.peds.panicNear(this.x + Math.cos(this.angle) * 60, this.y + Math.sin(this.angle) * 60, 70, game);
-    return true;
-  }
-
-  /** idle exhaust puffs — called by the sim for stopped, occupied cars */
-  idlePuff(game) {
-    if (this.wrecked || Math.abs(this.speed) > 8) return;
-    const bx = this.x - Math.cos(this.angle) * (this.spec.len / 2 + 4);
-    const by = this.y - Math.sin(this.angle) * (this.spec.len / 2 + 4);
-    game.fx.smokePuff(bx, by, '#4a4e56', 3);
-  }
-
-  /** smoke/fire emissive state for the renderer, one pass */
-  emissiveState() {
-    if (this.wrecked) return 'wreck';
-    if (this.burn > 0) return 'fire';
-    if (this.hp < this.maxHp * 0.28) return 'burning';
-    if (this.hp < this.maxHp * 0.55) return 'smoke';
-    return 'ok';
-  }
-
-  /** which corner took the last hit — the renderer dents that side first */
-  impactCorner() {
-    if (!this.lastImpact) return -1;
-    const age = performance.now() / 1000 - this.lastImpact;
-    return age < 0.5 ? this.lastImpactCorner | 0 : -1;
-  }
-
-  /** remember which corner hit what (called by collide helpers) */
-  tagImpactCorner(cornerIdx) {
-    this.lastImpactCorner = cornerIdx;
-    this.lastImpact = performance.now() / 1000;
-  }
-
-  // ------------------------------------------------------------ damage feel
-  /** bent axles pull the wheel; heavy damage shudders the steering */
-  handlingNoise() {
-    const d = this.damage01;
-    if (d < 0.35) return 0;
-    return (d - 0.35) * 0.5;   // radians/s of constant pull
-  }
-
-  /** engine stall: below 15% health the engine coughs and stalls out */
-  stalled() {
-    return this.damage01 > 0.85 && Math.abs(this.speed) < 40;
-  }
-
-  /** smoke colour for the exhaust at a given damage level */
-  exhaustTone() {
-    const d = this.damage01;
-    if (d > 0.7) return '#151517';
-    if (d > 0.4) return '#3a3d44';
-    return '#4a4e56';
-  }
-}
-
-/** pairwise car/car collision: circle pushout + shared damage */
-export function collideCars(cars, game) {
-  for (let i = 0; i < cars.length; i++) {
-    const a = cars[i];
-    for (let j = i + 1; j < cars.length; j++) {
-      const b = cars[j];
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const rr = a.radius + b.radius;
+    // prop solids (palms, poles, trees, hydrants)
+    for (const p of world.propSolids) {
+      const rr = CFG.CAR_RADIUS + p.r;
+      const dx = this.x - p.x, dy = this.y - p.y;
       const d2 = dx * dx + dy * dy;
-      if (d2 >= rr * rr || d2 < 0.001) continue;
+      if (d2 < rr * rr && d2 > 1e-9) {
+        const d = Math.sqrt(d2);
+        this.x = p.x + (dx / d) * rr;
+        this.y = p.y + (dy / d) * rr;
+        const spd = Math.abs(this.speed);
+        if (p.kind === 'hydrant' && p.primed && spd > 40) {
+          // shear the hydrant clean off: street fountain
+          p.primed = false;
+          game.effects.push({ type: 'jet', x: p.x, y: p.y, t: 0, dur: 3.4 });
+          game.audio.crash(0.4);
+          this.speed *= 0.7;
+          continue;
+        }
+        if (spd > 90) {
+          this.damageSilent((spd - 90) * 0.09, 'crash');
+          game.audio.crash(clamp(spd / 300, 0, 1));
+          game.effects.push({ type: 'spark', x: this.x, y: this.y, t: 0, dur: 0.3, n: 3 });
+        }
+        this.speed *= 0.55;
+        this.vx *= 0.5; this.vy *= 0.5;
+      }
+    }
+    // water: cars drown
+    if (world.isWaterPx(this.x, this.y) && !this.exploded) {
+      this.sinkTimer += 1 / 60;
+      this.speed *= 0.92;
+      this.vx *= 0.92; this.vy *= 0.92;
+      if (this.sinkTimer > 1.2) {
+        this.explode(game);
+        this.sunk = true;
+      }
+      game.effects.push({ type: 'splash', x: this.x, y: this.y, t: 0, dur: 0.4 });
+    } else this.sinkTimer = 0;
+  }
+
+  collideCars(game, dt) {
+    const cars = game.cars;
+    for (const o of cars) {
+      if (o === this || o.dead) continue;
+      const dx = o.x - this.x, dy = o.y - this.y;
+      const rr = (this.spec.w + o.spec.w) * 0.42;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > rr * rr || d2 < 1e-9) continue;
       const d = Math.sqrt(d2);
       const nx = dx / d, ny = dy / d;
       const overlap = rr - d;
-      const ma = a.spec.mass, mb = b.spec.mass;
-      const totalM = ma + mb;
-      a.x -= nx * overlap * (mb / totalM);
-      a.y -= ny * overlap * (mb / totalM);
-      b.x += nx * overlap * (ma / totalM);
-      b.y += ny * overlap * (ma / totalM);
-      const rel = Math.abs(a.speed - b.speed) + Math.abs(a.slide - b.slide) * 0.5;
-      const impact = rel;
-      if (impact > 70) {
-        const dmg = impact * CFG.CAR_HIT_DMG * 0.55;
-        a.damage(dmg * (mb / totalM) * 2);
-        b.damage(dmg * (ma / totalM) * 2);
-        a.speed *= 0.55; b.speed *= 0.55;
-        a.slide = clamp(a.slide - nx * impact * 0.3, -200, 200);
-        b.slide = clamp(b.slide + nx * impact * 0.3, -200, 200);
-        game.fx.impactSparks((a.x + b.x) / 2, (a.y + b.y) / 2, impact);
-        if (a.driver === 'player' || b.driver === 'player') {
-          game.shake(Math.min(impact * 0.012, 6));
-          game.police.crime(a.x, a.y, 3, 'ram');
+      const mSum = this.spec.mass + o.spec.mass;
+      const thisShare = o.spec.mass / mSum;
+      this.x -= nx * overlap * thisShare;
+      this.y -= ny * overlap * thisShare;
+      o.x += nx * overlap * (1 - thisShare);
+      o.y += ny * overlap * (1 - thisShare);
+      // relative velocity along normal
+      const rvx = o.vx - this.vx, rvy = o.vy - this.vy;
+      const rel = rvx * nx + rvy * ny;
+      if (rel < 0) {
+        const imp = -rel;
+        const j = imp * 0.6;
+        this.vx -= nx * j / this.spec.mass;
+        this.vy -= ny * j / this.spec.mass;
+        o.vx += nx * j / o.spec.mass;
+        o.vy += ny * j / o.spec.mass;
+        this.speed *= 0.7;
+        o.speed *= 0.7;
+        const force = imp / 60;
+        if (force > 1.4) {
+          this.damageSilent(force * 2.2, 'crash', o);
+          o.damageSilent(force * 2.2, 'crash', this);
+          game.audio.crash(clamp(force / 5, 0, 1));
+          game.effects.push({ type: 'spark', x: (this.x + o.x) / 2, y: (this.y + o.y) / 2, t: 0, dur: 0.3, n: 5 });
+          if (this.driver === 'player' || o.driver === 'player') {
+            game.cam.shake = Math.min(9, game.cam.shake + force * 0.9);
+          }
         }
-      } else {
-        a.speed *= 0.96; b.speed *= 0.96;
       }
     }
   }
+
+  /** Run over a ped. Called by peds.js; applies damage + returns true if hit. */
+  hitPed(ped, game) {
+    const spd = Math.abs(this.speed);
+    if (spd < 26) return false;
+    ped.hp -= spd * 0.5;
+    ped.x += Math.cos(this.ang) * 12;
+    ped.y += Math.sin(this.ang) * 12;
+    if (ped.hp <= 0) ped.state = 'dead';
+    else ped.state = 'flee';
+    this.speed *= 0.86;
+    game.effects.push({ type: 'blood', x: ped.x, y: ped.y, t: 0, dur: 0.5 });
+    if (this.driver === 'player') {
+      game.police.crime(ped.state === 'dead' ? CFG.HEAT_RUN_PED : CFG.HEAT_PED * 0.4, ped.x, ped.y);
+    }
+    return true;
+  }
+
+  damageSilent(n, cause, by) {
+    if (this.dead || this.exploded) return;
+    if (cause !== 'fire' && cause !== 'drown') this.hp -= n;
+    else this.hp -= n;
+    if (by) this.lastHitBy = by;
+    if (this.hp < CFG.CAR_FIRE_HP && !this.onFire && this.hp > 0) this.onFire = true;
+    if (this.hp <= 0) this.hp = 0;
+    if (cause === 'crash' || cause === 'bullet') this.hitFlash = 1;
+  }
+
+  damage(n, cause, game, by) {
+    this.damageSilent(n, cause, by);
+  }
+
+  explode(game) {
+    if (this.exploded) return;
+    this.exploded = true;
+    this.dead = true;
+    this.onFire = false;
+    this.driver = null;
+    game.boom(this.x, this.y, this);
+    // debris shower
+    for (let i = 0; i < 10; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const v = 90 + Math.random() * 200;
+      game.effects.push({
+        type: 'debris', x: this.x, y: this.y, t: 0, dur: 0.9 + Math.random() * 0.6,
+        vx: Math.cos(a) * v, vy: Math.sin(a) * v, spin: (Math.random() - 0.5) * 14,
+        size: 2 + Math.random() * 4,
+      });
+    }
+    // eject the driver as a fleeing ped if it was an ai/civ car
+    if (game.onCarExploded) game.onCarExploded(this);
+  }
+
+  /** Player-driven convenience: what the speedo shows. */
+  mph() {
+    return Math.abs(this.speed) * 0.3;
+  }
 }
 
-/** convenient spawner used by traffic, police and missions */
-export function spawnCar(type, x, y, angle, opts = {}) {
-  const rng = opts.rng || new RNG((x * 31 + y * 17 + Math.floor(angle * 8)) | 0);
-  const spec = CAR_SPECS[type];
-  const car = new Car(type, x, y, angle, opts.variant !== undefined ? opts.variant : rng.int(0, spec.hue.length));
-  if (opts.parked) { car.parked = true; car.lightsOn = false; }
-  if (opts.hp !== undefined) car.hp = opts.hp;
-  if (opts.tag) car.missionTag = opts.tag;
-  return car;
+/** Pick a fresh civilian car in a lane. */
+export function makeTrafficCar(spec, x, y, dir) {
+  const color = spec.colors[Math.floor(Math.random() * spec.colors.length)];
+  return new Car(spec, x, y, DIR_ANG[dir], {
+    color, driver: 'ai', dir, headlights: true,
+  });
 }
 
-// ---------------------------------------------------------------------------
-// mass-scaled collision damage helper — heavier vehicles dish out more than
-// they take. Returns the damage the ATTACKER deals to the TARGET.
-// ---------------------------------------------------------------------------
-export function ramDamage(attacker, target, impact) {
-  const massRatio = attacker.spec.mass / (attacker.spec.mass + target.spec.mass);
-  return impact * CFG.CAR_HIT_DMG * 0.55 * 2 * massRatio;
+/** Parked car for streets and lots. */
+export function makeParkedCar(spec, x, y, ang, color) {
+  return new Car(spec, x, y, ang, {
+    color: color || spec.colors[0], driver: null, parked: true, headlights: false,
+  });
 }
 
-/** per-type horn pitch (Hz) — the audio system reads this for variety */
-export const HORN_PITCH = {
-  compact: 520, sedan: 460, taxi: 480, sports: 600,
-  super: 620, van: 380, pickup: 400, bus: 300, police: 440,
-};
+/** Simple helper used by missions to place scenario cars. */
+export function placeCar(spec, x, y, ang, opts) {
+  return new Car(spec, x, y, ang, opts || {});
+}
+
+/** All spec ids except the police cruiser. */
+export const CIV_SPECS = CAR_SPECS;

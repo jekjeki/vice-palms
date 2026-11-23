@@ -1,72 +1,123 @@
-// ---------------------------------------------------------------------------
-// rng.js — deterministic seeded randomness. The whole world and every staged
-// screenshot scene derive from integer seeds so runs are reproducible.
-// ---------------------------------------------------------------------------
+// rng.js — deterministic seeded random number generation for Vice Palms.
+// Everything that spawns, jitters or decorates pulls from one of these so a
+// given seed always rebuilds the exact same city and the exact same chaos.
 
-/** xmurmur3-ish string hash: turns "play" or "7" into a 32-bit seed. */
-export function hashSeed(str) {
-  let h = 0x811c9dc5;
-  const s = String(str);
+/** Small, fast, well-behaved 32-bit PRNG stream. Returns floats in [0,1). */
+export function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0;
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Stable string hash, used to seed per-block and per-building generators. */
+export function hashStr(s) {
+  let h = 2166136261 >>> 0;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
+    h = Math.imul(h, 16777619);
   }
+  return h >>> 0;
+}
+
+/** Mix two integers into one seed (order matters, deterministic). */
+export function mixSeeds(a, b) {
+  let h = (a ^ 0x9E3779B9) >>> 0;
+  h = Math.imul(h ^ (b >>> 0), 0x85EBCA6B) >>> 0;
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xC2B2AE35) >>> 0;
   h ^= h >>> 16;
   return h >>> 0;
 }
 
+/**
+ * A named random stream. The game keeps a handful of these (world gen, props,
+ * traffic, chaos) so subsystems can be reseeded independently without
+ * disturbing each other's sequences.
+ */
 export class RNG {
   constructor(seed) {
-    if (typeof seed === 'string') seed = hashSeed(seed);
-    this.s = (seed >>> 0) || 0x9e3779b9;
+    this.seed = seed >>> 0;
+    this.f = mulberry32(this.seed);
+    this.count = 0;
   }
 
-  /** mulberry32 — fast, tiny, good enough distribution for gameplay. */
+  reseed(seed) {
+    this.seed = seed >>> 0;
+    this.f = mulberry32(this.seed);
+    this.count = 0;
+  }
+
+  /** Next float in [0,1). */
   next() {
-    this.s = (this.s + 0x6d2b79f5) >>> 0;
-    let t = this.s;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    this.count++;
+    return this.f();
   }
 
-  /** float in [a, b) */
+  /** Float in [a,b). */
   range(a, b) {
-    return a + this.next() * (b - a);
+    return a + (b - a) * this.next();
   }
 
-  /** integer in [a, b) — b defaults to a+1 */
+  /** Integer in [a,b] inclusive. */
   int(a, b) {
-    if (b === undefined) { b = a; a = 0; }
-    return Math.floor(this.range(a, b));
+    if (b < a) return a;
+    return a + Math.floor(this.next() * (b - a + 1));
   }
 
+  /** Random element, array must be non-empty. */
   pick(arr) {
-    return arr[Math.floor(this.next() * arr.length)];
+    return arr[Math.floor(this.next() * arr.length) % arr.length];
   }
 
-  /** weighted pick: entries are [item, weight] */
-  weighted(entries) {
-    let total = 0;
-    for (const e of entries) total += e[1];
-    let r = this.next() * total;
-    for (const e of entries) {
-      r -= e[1];
-      if (r <= 0) return e[0];
-    }
-    return entries[entries.length - 1][0];
-  }
-
+  /** True with probability p. */
   chance(p) {
     return this.next() < p;
   }
 
-  sign() {
-    return this.next() < 0.5 ? -1 : 1;
+  /** Weighted pick: items is [{item, w}]. */
+  weighted(items) {
+    let total = 0;
+    for (const it of items) total += it.w;
+    let r = this.next() * total;
+    for (const it of items) {
+      r -= it.w;
+      if (r <= 0) return it.item;
+    }
+    return items[items.length - 1].item;
   }
 
-  /** gaussian-ish jitter (sum of 3 uniforms), roughly [-1, 1] peaked at 0 */
-  jitter() {
-    return (this.next() + this.next() + this.next()) / 1.5 - 1;
+  /** Gaussian-ish value centred on 0, range roughly [-1,1]. */
+  bell() {
+    return (this.next() + this.next() + this.next() - 1.5) / 1.5;
+  }
+
+  /** Random point inside a rect (px units). */
+  pointIn(x0, y0, x1, y1) {
+    return { x: this.range(x0, x1), y: this.range(y0, y1) };
+  }
+
+  /** Random angle in radians. */
+  angle() {
+    return this.next() * Math.PI * 2;
+  }
+
+  /** Shuffled shallow copy of an array. */
+  shuffle(arr) {
+    const out = arr.slice();
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(this.next() * (i + 1));
+      const tmp = out[i];
+      out[i] = out[j];
+      out[j] = tmp;
+    }
+    return out;
   }
 }
+
+/** Convenience: the default global seed the shipping city uses. */
+export const CITY_SEED = 19870614;

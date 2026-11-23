@@ -1,161 +1,122 @@
-// ---------------------------------------------------------------------------
-// radio.js — Vice Palms FM. A tiny pattern-based chiptune sequencer riding on
-// WebAudio: four stations (night-drive synthwave, flashbase electro, dusk
-// jazz-ish, low-tide lo-fi), each with drum patterns, bass lines, chord pads
-// and lead arps that vary every 8 bars. Stations cycle with R (game.js).
-// ---------------------------------------------------------------------------
+// radio.js — three procedurally sequenced stations for the night drive.
+// Palm Wave (dreamy synth), Vice FM (electro-funk), Night Drive (ambient
+// pads). R cycles stations; the audio engine renders whatever we feed it.
 
-const STEPS_PER_BAR = 8;     // 8th notes
-const BARS_PER_SECTION = 8;
+import { RNG, mixSeeds } from './rng.js';
 
-// note helper: midi → Hz
-const hz = (m) => 440 * Math.pow(2, (m - 69) / 12);
-
-  // radio sequencer progressions (a fourth station borrows 'flash')
-const PROGS = {
-  drive: [0, 0, -4, -4, 2, 2, -4, -4],      // i – VI – III …
-  flash: [0, 3, 5, 3, 0, 5, 3, -2],
-  dusk: [0, -2, 3, 5, 0, 3, -2, -4],
-  tides: [0, 0, 5, 3, 0, -2, 3, 5],
-};
-
+// station definitions: bass root pattern (Hz), arp scale (ratios), tempo,
+// waveforms and vibe
 const STATIONS = [
   {
-    id: 'drive', name: 'WVP NIGHT DRIVE', bpm: 96,
-    root: 45,                       // A2
-    kick: [1, 0, 0, 0, 1, 0, 0, 0],
-    snare: [0, 0, 0, 0, 1, 0, 0, 0],
-    hat: [0, 0, 1, 0, 0, 0, 1, 0],
-    bass: [0, 0, 7, 0, 3, 0, 7, 10], // semitones over chord root
-    arp: [12, 15, 19, 15, 12, 15, 19, 22],
-    padEvery: 4,                    // pad chord every N steps
-    leadFrom: 8,                    // lead enters in the 2nd section
-    swing: 0.0,
+    name: 'PALM WAVE 88.3',
+    tag: 'dream synth',
+    tempo: 0.24,                 // seconds per 8th
+    roots: [55, 55, 65.4, 65.4, 73.4, 73.4, 49, 49],
+    scale: [1, 1.5, 2, 3, 2, 1.5, 2, 2.5],
+    bassWave: 'sawtooth',
+    arpWave: 'square',
+    arpGain: 0.05,
+    padEvery: 4,
+    hatEvery: 2,
   },
   {
-    id: 'flash', name: 'FLASHBASE 103', bpm: 118,
-    root: 43,                       // G2
-    kick: [1, 0, 0, 0, 1, 0, 1, 0],
-    snare: [0, 0, 0, 0, 1, 0, 0, 1],
-    hat: [1, 0, 1, 0, 1, 0, 1, 1],
-    bass: [0, 12, 0, 7, 0, 12, 0, 10],
-    arp: [12, 19, 24, 19, 12, 19, 24, 27],
+    name: 'VICE FM 103.7',
+    tag: 'electro-funk',
+    tempo: 0.19,
+    roots: [43.7, 43.7, 58.3, 58.3, 51.9, 51.9, 43.7, 65.4],
+    scale: [1, 1.19, 1.5, 1.78, 2, 2.38, 3, 2],
+    bassWave: 'square',
+    arpWave: 'sawtooth',
+    arpGain: 0.04,
     padEvery: 8,
-    leadFrom: 4,
-    swing: 0.06,
+    hatEvery: 1,
   },
   {
-    id: 'dusk', name: 'DUSK 88.1', bpm: 78,
-    root: 48,                       // C3
-    kick: [1, 0, 0, 0, 0, 0, 1, 0],
-    snare: [0, 0, 0, 0, 1, 0, 0, 0],
-    hat: [0, 1, 0, 1, 0, 1, 0, 1],
-    bass: [0, 0, 3, 0, 5, 0, 3, 0],
-    arp: [12, 16, 19, 16, 14, 16, 19, 16],
+    name: 'NIGHT DRIVE 96.1',
+    tag: 'ambient',
+    tempo: 0.42,
+    roots: [49, 49, 55, 55, 41.2, 41.2, 61.7, 61.7],
+    scale: [1, 2, 1.5, 2, 3, 2, 1.5, 1],
+    bassWave: 'triangle',
+    arpWave: 'sine',
+    arpGain: 0.06,
     padEvery: 2,
-    leadFrom: 12,
-    swing: 0.12,
-  },
-  {
-    id: 'tides', name: 'LOW TIDE LO-FI', bpm: 68,
-    root: 41,                       // F2
-    kick: [1, 0, 0, 0, 0, 0, 1, 0],
-    snare: [0, 0, 0, 0, 1, 0, 0, 0],
-    hat: [0, 0, 1, 0, 0, 0, 1, 1],
-    bass: [0, 0, 0, 5, 3, 3, 5, 7],
-    arp: [12, 15, 17, 20, 19, 17, 15, 12],
-    padEvery: 8,
-    leadFrom: 16,
-    swing: 0.16,
+    hatEvery: 0,
   },
 ];
 
 export class Radio {
-  constructor(audio) {
-    this.audio = audio;            // AudioSys (master gain, noise, note)
-    this.stationIdx = 0;
-    this.on = false;
-    this.nextTime = 0;
-    this.step = 0;                 // global step counter
-    this.bar = 0;
+  constructor(game, seed) {
+    this.game = game;
+    this.station = 0;
+    this.step = 0;
+    this.timer = 0;
+    this.displayT = 0;
+    this.rng = new RNG(mixSeeds(seed === undefined ? 5 : seed, 0xFACE));
   }
 
-  get station() {
-    return STATIONS[this.stationIdx % STATIONS.length];
-  }
-
-  stationName() {
-    return this.station.name;
+  get current() {
+    return STATIONS[this.station];
   }
 
   next() {
-    this.stationIdx = (this.stationIdx + 1) % STATIONS.length;
+    this.station = (this.station + 1) % STATIONS.length;
     this.step = 0;
-    this.bar = 0;
-    if (this.audio.ctx) this.nextTime = this.audio.ctx.currentTime + 0.05;
-    return this.station;
+    this.displayT = 2.6;
+    this.game.audio.cash();
   }
 
-  start() {
-    this.on = true;
-    if (this.audio.ctx && this.nextTime < this.audio.ctx.currentTime) {
-      this.nextTime = this.audio.ctx.currentTime + 0.08;
+  prev() {
+    this.station = (this.station + STATIONS.length - 1) % STATIONS.length;
+    this.step = 0;
+    this.displayT = 2.6;
+    this.game.audio.cash();
+  }
+
+  /** Stepped from the game loop; mutes naturally through the audio engine. */
+  update(dt) {
+    const audio = this.game.audio;
+    if (!audio.ctx || audio.muted) {
+      this.displayT = Math.max(0, this.displayT - dt);
+      return;
+    }
+    this.displayT = Math.max(0, this.displayT - dt);
+    const st = this.current;
+    this.timer -= dt;
+    if (this.timer > 0) return;
+    this.timer += st.tempo;
+    const s = this.step++ % 16;
+    const t = audio.ctx.currentTime;
+
+    // bass every other step
+    if (s % 2 === 0) {
+      const root = st.roots[(this.step >> 1) % 8] ?? st.roots[0];
+      audio.playTone(root, st.tempo * 1.6, 0.14, st.bassWave, root * 0.99);
+    }
+    // arp sparkle
+    const note = st.scale[s % 8];
+    const root = st.roots[(this.step >> 1) % 8] ?? st.roots[0];
+    audio.playTone(root * 4 * note, st.tempo * 0.9, st.arpGain, st.arpWave);
+    // pad chord swell
+    if (st.padEvery && s % st.padEvery === 0) {
+      audio.playTone(root * 2, st.tempo * 3.2, 0.05, 'triangle');
+      audio.playTone(root * 2.5, st.tempo * 3.2, 0.035, 'triangle');
+    }
+    // hats
+    if (st.hatEvery && s % st.hatEvery === 0 && s % 4 !== 0) {
+      audio.playNoise(0.05, 6800, 0.035, 'highpass');
+    }
+    // kick
+    if (s % 8 === 0 && st.tempo < 0.3) {
+      audio.playTone(root * 0.5, 0.3, 0.18, 'sine', root * 0.4);
     }
   }
 
-  stop() {
-    this.on = false;
-  }
-
-  /**
-   * call every frame; schedules a lookahead window of notes
-   */
-  update() {
-    const A = this.audio;
-    if (!this.on || !A.ready()) return;
-    const st = this.station;
-    // pads drift a few cents per station for character
-    const padDetune = st.id === 'dusk' ? 6 : st.id === 'tides' ? 9 : 0;
-    const stepLen = 60 / st.bpm / 2;
-
-    while (this.nextTime < A.ctx.currentTime + 0.28) {
-      const t = this.nextTime;
-      const s = this.step % STEPS_PER_BAR;
-      const section = Math.floor(this.bar / BARS_PER_SECTION);
-      const swing = (s % 2 === 1 ? st.swing * stepLen : 0);
-      const at = t + swing;
-
-      // chord root for this bar (progression per station)
-      const prog = PROGS[st.id];
-      const chordRoot = st.root + prog[this.bar % prog.length];
-
-      // drums
-      if (st.kick[s]) A.drum(at, 'kick');
-      if (st.snare[s]) A.drum(at, 'snare');
-      if (st.hat[s]) A.drum(at, 'hat');
-
-      // bass: root-following line
-      const bn = chordRoot + st.bass[s];
-      A._note(at, hz(bn), stepLen * 0.85, 'sawtooth', 0.09, 320);
-
-      // pad: soft chord stab (with per-station detune character)
-      if (s % st.padEvery === 0) {
-        A._note(at, hz(chordRoot + 12) * (1 + padDetune / 12000), stepLen * st.padEvery * 0.9, 'triangle', 0.035, 900);
-        A._note(at, hz(chordRoot + 15) * (1 - padDetune / 12000), stepLen * st.padEvery * 0.9, 'triangle', 0.028, 900);
-      }
-
-      // lead arp: enters after the intro section, drops in breaks
-      if (section >= Math.floor(st.leadFrom / BARS_PER_SECTION)) {
-        const intensity = section % 2 === 0 ? 1 : 0.7;
-        if (intensity > 0.5 || s % 2 === 0) {
-          const ln = chordRoot + 12 + st.arp[s];
-          A._note(at, hz(ln), stepLen * 0.7, 'square', 0.022 * intensity, 2400);
-        }
-      }
-
-      this.nextTime += stepLen;
-      this.step++;
-      if (this.step % STEPS_PER_BAR === 0) this.bar++;
-    }
+  /** Station toast shown by the HUD. */
+  toast() {
+    if (this.displayT > 0) return this.current.name;
+    return null;
   }
 }
+
+export { STATIONS };
