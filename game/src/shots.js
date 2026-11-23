@@ -1,257 +1,153 @@
-// The staged screenshot scenes behind ?shot=start|play|end|chaos&seed=N. Each scene builds the
-// real game from the seed, arranges its actors, runs a short scripted stretch of simulation and
-// freezes one frame. The global runtime RNG is pointed at a seeded stream first, so the same
-// URL always produces the same picture.
+// ============================================================================
+// VICE PALMS — shots.js
+// Deterministic staged scenes for screenshot capture:
+//   ?shot=start&seed=N  — the neon title screen (cover)
+//   ?shot=play&seed=N   — mid-game: player cruising a neon avenue, HUD up
+//   ?shot=end&seed=N    — the MISSION PASSED banner over live streets
+//   ?shot=chaos&seed=N  — 4 stars: cruisers, a burning car, an explosion
+// Every scene runs muted and settles to window.__shotReady = true. Same seed
+// => same scene.
+// ============================================================================
 
-import { GRID, PITCH, SAND } from './config.js';
-import { seedRun, freeRun, rand } from './rng.js';
-import { Person } from './entities/person.js';
-import { JOBS, GIVERS } from './systems/missions.js';
+import { TILE, LANE, CITY_W, CITY_H, VIEW_W, VIEW_H } from './config.js';
+import { Car } from './cars.js';
+import { Ped } from './peds.js';
 
-const SCRIPT = { axis: () => ({ x: 0, y: -1 }), held: () => false, tap: () => false, endFrame() {} };
+const DEFAULT_SEEDS = { start: 1337, play: 4242, end: 4242, chaos: 777 };
+const READY_AT = { start: 1.2, play: 2.0, end: 2.2, chaos: 1.45 };
 
-export function stageShot(name, game, ui, seed) {
-  seedRun(seed);
-  if (name === 'race') {
-    raceScene(game, ui);
-    freeRun();
-    return;
+export function parseShotParams(search) {
+  const qs = new URLSearchParams(search);
+  const shot = qs.get('shot') || null;
+  const seedRaw = qs.get('seed');
+  const seed = seedRaw != null ? (parseInt(seedRaw, 10) >>> 0) : null;
+  const mute = qs.get('mute') === '1' || qs.get('mute') === 'true' || !!shot;
+  return { shot, seed, mute };
+}
+
+export class ShotDirector {
+  constructor(game, mode) {
+    this.game = game;
+    this.mode = mode;
+    this.seed = DEFAULT_SEEDS[mode] != null ? DEFAULT_SEEDS[mode] : 4242;
+    this.t = 0;
+    this.ready = false;
+    this.explosionArmed = false;
+    this.game.bustImmune = true;
+    this.game.godMode = true;
   }
-  if (name === 'chaos') {
-    chaosScene(game, ui);
-    freeRun();
-    return;
+
+  setup() {
+    const g = this.game;
+    g.audio.setMuted(true);
+    switch (this.mode) {
+      case 'start': this.setupStart(); break;
+      case 'play': this.setupPlay(); break;
+      case 'end': this.setupPlay(true); break;
+      case 'chaos': this.setupChaos(); break;
+      default: this.mode = null; break;
+    }
   }
-  if (name === 'docks') {
-    docksScene(game, ui);
-    freeRun();
-    return;
+
+  setupStart() {
+    const g = this.game;
+    g.state = 'title';
+    g.screens.menuIdx = 0;
+    // Anchor the title pan on the hotel neon block.
+    g.player.x = 624; g.player.y = 430;
+    g.cam.x = 624; g.cam.y = 430; g.cam.z = 0.94;
   }
-  if (name === 'start') {
-    ui.uiState = 'title';
-    // Frame the neon stretch with the most signs, beach road and water behind it.
-    let bestJ = 10, best = -1;
-    for (let j = 2; j < GRID - 2; j++) {
-      let score = 0;
-      for (let dj = -1; dj <= 1; dj++) {
-        const block = game.city.blocks[(GRID - 1) * GRID + (j + dj)];
-        score += block.signs.length * 2 + block.buildings.length;
+
+  setupPlay(forEnd) {
+    const g = this.game;
+    g.setupWorld(this.seed, false);
+    g.state = 'playing';
+    g.missions.storyIdx = forEnd ? 5 : 1;
+    g.missions.buildMarkers();
+    g.time = 180; // city clock 01:00 — deep night
+    // Player pinned in the Banshee on Ocean Avenue heading east.
+    const car = new Car(g, 'sport', 6 * TILE + 10, 5 * TILE + LANE, 0, '#ff2f7d');
+    car.driver = 'player';
+    g.cars.push(car);
+    g.player.inCar = car;
+    g.player.pistolAmmo = 36;
+    g.player.money = 12450;
+    g.cam.x = car.x; g.cam.y = car.y; g.cam.z = 0.92;
+    g.traffic.spawnInitial(16);
+    g.peds.spawnInitial(30);
+    g.audio.startMusic();
+    if (forEnd) {
+      // Staged banner over the live scene.
+      g.missions.passedBanner = { name: 'Last Flight', payout: 2500, t: 0 };
+    }
+  }
+
+  setupChaos() {
+    const g = this.game;
+    g.setupWorld(this.seed, false);
+    g.state = 'playing';
+    g.time = 90; // city clock 23:30
+    const p = g.player;
+    p.x = 480; p.y = 516; // on the plaza crossroads
+    p.pistolAmmo = 48;
+    p.armor = 100;
+    p.money = 31200;
+    p.inCar = null;
+    p.angle = -Math.PI / 3;
+    g.cam.x = p.x; g.cam.y = p.y; g.cam.z = 0.9;
+    // Heat: 4 stars, cruisers already breathing down the neck.
+    g.police.heat = 4.2;
+    g.police.spawnCruiser(480, 566, -Math.PI / 2);
+    g.police.spawnCruiser(480, 446, Math.PI / 2);
+    g.police.spawnCruiser(424, 480, 0);
+    // The doomed beater that lights the scene up.
+    const bomb = new Car(g, 'sedan', 532, 484, 0, '#5a6c8c');
+    bomb.driver = null;
+    g.cars.push(bomb);
+    bomb.health = 0;
+    bomb.burning = true;
+    bomb.burnT = 1.1;
+    this.explosionArmed = true;
+    // Pedestrians scattering.
+    for (let k = 0; k < 12; k++) {
+      const pt = g.world.randomSidewalkPoint(g.rngPeds, p.x, p.y, 4, 40);
+      if (!pt) continue;
+      const ped = new Ped(g, pt.x, pt.y);
+      ped.state = 'flee';
+      ped.fleeT = 8;
+      ped.threat = { x: p.x + 20, y: p.y };
+      g.peds.list.push(ped);
+    }
+    g.traffic.spawnInitial(10);
+    g.audio.startMusic();
+  }
+
+  // Called once per rendered frame (after the sim tick).
+  frameUpdate(dt) {
+    if (!this.mode) return;
+    const g = this.game;
+    this.t += dt;
+
+    // Keep the framing locked.
+    if (this.mode === 'start') {
+      g.player.x = 624; g.player.y = 430;
+      g.cam.x = 624; g.cam.y = 430; g.cam.z = 0.94;
+    } else {
+      const anchor = g.player.inCar || g.player;
+      g.cam.x = anchor.x; g.cam.y = anchor.y;
+      if (this.mode === 'chaos') g.cam.z = 0.9;
+      else g.cam.z = 0.92;
+      // Hold the player's car steady on the avenue in play/end scenes.
+      if (g.player.inCar && (this.mode === 'play' || this.mode === 'end')) {
+        const car = g.player.inCar;
+        car.vx = 14; car.vy = 0;
+        car.throttle = 0.2;
       }
-      if (score > best) { best = score; bestJ = j; }
     }
-    const y = (bestJ + 0.5) * PITCH;
-    // The camera hangs just off the beach kerb: the lit hotel strip fills the middle of the
-    // frame, headlights run the full height, and the wet sand closes the right edge.
-    ui.cameraOverride = { x: GRID * PITCH - 70, y: y - 30, zoom: 0.8 };
-    game.player.x = GRID * PITCH - 96;
-    game.player.y = y + 96;
-    game.player.heading = Math.PI * 0.75;
-    // Parked shoulder cars along the oceanfront road — a fuller, more varied kerbside,
-    // mostly hugging the beach kerb where the camera reads them best.
-    for (let k = 0; k < 8; k++) {
-      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH - (rand() < 0.72 ? 24 : -24), y - 480 + k * 172, rand() < 0.5 ? 0 : Math.PI);
-      v.role = 'parked';
-    }
-    // Proper lanes: two-way traffic rolling the strip, headlights burning.
-    for (let k = 0; k < 5; k++) {
-      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH + 22, y - 1000 + k * 460, Math.PI / 2);
-      v.role = 'traffic';
-      v.axis = 'y'; v.dir = 1; v.lane = GRID * PITCH + 22;
-      v.fwd = 130;
-    }
-    for (let k = 0; k < 4; k++) {
-      const v = game.spawnCar(Math.floor(rand() * 10), GRID * PITCH - 22, y + 240 + k * 480, -Math.PI / 2);
-      v.role = 'traffic';
-      v.axis = 'y'; v.dir = -1; v.lane = GRID * PITCH - 22;
-      v.fwd = 130;
-    }
-    // A patrol cruiser rolls the strip far from the camera, sirens quiet.
-    const cop = game.spawnCar(-1, GRID * PITCH + 22, y - 1460, Math.PI / 2);
-    cop.role = 'traffic';
-    cop.axis = 'y'; cop.dir = 1; cop.lane = GRID * PITCH + 22; cop.cruise = 150; cop.fwd = 150;
-    // A few strollers share the sidewalk with the hero — the strip feels walked-on.
-    for (let n = 0; n < 10; n++) {
-      game.people.push(new Person(GRID * PITCH - 90 + (n % 2) * 40, y + 10 + n * 74, n * 31 + 5));
-    }
-    for (let n = 0; n < 40; n++) game.update(1 / 60, SCRIPT);
-    ui.freeze = true;
-    freeRun();
-    return;
-  }
 
-  if (name === 'play') {
-    ui.uiState = 'play';
-    // A street race gone hot: the player outruns traffic with two cruisers on the tail.
-    const roadX = 20 * PITCH + 24;
-    const y0 = 16 * PITCH;
-    const car = game.spawnCar(1, roadX, y0, -Math.PI / 2);
-    car.role = 'player';
-    car.fwd = 300;
-    game.player.x = roadX;
-    game.player.y = y0;
-    game.player.car = car;
-    for (let k = 0; k < 4; k++) {
-      const v = game.spawnCar(Math.floor(rand() * 10), roadX + (k % 2 ? 40 : -44), y0 - 230 - k * 190, -Math.PI / 2);
-      v.role = 'traffic';
-      v.axis = 'y'; v.dir = -1; v.lane = roadX + (k % 2 ? 40 : -44);
-      v.fwd = 140;
+    if (!this.ready && this.t >= (READY_AT[this.mode] || 2)) {
+      this.ready = true;
+      try { window.__shotReady = true; } catch (e) { /* non-DOM */ }
     }
-    for (let k = 0; k < 2; k++) {
-      const cop = game.spawnCar(-1, roadX + (k ? 46 : -46), y0 + 240 + k * 120, -Math.PI / 2);
-      cop.role = 'cop';
-      cop.siren = true;
-      game.cops.cruisers.push(cop);
-    }
-    game.wanted.stars = 2;
-    // The HUD objective stays honest: the Night Run is live, mid-delivery.
-    game.missions.begin(2);
-    game.missions.enterStage(1);
-    game.missions.banner('MISSION: THE NIGHT RUN', 'Deliver the case to the buyer at the plaza', 30, '#ffd977');
-    for (let n = 0; n < 120; n++) game.update(1 / 60, SCRIPT);
-    ui.freeze = true;
-    freeRun();
-    return;
   }
-
-  // end: the finale — Rico rides the oceanfront road for the marina gate with 4 stars hot.
-  ui.uiState = 'play';
-  game.missions.cursor = JOBS.length - 1;
-  const giver = GIVERS[game.missions.cursor];
-  game.player.car = null;
-  game.player.x = giver.x;
-  game.player.y = giver.y;
-  for (let n = 0; n < 30; n++) game.update(1 / 60, SCRIPT); // the Last Ride brief plays
-  const ride = game.spawnCar(1, GRID * PITCH - 24, 9.2 * PITCH, -Math.PI / 2);
-  ride.role = 'player';
-  ride.fwd = 260;
-  game.player.car = ride;
-  game.player.x = ride.x; game.player.y = ride.y;
-  for (let k = 0; k < 3; k++) {
-    const cop = game.spawnCar(-1, GRID * PITCH + (k % 2 ? 24 : -24), 9.2 * PITCH + 650 + k * 170, -Math.PI / 2);
-    cop.role = 'cop';
-    cop.siren = true;
-    game.cops.cruisers.push(cop);
-  }
-  game.wanted.stars = 4;
-  for (let n = 0; n < 100; n++) game.update(1 / 60, SCRIPT);
-  ui.freeze = true;
-  freeRun();
-}
-
-/** docks: the North Docks at night — rain rolling in off the bay, the Coral
- *  Crown at anchor, a turf standoff brewing on Pier B and the fish market. */
-function docksScene(game, ui) {
-  ui.uiState = 'play';
-  // Night rain reads best on wet concrete with sodium lamps burning.
-  game.weather.setWeather('rain', 9999);
-  const pierB = 10 * 420 + 65;          // centre of Pier B
-  const shoreY = -1400;
-  // Rico walks the promenade between Pier B and the market, the anchored
-  // ship looming off his shoulder.
-  game.player.car = null;
-  game.player.x = pierB - 700;
-  game.player.y = shoreY + 190;
-  game.player.heading = -Math.PI / 2;
-  game.player.money = 18750;
-  game.player.weapon = 'pistol';
-  game.player.ammo = 12;
-  // A couple of parked trucks along the shore road.
-  for (let k = 0; k < 3; k++) {
-    const v = game.spawnCar(6, pierB - 620 + k * 300, -1430, 0);
-    v.role = 'parked';
-  }
-  // The Tides and the Cinders square off on Pier B by the market stalls.
-  for (let k = 0; k < 4; k++) {
-    game.gangs.spawnMember('tides', pierB - 55 + k * 22, shoreY - 260 - k * 26);
-  }
-  for (let k = 0; k < 4; k++) {
-    game.gangs.spawnMember('cinders', pierB - 55 + k * 22, shoreY - 380 - k * 22);
-  }
-  game.wanted.stars = 0;
-  game.missions.banner('NORTH DOCKS', 'Five piers, two gangs, one boat that should not be there.', 30, '#7bffd4');
-  // Let the cranes swing, the gulls settle and the rain build.
-  for (let n = 0; n < 150; n++) game.update(1 / 60, SCRIPT);
-  ui.cameraOverride = { x: 3900, y: -1500, zoom: 0.52 };
-  ui.freeze = true;
-}
-
-/** chaos: a torched van burning in an intersection, roadblock up the street, five stars. */function chaosScene(game, ui) {
-  ui.uiState = 'play';
-  game.missions.cursor = 4;
-  const giver = GIVERS[4];
-  game.player.car = null;
-  game.player.x = giver.x;
-  game.player.y = giver.y;
-  for (let n = 0; n < 30; n++) game.update(1 / 60, SCRIPT); // the mission begins; vans appear
-  const vans = game.cars.filter((c) => c.tag === 'van');
-  const cx = 14 * PITCH, cy = 18 * PITCH;
-  if (vans[0]) { vans[0].x = cx - 40; vans[0].y = cy - 30; vans[0].ang = 0.4; vans[0].hp = 0; vans[0].wreck = true; vans[0].burn = 1.4; }
-  if (vans[1]) { vans[1].x = cx + 30; vans[1].y = cy + 90; vans[1].ang = Math.PI / 2; vans[1].hp = vans[1].spec.hp * 0.55; }
-  // The third van parks out of blast range so the staged frame never rolls the
-  // mission's own PASSED banner over the shot.
-  if (vans[2]) { vans[2].x = cx + 880; vans[2].y = cy + 420; vans[2].hp = vans[2].spec.hp; }
-  if (game.missions.active) game.missions.active.torched = 1;
-  game.player.x = cx + 180;
-  game.player.y = cy + 60;
-  game.player.heading = Math.PI;
-  const parked = game.spawnCar(6, cx - 150, cy + 100, -Math.PI / 2);
-  parked.role = 'parked';
-  for (let k = 0; k < 2; k++) {
-    const cop = game.spawnCar(-1, cx + 60 + k * 50, cy - 260 - k * 60, Math.PI / 2);
-    cop.role = 'cop';
-    cop.siren = true;
-    game.cops.cruisers.push(cop);
-  }
-  game.cops.birthFoot(cx + 80, cy - 200);
-  game.cops.birthFoot(cx + 120, cy - 210);
-  game.wanted.stars = 5;
-  game.player.ammo = 18;
-  game.player.weapon = 'pistol';
-  for (let n = 0; n < 210; n++) game.update(1 / 60, SCRIPT);
-  // The wreck throws fire even if the mission staging ever came up short on vans.
-  if (vans[0]) {
-    for (let n = 0; n < 5; n++) game.fx.fire(vans[0].x + (rand() - 0.5) * 30, vans[0].y + (rand() - 0.5) * 30, 3);
-    game.fx.blast(cx - 90, cy - 110);
-  }
-  // Rico just fired on the van: a hot muzzle beat and a blast wash that the frozen
-  // frame keeps at full strength, since no further update runs to decay them.
-  game.fx.muzzle(game.player.x + Math.cos(game.player.heading) * 16, game.player.y + Math.sin(game.player.heading) * 16, game.player.heading);
-  game.fx.sparks(game.player.x + Math.cos(game.player.heading) * 60, game.player.y + Math.sin(game.player.heading) * 60, 6);
-  game.flash = 0.22;
-  // Frame the burning van with the roadblock up the street, flash settled.
-  ui.cameraOverride = { x: cx - 60, y: cy + 40, zoom: 0.8 };
-  for (let n = 0; n < 8; n++) game.update(1 / 60, SCRIPT);
-  ui.freeze = true;
-}
-
-/** race: the cover shot — the Airfield GP grid at dusk, four cars on the start
- *  line with the runway lights burning and the approach rabbit mid-march. */
-function raceScene(game, ui) {
-  ui.uiState = 'play';
-  // Dusk: the sky loop starts at 19:00 and takes 26 real seconds per hour, so a
-  // small game.time lands the frame in the last of the sunset.
-  game.time = (19.5 - 19) * 26;
-  game.wanted.stars = 0;
-  // Rico brings the Vanta to the Airfield GP start line at the field's corner.
-  const circuit = game.races.circuits[0];
-  const car = game.spawnCar(1, circuit.start.x, circuit.start.y, circuit.start.ang);
-  car.role = 'player';
-  game.player.x = car.x;
-  game.player.y = car.y;
-  game.player.car = car;
-  game.player.money = 14320;
-  // A couple of spectator cars nose-in along the fence road.
-  for (let k = 0; k < 3; k++) {
-    const v = game.spawnCar(Math.floor(rand() * 10), circuit.start.x - 160 - k * 120, circuit.start.y + (k % 2 ? 62 : -62), 0);
-    v.role = 'parked';
-  }
-  // Run the real race start: grid slots, rivals, countdown, banner.
-  game.races.begin(circuit, game.player);
-  // Roll the countdown most of the way in and freeze just off the lights.
-  for (let n = 0; n < 105; n++) game.update(1 / 60, SCRIPT);
-  // Frame: the grid left of centre, the lit runway and apron planes south, the
-  // fuel depot and cargo yard north, the tower's beacon east.
-  ui.cameraOverride = { x: 1500, y: 1330, zoom: 0.62 };
-  for (let n = 0; n < 10; n++) game.update(1 / 60, SCRIPT);
-  ui.freeze = true;
 }

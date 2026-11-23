@@ -1,55 +1,177 @@
-// Shared math: the small helpers every other module reaches for, kept free of game state.
+// ============================================================================
+// VICE PALMS — util.js
+// Math, collision and formatting helpers. Dependency-free.
+// ============================================================================
 
 export const TAU = Math.PI * 2;
 
-export function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
-export function dist2(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
-export function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
-
-/** Linear blend of a toward b by t in [0,1] — the easing behind every smoothed camera. */
-export function lerp(a, b, t) { return a + (b - a) * t; }
-
-/** Inverse of lerp: where t lands between a and b, clamped to [0,1]. */
-export function invLerp(a, b, v) { return a === b ? 0 : clamp((v - a) / (b - a), 0, 1); }
-
-/** Quadratic ease-out, for UI counters and banner fades that should land softly. */
-export function easeOut(t) { const s = 1 - clamp(t, 0, 1); return 1 - s * s; }
-
-/** Shortest signed turn from angle a toward angle b, in (-PI, PI]. */
-export function turnDelta(a, b) {
-  let d = (b - a) % TAU;
-  if (d > Math.PI) d -= TAU;
-  if (d < -Math.PI) d += TAU;
-  return d;
+export function clamp(v, lo, hi) {
+  return v < lo ? lo : v > hi ? hi : v;
 }
 
-/** Rotate angle a toward angle b by at most maxStep radians — dampened turrets and drift. */
-export function turnToward(a, b, maxStep) {
-  const d = turnDelta(a, b);
-  return a + clamp(d, -maxStep, maxStep);
+export function lerp(a, b, t) {
+  return a + (b - a) * t;
 }
 
-/** Deterministic 2D hash in [0,1) — used for window lights and asphalt variation. */
-export function hash01(x, y) {
-  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-  return s - Math.floor(s);
+// Frame-rate independent exponential approach.
+export function damp(a, b, rate, dt) {
+  return lerp(a, b, 1 - Math.exp(-rate * dt));
 }
 
-/** Push a circle out of an axis-aligned rect along the shallowest escape axis. */
-export function circlePush(cx, cy, r, rx, ry, rw, rh) {
-  const nx = clamp(cx, rx, rx + rw);
-  const ny = clamp(cy, ry, ry + rh);
+export function dist(ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+export function dist2(ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  return dx * dx + dy * dy;
+}
+
+// Wrap an angle into [-PI, PI].
+export function wrapAngle(a) {
+  a = (a + Math.PI) % TAU;
+  if (a < 0) a += TAU;
+  return a - Math.PI;
+}
+
+// Shortest angular step from a to b, scaled by t.
+export function angleTowards(a, b, t) {
+  return a + wrapAngle(b - a) * clamp(t, 0, 1);
+}
+
+export function angleDiff(a, b) {
+  return wrapAngle(b - a);
+}
+
+// --- Rects / circles ---------------------------------------------------------
+
+export function rectContains(r, x, y) {
+  return x >= r.x && y >= r.y && x < r.x + r.w && y < r.h + r.y;
+}
+
+export function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+export function circleRectOverlap(cx, cy, r, rect) {
+  const nx = clamp(cx, rect.x, rect.x + rect.w);
+  const ny = clamp(cy, rect.y, rect.y + rect.h);
   const dx = cx - nx, dy = cy - ny;
+  return dx * dx + dy * dy < r * r;
+}
+
+// Push a circle out of an AABB along the shallowest penetration axis.
+// Returns null when not overlapping, else {nx, ny, depth}.
+export function resolveCircleRect(cx, cy, r, rect) {
+  const nx = clamp(cx, rect.x, rect.x + rect.w);
+  const ny = clamp(cy, rect.y, rect.y + rect.h);
+  let dx = cx - nx, dy = cy - ny;
   const d2 = dx * dx + dy * dy;
-  if (d2 > r * r) return null;
-  if (d2 > 1e-6) {
+  if (d2 >= r * r) return null;
+  if (d2 > 1e-9) {
     const d = Math.sqrt(d2);
-    return { x: (dx / d) * (r - d), y: (dy / d) * (r - d) };
+    return { nx: dx / d, ny: dy / d, depth: r - d };
   }
-  const west = cx - rx, east = rx + rw - cx, north = cy - ry, south = ry + rh - cy;
-  const m = Math.min(west, east, north, south);
-  if (m === west) return { x: -(west + r), y: 0 };
-  if (m === east) return { x: east + r, y: 0 };
-  if (m === north) return { x: 0, y: -(north + r) };
-  return { x: 0, y: south + r };
+  // Center inside the rect: push out through the nearest face.
+  const left = cx - rect.x, right = rect.x + rect.w - cx;
+  const top = cy - rect.y, bottom = rect.y + rect.h - cy;
+  const m = Math.min(left, right, top, bottom);
+  if (m === left) return { nx: -1, ny: 0, depth: left + r };
+  if (m === right) return { nx: 1, ny: 0, depth: right + r };
+  if (m === top) return { nx: 0, ny: -1, depth: top + r };
+  return { nx: 0, ny: 1, depth: bottom + r };
+}
+
+// Coarse line-of-sight: sample the segment in steps against a predicate.
+export function losClear(x0, y0, x1, y1, blocked) {
+  const dx = x1 - x0, dy = y1 - y0;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  const steps = Math.max(1, Math.ceil(len / 3));
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    if (blocked(x0 + dx * t, y0 + dy * t)) return false;
+  }
+  return true;
+}
+
+// --- Formatting ----------------------------------------------------------------
+
+export function money(n) {
+  const neg = n < 0;
+  const s = Math.abs(Math.round(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return (neg ? '-$' : '$') + s;
+}
+
+export function pad2(n) {
+  return n < 10 ? '0' + n : '' + n;
+}
+
+export function clockStr(t) {
+  // 24-h city clock, 1 game minute per real second of play, starts 22:00.
+  const base = 22 * 60;
+  const m = Math.floor(base + t) % (24 * 60);
+  return pad2(Math.floor(m / 60)) + ':' + pad2(m % 60);
+}
+
+export function timerStr(s) {
+  if (s < 0) s = 0;
+  const m = Math.floor(s / 60);
+  return m + ':' + pad2(Math.floor(s % 60));
+}
+
+export function ordinal(n) {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+// --- Small drawing helpers shared by entity renderers ---------------------------
+
+export function roundRect(ctx, x, y, w, h, r) {
+  r = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+export function shadowBlob(ctx, x, y, r, alpha = 0.28) {
+  ctx.fillStyle = `rgba(0,0,0,${alpha})`;
+  ctx.beginPath();
+  ctx.ellipse(x, y, r, r * 0.72, 0, 0, TAU);
+  ctx.fill();
+}
+
+// Draw a soft radial glow (used by lights, coronas, bloom).
+export function glow(ctx, x, y, r, color, alpha) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, colorAt(color, alpha));
+  g.addColorStop(0.55, colorAt(color, alpha * 0.42));
+  g.addColorStop(1, colorAt(color, 0));
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, TAU);
+  ctx.fill();
+}
+
+function colorAt(color, alpha) {
+  // Accepts '#rrggbb'.
+  if (color[0] !== '#' || color.length !== 7) return color;
+  const r = parseInt(color.slice(1, 3), 16);
+  const g = parseInt(color.slice(3, 5), 16);
+  const b = parseInt(color.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// Hex -> [r,g,b] floats, for compositing math.
+export function rgbOf(hex) {
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
 }

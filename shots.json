@@ -1,6 +1,31 @@
-[
-  { "name": "1-race.jpg", "query": "?shot=race&seed=1" },
-  { "name": "2-docks.jpg", "query": "?shot=docks&seed=1" },
-  { "name": "3-chaos.jpg", "query": "?shot=chaos&seed=1" },
-  { "name": "4-start.jpg", "query": "?shot=start&seed=1" }
-]
+{
+  "game": "VICE PALMS",
+  "size": [1280, 720],
+  "note": "Deterministic staged scenes rendered from the live game via ?shot= URLs. Same seed => same frame.",
+  "shots": [
+    {
+      "file": "1-start.jpg",
+      "shot": "start",
+      "url": "/?shot=start&seed=1337",
+      "caption": "Title screen: the neon skyline over a live city — traffic and pedestrians already moving behind the menu."
+    },
+    {
+      "file": "2-play.jpg",
+      "shot": "play",
+      "url": "/?shot=play&seed=4242",
+      "caption": "Mid-game: the Banshee GT rolling down Ocean Drive at 01:00 — headlights, wet asphalt sheen, traffic, and the story marker on the minimap."
+    },
+    {
+      "file": "3-end.jpg",
+      "shot": "end",
+      "url": "/?shot=end&seed=4242",
+      "caption": "Mission passed: the payout banner over live streets after the final story mission."
+    },
+    {
+      "file": "4-chaos.jpg",
+      "shot": "chaos",
+      "url": "/?shot=chaos&seed=777",
+      "caption": "Four stars of trouble: cruisers closing in, a sedan cooking off, the searchlight, and the plaza lighting up."
+    }
+  ]
+}

@@ -1,36 +1,107 @@
-// Seeded randomness. The city, the spawns and the screenshot staging all draw from streams
-// rooted in one seed, so ?shot=&seed=N rebuilds an identical frame, and free play feels varied
-// without ever touching the global Math.random. Even the pre-seed default stream is a fixed
-// mulberry run, so a page that somehow draws before seedRun() is still reproducible.
+// ============================================================================
+// VICE PALMS — rng.js
+// Deterministic seeded randomness. Same seed => same city, same spawns, same
+// staged screenshot scenes. mulberry32 core; tiny string hashing for names.
+// ============================================================================
 
-let stream = mulberry(0x0a11ce);
+// xmur3 string hash -> 32-bit seed material.
+export function hashSeed(str) {
+  let h = 1779033703 ^ str.length;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  h = Math.imul(h ^ (h >>> 16), 2246822507);
+  h = Math.imul(h ^ (h >>> 13), 3266489909);
+  return (h ^= h >>> 16) >>> 0;
+}
 
-/** mulberry32 — small, fast, good enough distribution for a city. */
-export function mulberry(seed) {
-  let a = seed | 0;
-  return function next() {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+export class RNG {
+  constructor(seed) {
+    this.a = (typeof seed === 'string' ? hashSeed(seed) : seed >>> 0) || 0x9e3779b9;
+    this.cache = null;
+  }
+
+  // raw float in [0,1)
+  next() {
+    let t = (this.a += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+  }
+
+  // float in [lo, hi)
+  range(lo, hi) {
+    return lo + this.next() * (hi - lo);
+  }
+
+  // int in [lo, hi] inclusive
+  int(lo, hi) {
+    return lo + Math.floor(this.next() * (hi - lo + 1));
+  }
+
+  chance(p) {
+    return this.next() < p;
+  }
+
+  pick(arr) {
+    return arr[Math.floor(this.next() * arr.length)];
+  }
+
+  // pick with a lucky second roll: biased toward the start of the array
+  pickBias(arr, bias = 0.35) {
+    const i = Math.floor(Math.abs(this.next() - bias * this.next()) * arr.length);
+    return arr[Math.min(i, arr.length - 1)];
+  }
+
+  shuffle(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(this.next() * (i + 1));
+      const t = arr[i];
+      arr[i] = arr[j];
+      arr[j] = t;
+    }
+    return arr;
+  }
+
+  angle() {
+    return this.next() * Math.PI * 2;
+  }
+
+  // one of n near-equal lanes
+  lane(n) {
+    return Math.floor(this.next() * n);
+  }
 }
 
-/** Mix a salt into a seed so each subsystem gets an independent stream. */
-export function remix(seed, salt) {
-  return (Math.imul(seed ^ salt, 0x9e3779b9) ^ (seed >>> 15)) | 0;
+// Fixed neighborhood words used for building naming / neon signs.
+const NEON_WORDS = [
+  'MALIBU', 'CLUB', 'OCEAN VIEW', 'PALMS HOTEL', 'EL RANCHO', 'MOTEL', 'DINER',
+  '24H', 'LIQUOR', 'CASINO', 'VICE', 'TATTOO', 'NOODLE BAR', 'KARAOKE', 'GYM',
+  'PAWN', 'CINEMA', 'ROOFTOP', 'BEACH BAR', 'NEON', 'LAUNDRY', 'PIZZA', 'SUSHI',
+  'STRIP CLUB', 'RECORDS', 'ARCADE', 'BANK', 'HOTEL LUNA', 'CAB CO', 'MARKET',
+];
+
+const STREETS = [
+  'Ocean', 'Palm', 'Flamingo', 'Vice', 'Coral', 'Sunset', 'Marina', 'Collins',
+  'Washington', 'Lincoln', 'Pelican', 'Starfish', 'Neon', 'Steel', 'Harbor',
+];
+
+const AVE = ['Ave', 'St', 'Blvd', 'Drive', 'Way'];
+
+export function streetName(rng) {
+  return rng.pick(STREETS) + ' ' + rng.pick(AVE);
 }
 
-/** Point the global runtime stream at a deterministic generator (or back to the fixed default). */
-export function seedRun(seed) { stream = mulberry(seed); }
-export function freeRun() { stream = mulberry(0x0a11ce); }
-export function rand() { return stream(); }
-export function randInt(n) { return Math.floor(stream() * n); }
-/** True `p` of the time — the readable spelling of `rand() < p`. */
-export function chance(p) { return stream() < p; }
+export function neonWord(rng) {
+  return rng.pick(NEON_WORDS);
+}
 
-/** Uniform float in [lo, hi) — spawn rings and cruise-speed jitter read better spelled out. */
-export function randRange(lo, hi) { return lo + stream() * (hi - lo); }
-
-/** One element of an array, or null when it is empty. */
-export function pick(list) { return list.length ? list[randInt(list.length)] : null; }
+// Deterministic per-entity id: collision-free counter + seed salt.
+let idCounter = 1;
+export function nextId() {
+  return idCounter++;
+}
+export function resetIds(seed) {
+  idCounter = (seed >>> 0) % 100000 + 1;
+}
