@@ -1,590 +1,413 @@
-// ============================================================================
-// VICE PALMS — cars.js
-// Eight vehicle types, arcade night-driving physics (accel, drag, lateral
-// grip/drift, handbrake), progressive damage (smoke -> fire -> explode with
-// radius damage), skid marks, headlights/brakelights and per-type rendering.
-// ============================================================================
+// ---------------------------------------------------------------------------
+// cars.js — arcade vehicle physics for all 9 types (8 civilian + cruiser).
+// Handles acceleration/braking, speed-sensitive steering, handbrake drifts,
+// lateral slip, a 4-speed auto gearbox feeding the engine audio, world & car-
+// to-car collisions, damage states (smoke → fire → explosion → wreck) and
+// headlights. Rendering lives in render.js.
+// ---------------------------------------------------------------------------
 
-import { CAR_PHYS, ROAD, LANE, TILE, COLS, ROWS, CITY_W, CITY_H, WATER_SOUTH } from './config.js';
-import { TAU, clamp, damp, angleTowards, resolveCircleRect, shadowBlob, roundRect } from './util.js';
-import { nextId } from './rng.js';
+import { CAR_SPECS, CFG } from './config.js';
+import { RNG } from './rng.js';
+import { clamp, wrapAngle, TAU } from './util.js';
 
-export const VEHICLES = {
-  sport: {
-    name: 'BANSHEE GT', w: 2.1, l: 4.5, top: 34, accel: 13.5, turn: 2.7, mass: 1.0,
-    colors: ['#ff2f7d', '#25e8ff', '#e8e6df', '#b0483f'], kind: 'sport',
-  },
-  muscle: {
-    name: 'PHOENIX V8', w: 2.3, l: 4.9, top: 31, accel: 12.0, turn: 2.35, mass: 1.25,
-    colors: ['#f2a33c', '#8b1e1e', '#23232b', '#3d5fc2'], kind: 'muscle',
-  },
-  sedan: {
-    name: 'PERENNIAL', w: 2.2, l: 4.6, top: 26, accel: 8.5, turn: 2.2, mass: 1.15,
-    colors: ['#d8d4ca', '#5a6c8c', '#4a4e58', '#7a4f3f', '#2c2c38'], kind: 'sedan',
-  },
-  taxi: {
-    name: 'CABBIE', w: 2.2, l: 4.6, top: 27, accel: 9.0, turn: 2.25, mass: 1.15,
-    colors: ['#e8b23c'], kind: 'taxi',
-  },
-  van: {
-    name: 'MOONBEAM', w: 2.4, l: 5.2, top: 23, accel: 7.0, turn: 1.9, mass: 1.5,
-    colors: ['#c9c4b8', '#5e8c5a', '#a0843f'], kind: 'van',
-  },
-  pickup: {
-    name: 'RANCHER', w: 2.35, l: 5.0, top: 25, accel: 8.2, turn: 2.0, mass: 1.4,
-    colors: ['#7dc95e', '#b0483f', '#3f6ab0'], kind: 'pickup',
-  },
-  bus: {
-    name: 'COACH', w: 2.6, l: 9.6, top: 21, accel: 5.0, turn: 1.45, mass: 2.6,
-    colors: ['#d5c74e'], kind: 'bus',
-  },
-  police: {
-    name: 'INTERCEPTOR', w: 2.25, l: 4.8, top: 33, accel: 12.5, turn: 2.6, mass: 1.2,
-    colors: ['#e8e6df'], kind: 'police',
-  },
+// showroom blurbs — the HUD name plate quotes these on entry
+export const CAR_BLURBS = {
+  compact: 'Blista — rental-grade zip',
+  sedan: 'Primo — the honest workhorse',
+  taxi: 'Cabby — the meter is the boss',
+  sports: 'Banshee — loud in all the right ways',
+  super: 'Infernus — neon sunset included',
+  van: 'Burrito — tastes like cargo',
+  pickup: 'Bobcat — fence-post approved',
+  bus: 'Coach — 44 grudges aboard',
+  police: 'Cruiser — you did NOT earn this',
 };
 
-export const CAR_TYPES = Object.keys(VEHICLES);
-
-export function makeCar(game, type, x, y, angle, color) {
-  return new Car(game, type, x, y, angle, color);
-}
+let nextId = 1;
 
 export class Car {
-  constructor(game, type, x, y, angle, color) {
-    const spec = VEHICLES[type] || VEHICLES.sedan;
-    this.game = game;
-    this.id = nextId();
+  constructor(type, x, y, angle = 0, variant = 0) {
+    const spec = CAR_SPECS[type] || CAR_SPECS.sedan;
+    this.id = nextId++;
     this.type = type;
     this.spec = spec;
-    this.w = spec.w;
-    this.l = spec.l;
-    this.radius = (spec.w + spec.l) / 4;
-    this.x = x; this.y = y;
-    this.angle = angle;
-    this.vx = 0; this.vy = 0;
-    this.steer = 0;
-    this.throttle = 0;        // -1..1 (reverse..forward)
-    this.brake = 0;           // 0..1
-    this.handbrake = false;
-    this.color = color || game.rngCar.pick(spec.colors);
-    this.driver = null;       // 'player' | 'ai' | 'cop' | null
-    this.cop = spec.kind === 'police';
-    this.sirenOn = false;
-    this.sirenPhase = Math.random() * TAU;
-    this.health = 100;
-    this.dead = false;        // exploded / wrecked
-    this.burning = false;
-    this.burnT = 0;
+    this.x = x;
+    this.y = y;
+    this.angle = angle;          // heading (radians, 0 = +x)
+    this.speed = 0;              // forward px/s
+    this.slide = 0;              // lateral px/s
+    this.steerVis = 0;           // front wheel visual angle
+    this.hp = spec.hp;
+    this.maxHp = spec.hp;
     this.wrecked = false;
-    this.smokeT = 0;
-    this.inWater = false;
-    this.sinkT = 0;
+    this.burn = 0;               // burning fuse before explosion (s), 0 = stable
+    this.exploded = false;
+    this.variant = variant;      // colour index
+    this.driver = null;          // 'player' | 'ai' | 'cop' | null
+    this.parked = false;
     this.lightsOn = true;
-    this.brakeLight = false;
-    this.skidT = 0;
-    this.lastSkidL = null; this.lastSkidR = null;
-    this.dents = [];
-    this.honk = 0;
-    this.hitFlash = 0;
-    this.blinker = 0;         // 0 off, -1 left, 1 right (AI turn signals)
-    // AI bookkeeping (traffic/police write here)
-    this.ai = null;
-    this.stopReason = null;
+    this.siren = false;
+    this.skidTimer = 0;
+    this.handbraking = false;
+    this.lastImpact = 0;         // timestamp of last hard hit (for camera)
+    this.impactMag = 0;
+    this.missionTag = null;      // missions can pin identity (e.g. 'target')
+    this.occupiedBy = null;      // ped reference when an AI driver is inside
+    this.radius = Math.max(spec.len, spec.wid) * 0.52;
+    this.honkCd = 0;
+    this.gear = 1;
+    this.rpm = 0.12;
+    this.stuckT = 0;
+    this.horn = false;
+    this.braking = false;
+    this.reversing = false;
+    this.lastImpactCorner = -1;
   }
 
-  speed() {
-    return Math.hypot(this.vx, this.vy);
-  }
+  get dead() { return this.wrecked; }
+  get speed01() { return Math.abs(this.speed) / this.spec.max; }
+  get damage01() { return 1 - this.hp / this.maxHp; }
 
-  forwardSpeed() {
+  corners() {
     const c = Math.cos(this.angle), s = Math.sin(this.angle);
-    return this.vx * c + this.vy * s;
-  }
-
-  lateralSpeed() {
-    const c = Math.cos(this.angle), s = Math.sin(this.angle);
-    return -this.vx * s + this.vy * c;
-  }
-
-  // Center of the front axle in world coords.
-  nose() {
-    const c = Math.cos(this.angle), s = Math.sin(this.angle);
-    return { x: this.x + c * this.l * 0.32, y: this.y + s * this.l * 0.32 };
-  }
-
-  tail() {
-    const c = Math.cos(this.angle), s = Math.sin(this.angle);
-    return { x: this.x - c * this.l * 0.32, y: this.y - s * this.l * 0.32 };
-  }
-
-  headlightCones() {
-    if (this.dead || this.wrecked) return [];
-    const c = Math.cos(this.angle), s = Math.sin(this.angle);
-    const hw = this.w / 2 - 0.25;
+    const hl = this.spec.len / 2, hw = this.spec.wid / 2;
+    const fx = c * hl, fy = s * hl, rx = s * hw, ry = -c * hw;
     return [
-      { x: this.x + c * this.l * 0.46 - s * hw, y: this.y + s * this.l * 0.46 + c * hw, angle: this.angle },
-      { x: this.x + c * this.l * 0.46 + s * hw, y: this.y + s * this.l * 0.46 - c * hw, angle: this.angle },
+      { x: this.x + fx + rx, y: this.y + fy + ry },
+      { x: this.x + fx - rx, y: this.y + fy - ry },
+      { x: this.x - fx + rx, y: this.y - fy + ry },
+      { x: this.x - fx - rx, y: this.y - fy - ry },
     ];
   }
 
-  update(dt, world) {
-    if (this.wrecked) {
-      // Wrecks are static obstacles; keep smoking a while.
-      if (this.smokeT > 0) {
-        this.smokeT -= dt;
-        if (Math.random() < 0.3) this.game.fx.smoke(this.x, this.y, true);
-      }
-      return;
-    }
+  containsPoint(px, py) {
+    const dx = px - this.x, dy = py - this.y;
+    const c = Math.cos(-this.angle), s = Math.sin(-this.angle);
+    const lx = dx * c - dy * s, ly = dx * s + dy * c;
+    return Math.abs(lx) <= this.spec.len / 2 + 2 && Math.abs(ly) <= this.spec.wid / 2 + 2;
+  }
 
-    // --- Water ------------------------------------------------------------
-    if (!this.inWater && world.isWater(this.x, this.y)) {
-      this.inWater = true;
-      for (let k = 0; k < 10; k++) this.game.fx.waterSpray(this.x + (Math.random() - 0.5) * 3, this.y + (Math.random() - 0.5) * 2);
-    }
-    if (this.inWater) {
-      this.sinkT += dt;
-      this.vx *= 1 - 3 * dt; this.vy *= 1 - 3 * dt;
-      if (Math.random() < 0.4) this.game.fx.waterSpray(this.x, this.y);
-      this.health = Math.min(this.health, 30 - this.sinkT * 30);
-      if (this.sinkT > 1.4) { this.explode(true); return; }
-    }
-
-    // --- Longitudinal -----------------------------------------------------
+  /**
+   * One physics step. ctl = {throttle:-1..1, steer:-1..1, handbrake:bool}
+   * Returns impact magnitude if the car hit the world this frame.
+   */
+  step(dt, ctl, worldRef) {
+    if (this.wrecked) { this.speed *= 0.9; this.slide *= 0.9; this._integrate(dt); return 0; }
     const spec = this.spec;
+
+    // ---- longitudinal
+    if (ctl.throttle > 0) {
+      this.speed += spec.accel * ctl.throttle * dt;
+    } else if (ctl.throttle < 0) {
+      if (this.speed > 10) this.speed += spec.brake * ctl.throttle * dt;   // braking
+      else this.speed = Math.max(this.speed - spec.accel * 0.5 * dt, -spec.rev); // reverse
+    }
+    this.braking = ctl.throttle < 0 && this.speed > 10;
+    this.reversing = this.speed < -5;
+    // rolling drag + top speed clamp (damaged engines breathe harder)
+    const drag = ctl.throttle === 0 ? 1.6 : 0.55;
+    this.speed -= this.speed * drag * dt;
+    const topLimit = this.spec.max * (0.55 + 0.45 * (this.hp / this.maxHp));
+    this.speed = clamp(this.speed, -spec.rev, topLimit);
+
+    // ---- gearbox (automatic; feeds the engine audio pitch)
+    const abs = Math.abs(this.speed);
+    this.gear = abs < 1 ? 1 : Math.min(4, 1 + Math.floor(abs / (spec.max / 4.2)));
+    const gearFloor = (this.gear - 1) * (spec.max / 4.2);
+    const gearSpan = spec.max / 4.2;
+    this.rpm = clamp((abs - gearFloor) / gearSpan, 0.12, 1);
+
+    // ---- steering (speed sensitive, reversed when backing up)
+    const spd01 = clamp(Math.abs(this.speed) / spec.max, 0, 1);
+    const steerAuth = spec.turn * (0.32 + 0.68 * (1 - spd01 * 0.55));
+    const dir = this.speed >= 0 ? 1 : -1;
+    this.steerVis = clamp(ctl.steer, -1, 1);
+    const yaw = ctl.steer * steerAuth * spd01 * 1.6 * dir;
+
+    // ---- grip & drift (rain, handbrake and damage all soften grip)
+    const weatherGrip = ctl.grip !== undefined ? ctl.grip : 1;
+    const dmgGrip = 1 - this.damage01 * 0.2;
+    this.handbraking = !!ctl.handbrake && Math.abs(this.speed) > 60;
+    const grip = (ctl.handbrake ? spec.grip * 0.22 : spec.grip) * weatherGrip * dmgGrip;
+    // lateral slip picked up while turning hard or handbraking
+    const slipGen = (ctl.handbrake ? 2.6 : 1.0) * Math.abs(yaw) * Math.abs(this.speed) * 0.02;
+    this.slide += (slipGen * 60 - this.slide) * (grip * dt);
+    this.slide *= Math.pow(0.86, dt * 60 * (ctl.handbrake ? 0.35 : 1));
+    this.slide = clamp(this.slide, -spec.max * 0.55, spec.max * 0.55);
+
+    this.angle = wrapAngle(this.angle + yaw * dt + this.handlingNoise() * dt * (this.speed >= 0 ? 1 : -1));
+    this._integrate(dt);
+
+    // skid audio + marks
+    if (Math.abs(this.slide) > 60 && Math.abs(this.speed) > 80) {
+      this.skidTimer -= dt;
+      return 0; // slide handled by caller for skid marks
+    }
+    return 0;
+  }
+
+  _integrate(dt) {
     const c = Math.cos(this.angle), s = Math.sin(this.angle);
-    let vf = this.vx * c + this.vy * s;
-    let vl = -this.vx * s + this.vy * c;
-
-    if (this.driver) {
-      const dmgFactor = this.health < 60 ? 0.55 + 0.45 * (this.health / 60) : 1; // sick engine, sick speed
-      const top = spec.top * dmgFactor;
-      if (this.throttle > 0 && vf < top) {
-        vf += spec.accel * this.throttle * dt * (1 - Math.max(0, vf) / top * 0.6);
-      } else if (this.throttle < 0) {
-        if (vf > 1) vf += spec.accel * this.throttle * dt * 1.6;   // engine braking
-        else if (vf > -top * 0.35) vf += spec.accel * this.throttle * dt * 0.6; // reverse
-      }
-    }
-    if (this.brake > 0) {
-      const b = CAR_PHYS.BRAKE * this.brake * dt;
-      vf = vf > 0 ? Math.max(0, vf - b) : Math.min(0, vf + b);
-    }
-    if (!this.driver || this.throttle === 0) {
-      const r = CAR_PHYS.ROLL * dt;
-      vf = vf > 0 ? Math.max(0, vf - r) : Math.min(0, vf + r);
-    }
-    vf -= vf * CAR_PHYS.DRAG * dt;
-
-    // --- Lateral grip / drift ---------------------------------------------
-    const grip = this.handbrake ? CAR_PHYS.GRIP_HB : CAR_PHYS.GRIP;
-    vl *= Math.exp(-grip * dt);
-
-    // --- Steering -----------------------------------------------------------
-    if (this.driver && Math.abs(this.steer) > 0.01) {
-      const dir = vf >= 0 ? 1 : -1;
-      const authority = clamp(Math.abs(vf) / 7, 0, 1) * (1 - Math.min(0.6, Math.abs(vf) / spec.top * 0.55));
-      this.angle += this.steer * spec.turn * authority * dir * dt;
-      // Drift: handbrake swings the tail
-      if (this.handbrake && Math.abs(vf) > 9) {
-        this.angle += this.steer * spec.turn * 0.55 * dir * dt;
-      }
-    }
-
-    this.vx = c * vf - s * vl;
-    this.vy = s * vf + c * vl;
-    this.x += this.vx * dt;
-    this.y += this.vy * dt;
-
-    // Skid marks
-    if (Math.abs(vl) > CAR_PHYS.SKID_MIN || (this.handbrake && Math.abs(vf) > 8)) {
-      this.laySkids(c, s);
-    } else {
-      this.lastSkidL = null; this.lastSkidR = null;
-    }
-
-    this.collideWorld(world);
-    this.updateDamage(dt);
-    if (this.honk > 0) this.honk -= dt;
-    if (this.hitFlash > 0) this.hitFlash -= dt;
-    this.brakeLight = this.brake > 0.1 || (this.throttle < 0 && vf > 1);
-
-    // Muscle revs spit flame at standstill; skids hiss while drifting.
-    if (this.spec.kind === 'muscle' && this.throttle > 0.9 && Math.abs(vf) < 6 && Math.random() < 0.3) {
-      const t2 = this.tail();
-      this.game.fx.fire(t2.x - c * 0.6, t2.y - s * 0.6);
-    }
-    const drifting = Math.abs(vl) > CAR_PHYS.SKID_MIN;
-    if (this.driver === 'player') this.game.audio.setSkid(drifting);
+    this.x += (c * this.speed - s * this.slide) * dt;
+    this.y += (s * this.speed + c * this.slide) * dt;
   }
 
-  laySkids(c, s) {
-    const hw = this.w / 2 - 0.3, hl = this.l * 0.32;
-    const rl = { x: this.x - c * hl - s * hw, y: this.y - s * hl + c * hw };
-    const rr = { x: this.x - c * hl + s * hw, y: this.y - s * hl - c * hw };
-    if (this.lastSkidL) {
-      this.game.fx.skid(this.lastSkidL.x, this.lastSkidL.y, rl.x, rl.y);
-      this.game.fx.skid(this.lastSkidR.x, this.lastSkidR.y, rr.x, rr.y);
-    }
-    this.lastSkidL = rl; this.lastSkidR = rr;
-  }
-
-  collideWorld(world) {
-    const pts = [this.nose(), this.tail(), { x: this.x, y: this.y }];
-    const r = this.w / 2 + 0.25;
-    for (const p of pts) {
-      const near = world.solidsNear(p.x, p.y, r + 4);
-      for (const rect of near) {
-        const res = resolveCircleRect(p.x, p.y, r, rect);
-        if (!res) continue;
-        // Push the whole car out along the contact normal.
-        this.x += res.nx * res.depth;
-        this.y += res.ny * res.depth;
-        // Kill velocity into the wall, with a lively bounce.
-        const vn = this.vx * res.nx + this.vy * res.ny;
-        if (vn < 0) {
-          const impact = -vn;
-          this.vx -= res.nx * vn * 1.35;
-          this.vy -= res.ny * vn * 1.35;
-          // scrape friction along the wall
-          this.vx *= 0.92; this.vy *= 0.92;
-          if (impact > CAR_PHYS.IMPACT_MIN) {
-            this.damage((impact - CAR_PHYS.IMPACT_MIN) * CAR_PHYS.IMPACT_DMG, 'wall');
-            this.game.fx.spark(p.x, p.y, 4);
-            if (this.driver === 'player') this.game.fx.requestShake(Math.min(9, impact * 0.35));
-          }
-        }
+  /** push out of world solids; returns impact px/s or 0 */
+  collideWorld(worldRef) {
+    let worst = 0;
+    let worstCorner = -1;
+    const pts = this.corners();
+    for (let ci = 0; ci < pts.length; ci++) {
+      const p = pts[ci];
+      // water is a hard wall for cars
+      if (worldRef.isWater(p.x, p.y) && !worldRef.onPier(p.x, p.y)) {
+        const fixed = this._resolveWater(worldRef);
+        if (fixed) worst = Math.max(worst, Math.abs(this.speed));
+        continue;
       }
-    }
-    // World bounds (sea walls handled as water; keep inside the map on foot edges)
-    const x0 = -ROAD / 2 - 2, x1 = CITY_W + ROAD / 2 + 2;
-    const y0 = -WATER_LIMIT + 8, y1 = CITY_H + ROAD / 2 + WATER_SOUTH - 4;
-    if (this.x < x0) { this.x = x0; this.vx = Math.abs(this.vx) * 0.4; }
-    if (this.x > x1) { this.x = x1; this.vx = -Math.abs(this.vx) * 0.4; }
-    if (this.y < y0) { this.y = y0; this.vy = Math.abs(this.vy) * 0.4; }
-    if (this.y > y1) { this.y = y1; this.vy = -Math.abs(this.vy) * 0.4; }
-  }
-
-  damage(n, kind) {
-    if (this.wrecked || this.dead) return;
-    this.health -= n;
-    if (n > 6) this.hitFlash = 0.12;
-    if (this.health <= 0 && !this.burning) {
-      this.health = 0;
-      this.burning = true;
-      this.burnT = CAR_PHYS.BURN_TIME;
-      if (this.driver === 'player') this.game.fx.requestShake(6);
-    }
-  }
-
-  updateDamage(dt) {
-    // Smoke from a sick engine.
-    if (this.health < CAR_PHYS.SMOKE_HP && !this.wrecked) {
-      this.smokeT -= dt;
-      if (this.smokeT <= 0) {
-        this.smokeT = this.health < CAR_PHYS.FIRE_HP ? 0.05 : 0.14;
-        const n = this.nose();
-        this.game.fx.smoke(n.x, n.y, this.health < CAR_PHYS.FIRE_HP);
-      }
-    }
-    // Fire wraps things up.
-    if (this.burning) {
-      this.burnT -= dt;
-      const n = this.nose();
-      if (Math.random() < 0.75) this.game.fx.fire(n.x + (Math.random() - 0.5) * 1.6, this.y + (Math.random() - 0.5) * 1.2);
-      if (this.burnT <= 0) this.explode(false);
-    }
-  }
-
-  // sink=true: drowned quietly instead of a fireball.
-  explode(sink) {
-    if (this.wrecked) return;
-    this.wrecked = true;
-    this.burning = false;
-    this.dead = true;
-    this.driver = null;
-    this.sirenOn = false;
-    this.lightsOn = false;
-    this.smokeT = 6;
-    this.vx = 0; this.vy = 0;
-    if (!sink) {
-      this.game.fx.explosion(this.x, this.y);
-      this.game.onExplosion(this.x, this.y, this);
-    } else {
-      this.game.fx.smoke(this.x, this.y, true);
-    }
-  }
-
-  applyBullet(x, y, dmg) {
-    if (this.wrecked) return;
-    this.damage(dmg, 'bullet');
-    this.game.fx.spark(x, y, 3);
-  }
-
-  // ---------------------------------------------------------------- drawing
-  draw(ctx, t) {
-    const z = 1;
-    const c = Math.cos(this.angle), s = Math.sin(this.angle);
-    const L = this.l, W = this.w;
-
-    // Sink animation
-    let alpha = 1, dy = 0;
-    if (this.sinkT > 0) { alpha = clamp(1 - this.sinkT / 1.4, 0.1, 1); dy = this.sinkT * 0.8; }
-
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.translate(this.x, this.y + dy);
-    ctx.rotate(this.angle);
-
-    // Shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.38)';
-    roundRect(ctx, -L / 2 + 0.35, -W / 2 + 0.5, L, W, 0.6);
-    ctx.fill();
-
-    // Wheels
-    ctx.fillStyle = '#101014';
-    const steerVis = this.steer * 0.5;
-    for (const [wx, wy, front] of [[L * 0.30, -W / 2 - 0.08, 1], [L * 0.30, W / 2 + 0.08, 1], [-L * 0.30, -W / 2 - 0.08, 0], [-L * 0.30, W / 2 + 0.08, 0]]) {
-      ctx.save();
-      ctx.translate(wx, wy);
-      if (front) ctx.rotate(steerVis);
-      ctx.fillRect(-0.55, -0.28, 1.1, 0.56);
-      ctx.restore();
-    }
-
-    // Body
-    const bodyColor = this.wrecked ? '#26262a' : this.color;
-    ctx.fillStyle = bodyColor;
-    roundRect(ctx, -L / 2, -W / 2, L, W, 0.55);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.55)';
-    ctx.lineWidth = 0.14;
-    ctx.stroke();
-
-    if (!this.wrecked) {
-      // Type-specific tops
-      this.drawTop(ctx, L, W);
-
-      // Windshield + rear glass
-      ctx.fillStyle = 'rgba(140,200,235,0.85)';
-      roundRect(ctx, L * 0.06, -W / 2 + 0.32, L * 0.16, W - 0.64, 0.3);
-      ctx.fill();
-      ctx.fillStyle = 'rgba(100,160,200,0.7)';
-      roundRect(ctx, -L * 0.26, -W / 2 + 0.38, L * 0.1, W - 0.76, 0.25);
-      ctx.fill();
-
-      // Lights
-      if (this.lightsOn) {
-        ctx.fillStyle = '#fff2c0';
-        ctx.fillRect(L / 2 - 0.35, -W / 2 + 0.18, 0.3, 0.5);
-        ctx.fillRect(L / 2 - 0.35, W / 2 - 0.68, 0.3, 0.5);
-      }
-      ctx.fillStyle = this.brakeLight ? '#ff2a2a' : '#7a1414';
-      ctx.fillRect(-L / 2 + 0.08, -W / 2 + 0.18, 0.26, 0.5);
-      ctx.fillRect(-L / 2 + 0.08, W / 2 - 0.68, 0.26, 0.5);
-
-      // Turn-signal corners (blinking amber)
-      if (this.blinker !== 0 && Math.floor(t * 2.5) % 2 === 0) {
-        ctx.fillStyle = '#ffb02e';
-        const bx = this.blinker < 0 ? -L / 2 : L / 2 - 0.3;
-        ctx.fillRect(bx, -W / 2 + 0.1, 0.26, 0.4);
-        ctx.fillRect(bx, W / 2 - 0.5, 0.26, 0.4);
-      }
-
-      if (this.spec.kind === 'taxi') {
-        ctx.fillStyle = '#222';
-        ctx.fillRect(-L * 0.08, -0.5, 1.1, 1.0);
-        ctx.fillStyle = '#ffd23c';
-        ctx.fillRect(-L * 0.08 + 0.15, -0.35, 0.8, 0.7);
-      }
-      if (this.cop) {
-        // Lightbar
-        const on = this.sirenOn;
-        const ph = Math.floor(t * 8 + this.id) % 2;
-        ctx.fillStyle = '#14161c';
-        ctx.fillRect(-L * 0.06, -W / 2 + 0.25, 0.8, W - 0.5);
-        if (on) {
-          ctx.fillStyle = ph === 0 ? '#ff3050' : '#3050ff';
-          ctx.fillRect(-L * 0.06, -W / 2 + 0.28, 0.74, W / 2 - 0.35);
-          ctx.fillStyle = ph === 0 ? '#3050ff' : '#ff3050';
-          ctx.fillRect(-L * 0.06, 0.05, 0.74, W / 2 - 0.35);
+      const hit = worldRef.collide(p.x, p.y, 2, { water: false });
+      if (hit) {
+        worstCorner = ci;
+        const dx = hit.x - p.x, dy = hit.y - p.y;
+        this.x += dx; this.y += dy;
+        const impact = Math.abs(this.speed);
+        if (impact > 60) {
+          const along = Math.abs(dx) + Math.abs(dy);
+          this.speed *= along > 0 ? -0.3 : -0.3;
+          this.slide *= 0.5;
+          this.damage(impact * CFG.CAR_HIT_DMG * 0.8);
+          worst = Math.max(worst, impact);
         } else {
-          ctx.fillStyle = '#40465a';
-          ctx.fillRect(-L * 0.06, -W / 2 + 0.28, 0.74, W - 0.56);
+          this.speed *= 0.85;
         }
-        // doors
-        ctx.fillStyle = '#17181d';
-        ctx.fillRect(-L * 0.05, -W / 2, L * 0.36, W * 0.16);
-        ctx.fillRect(-L * 0.05, W / 2 - W * 0.16, L * 0.36, W * 0.16);
+        // re-check the other corners after the push
+        break;
       }
-
-      // Damage: dents + hit flash
-      if (this.health < 70) {
-        ctx.fillStyle = 'rgba(10,10,14,0.5)';
-        const d = this.dents.length ? this.dents : this.growDents();
-        for (const dd of d) {
-          ctx.save();
-          ctx.rotate(dd.a);
-          ctx.fillRect(dd.x, dd.y, dd.w, dd.h);
-          ctx.restore();
-        }
-      }
-      if (this.hitFlash > 0) {
-        ctx.globalAlpha = this.hitFlash * 4;
-        ctx.fillStyle = '#fff';
-        roundRect(ctx, -L / 2, -W / 2, L, W, 0.55);
-        ctx.fill();
-        ctx.globalAlpha = alpha;
-      }
-    } else {
-      // Wreck: charred shell, broken glass, bare rims
-      ctx.fillStyle = '#111116';
-      roundRect(ctx, L * 0.02, -W / 2 + 0.3, L * 0.2, W - 0.6, 0.3);
-      ctx.fill();
-      ctx.fillStyle = '#3a3a40';
-      for (const [wx, wy] of [[L * 0.30, -W / 2 - 0.08], [L * 0.30, W / 2 + 0.08], [-L * 0.30, -W / 2 - 0.08], [-L * 0.30, W / 2 + 0.08]]) {
-        ctx.beginPath(); ctx.arc(wx, wy, 0.34, 0, TAU); ctx.fill();
-      }
-      ctx.strokeStyle = 'rgba(255,120,40,0.25)';
-      ctx.lineWidth = 0.2;
-      ctx.beginPath();
-      ctx.moveTo(-L * 0.3, -W * 0.2); ctx.lineTo(L * 0.1, W * 0.3);
-      ctx.stroke();
     }
-
-    ctx.restore();
+    if (worst > 0) {
+      this.impactMag = worst;
+      this.lastImpact = performance.now() / 1000;
+      this.tagImpactCorner(worstCorner);
+    }
+    return worst;
   }
 
-  growDents() {
-    const d = [];
-    for (let k = 0; k < 5; k++) {
-      d.push({
-        x: -this.l / 2 + Math.random() * this.l * 0.8,
-        y: -this.w / 2 + Math.random() * this.w * 0.7,
-        w: 0.6 + Math.random() * 1.2,
-        h: 0.4 + Math.random() * 0.8,
-        a: Math.random() * TAU,
-      });
-    }
-    this.dents = d;
-    return d;
+  _resolveWater(worldRef) {
+    // nudge back toward the map interior
+    const mid = CFG.WORLD / 2;
+    if (this.y < CFG.WATER_N) { this.y = CFG.WATER_N + this.spec.wid; }
+    if (this.x > CFG.WATER_E) { this.x = CFG.WATER_E - this.spec.wid; }
+    this.speed *= -0.25;
+    return true;
   }
 
-  drawTop(ctx, L, W) {
-    const k = this.spec.kind;
-    ctx.fillStyle = 'rgba(255,255,255,0.10)';
-    if (k === 'sport') {
-      ctx.fillRect(-L * 0.42, -W / 2 + 0.14, L * 0.84, 0.22); // racing stripe
-      // Rear wing
-      ctx.fillStyle = '#15161c';
-      ctx.fillRect(-L / 2 - 0.25, -W / 2 + 0.2, 0.4, W - 0.4);
-    } else if (k === 'muscle') {
-      ctx.fillRect(-L * 0.42, -W * 0.32, L * 0.84, 0.16);
-      ctx.fillRect(-L * 0.42, W * 0.16, L * 0.84, 0.16);
-      // Hood scoop
-      ctx.fillStyle = '#101014';
-      ctx.fillRect(L * 0.18, -0.3, 0.7, 0.6);
-    } else if (k === 'van') {
-      ctx.fillStyle = 'rgba(140,200,235,0.5)';
-      ctx.fillRect(L * 0.1, -W / 2 + 0.3, 0.5, W - 0.6);
-      // Roof rack ladder
-      ctx.fillStyle = 'rgba(0,0,0,0.35)';
-      ctx.fillRect(-L * 0.35, -W / 2 + 0.25, L * 0.5, 0.14);
-      for (let x = -L * 0.35; x < L * 0.15; x += 0.7) ctx.fillRect(x, -W / 2 + 0.25, 0.1, W - 0.5);
-    } else if (k === 'pickup') {
-      ctx.fillStyle = 'rgba(0,0,0,0.28)';
-      ctx.fillRect(-L * 0.44, -W / 2 + 0.28, L * 0.4, W - 0.56); // bed
-      // Roll bar
-      ctx.fillStyle = '#15161c';
-      ctx.fillRect(-L * 0.05, -W / 2 + 0.15, 0.25, W - 0.3);
-    } else if (k === 'bus') {
-      ctx.fillStyle = 'rgba(140,200,235,0.7)';
-      for (let wx = -L * 0.38; wx < L * 0.3; wx += 1.4) {
-        ctx.fillRect(wx, -W / 2 + 0.2, 0.9, 0.55);
-        ctx.fillRect(wx, W / 2 - 0.75, 0.9, 0.55);
-      }
-      ctx.fillStyle = 'rgba(140,200,235,0.85)';
-      ctx.fillRect(L * 0.05, -W / 2 + 0.3, 0.5, W - 0.6);
-      // Destination sign
-      ctx.fillStyle = '#ffb02e';
-      ctx.fillRect(L * 0.34, -W / 2 + 0.25, 0.55, W - 0.5);
-      ctx.fillStyle = '#14161c';
-      ctx.font = '700 0.8px "Consolas", monospace';
-      ctx.textAlign = 'center';
-      ctx.save();
-      ctx.rotate(Math.PI / 2);
-      ctx.fillText('NEON', W / 2 - 0.1, -L * 0.35);
-      ctx.restore();
-      ctx.textAlign = 'left';
-    } else if (k === 'police') {
-      ctx.fillStyle = 'rgba(230,232,240,0.9)';
-      ctx.fillRect(-L * 0.2, -W / 2 + 0.2, L * 0.5, W - 0.4);
-      // Bullbar
-      ctx.fillStyle = '#2b2e38';
-      ctx.fillRect(L / 2 - 0.12, -W / 2 - 0.06, 0.24, W + 0.12);
-      // Door decal
-      ctx.fillStyle = '#1a2a5e';
-      ctx.fillRect(L * 0.02, -W / 2 + 0.55, L * 0.2, 0.3);
-      ctx.fillStyle = '#e8e6df';
-      ctx.font = '700 0.7px "Consolas", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('VCPD', L * 0.12, W / 2 - 0.55);
-      ctx.textAlign = 'left';
-    } else if (k === 'taxi') {
-      // Roof checker strip
-      ctx.fillStyle = '#14161c';
-      for (let x = -L * 0.1; x < L * 0.2; x += 0.45) ctx.fillRect(x, -W / 2 + 0.2, 0.22, W - 0.4);
+  damage(amount) {
+    if (this.wrecked) return false;
+    this.hp -= amount;
+    if (this.hp <= 0) {
+      this.hp = 0;
+      return this.catchFire();
     }
+    return false;
+  }
+
+  /** reached 0 hp → burning; explodes after a short fuse */
+  catchFire() {
+    if (this.wrecked) return true;
+    this.burn = this.burn > 0 ? this.burn : 2.4;
+    return true;
+  }
+
+  explode() {
+    if (this.exploded) return false;
+    this.exploded = true;
+    this.wrecked = true;
+    this.burn = 0;
+    this.hp = 0;
+    this.driver = null;
+    this.lightsOn = false;
+    this.siren = false;
+    this.hue = CFG.COL.wreck;
+    return true;
+  }
+
+  /** burning countdown; caller triggers the boom */
+  updateBurn(dt) {
+    if (this.wrecked || this.burn <= 0) return false;
+    this.burn -= dt;
+    if (this.burn <= 0) return true; // explode now
+    return false;
+  }
+
+  /** occupied by the player? kick the AI driver out first (carjack) */
+  jack(game) {
+    if (this.driver === 'player') return false;
+    if (this.driver === 'ai') {
+      game.peds.spawnFleeingDriver(this);
+      this.driver = null;
+      game.police.crime(this.x, this.y, 12, 'carjack');
+    }
+    this.driver = 'player';
+    game.audio.jack();
+    return true;
+  }
+
+  seatBeltHeal() { /* cars don't heal; placeholder for future pickups */ }
+
+  /** engine audio feed: [rpm01, load01] */
+  engineState() {
+    return [this.rpm || 0, clamp(Math.abs(this.speed) / this.spec.max, 0, 1)];
+  }
+
+  /** true when the AI has been wedged against geometry too long */
+  isStuck(dt) {
+    if (Math.abs(this.speed) < 12) this.stuckT += dt;
+    else this.stuckT = 0;
+    return this.stuckT > 2.2;
+  }
+
+  /** reverse-and-straighten recovery used by AI drivers */
+  unstuckStep(dt) {
+    this.stuckT = 0;
+    this.step(dt, { throttle: -1, steer: -this.unstuckSide || 1, handbrake: false }, null);
+    if (this.unstuckSide === undefined) this.unstuckSide = 1;
+    if (Math.random() < dt) this.unstuckSide *= -1;
+  }
+
+  // ------------------------------------------------------------ flavour API
+  /** full name for toasts/log: "Banshee (scorched)" */
+  describe() {
+    const state = this.wrecked ? ' (wreck)'
+      : this.burn > 0 ? ' (on fire!)'
+      : this.damage01 > 0.6 ? ' (beat up)'
+      : this.damage01 > 0.25 ? ' (scratched)' : '';
+    return this.spec.name + state;
+  }
+
+  /** honk: returns true if the honk actually fired (cooldown respected) */
+  tryHorn(game) {
+    if (this.honkCd > 0 || this.wrecked) return false;
+    this.honkCd = 1.4;
+    game.audio.honk();
+    // peds in front shuffle along
+    game.peds.panicNear(this.x + Math.cos(this.angle) * 60, this.y + Math.sin(this.angle) * 60, 70, game);
+    return true;
+  }
+
+  /** idle exhaust puffs — called by the sim for stopped, occupied cars */
+  idlePuff(game) {
+    if (this.wrecked || Math.abs(this.speed) > 8) return;
+    const bx = this.x - Math.cos(this.angle) * (this.spec.len / 2 + 4);
+    const by = this.y - Math.sin(this.angle) * (this.spec.len / 2 + 4);
+    game.fx.smokePuff(bx, by, '#4a4e56', 3);
+  }
+
+  /** smoke/fire emissive state for the renderer, one pass */
+  emissiveState() {
+    if (this.wrecked) return 'wreck';
+    if (this.burn > 0) return 'fire';
+    if (this.hp < this.maxHp * 0.28) return 'burning';
+    if (this.hp < this.maxHp * 0.55) return 'smoke';
+    return 'ok';
+  }
+
+  /** which corner took the last hit — the renderer dents that side first */
+  impactCorner() {
+    if (!this.lastImpact) return -1;
+    const age = performance.now() / 1000 - this.lastImpact;
+    return age < 0.5 ? this.lastImpactCorner | 0 : -1;
+  }
+
+  /** remember which corner hit what (called by collide helpers) */
+  tagImpactCorner(cornerIdx) {
+    this.lastImpactCorner = cornerIdx;
+    this.lastImpact = performance.now() / 1000;
+  }
+
+  // ------------------------------------------------------------ damage feel
+  /** bent axles pull the wheel; heavy damage shudders the steering */
+  handlingNoise() {
+    const d = this.damage01;
+    if (d < 0.35) return 0;
+    return (d - 0.35) * 0.5;   // radians/s of constant pull
+  }
+
+  /** engine stall: below 15% health the engine coughs and stalls out */
+  stalled() {
+    return this.damage01 > 0.85 && Math.abs(this.speed) < 40;
+  }
+
+  /** smoke colour for the exhaust at a given damage level */
+  exhaustTone() {
+    const d = this.damage01;
+    if (d > 0.7) return '#151517';
+    if (d > 0.4) return '#3a3d44';
+    return '#4a4e56';
   }
 }
 
-// Limit for cars driving north past the harbor wall (world bound guard).
-const WATER_LIMIT = 96;
-
-// Pairwise car collisions (traffic + cops + player car + mission cars).
-export function collideCars(cars, fx) {
+/** pairwise car/car collision: circle pushout + shared damage */
+export function collideCars(cars, game) {
   for (let i = 0; i < cars.length; i++) {
     const a = cars[i];
-    if (a.sinkT > 0) continue;
     for (let j = i + 1; j < cars.length; j++) {
       const b = cars[j];
-      if (b.sinkT > 0) continue;
       const dx = b.x - a.x, dy = b.y - a.y;
       const rr = a.radius + b.radius;
       const d2 = dx * dx + dy * dy;
-      if (d2 > rr * rr || d2 < 1e-6) continue;
+      if (d2 >= rr * rr || d2 < 0.001) continue;
       const d = Math.sqrt(d2);
       const nx = dx / d, ny = dy / d;
       const overlap = rr - d;
       const ma = a.spec.mass, mb = b.spec.mass;
-      const total = ma + mb;
-      // positional correction
-      a.x -= nx * overlap * (mb / total);
-      a.y -= ny * overlap * (mb / total);
-      b.x += nx * overlap * (ma / total);
-      b.y += ny * overlap * (ma / total);
-      // impulse
-      const rvx = b.vx - a.vx, rvy = b.vy - a.vy;
-      const vn = rvx * nx + rvy * ny;
-      if (vn < 0) {
-        const imp = (-vn * 1.35) / total;
-        a.vx -= nx * imp * mb; a.vy -= ny * imp * mb;
-        b.vx += nx * imp * ma; b.vy += ny * imp * ma;
-        const impact = -vn;
-        if (impact > CAR_PHYS.IMPACT_MIN) {
-          const dmg = (impact - CAR_PHYS.IMPACT_MIN) * CAR_PHYS.IMPACT_DMG;
-          a.damage(dmg * (mb / total), 'car');
-          b.damage(dmg * (ma / total), 'car');
-          fx.spark((a.x + b.x) / 2, (a.y + b.y) / 2, 5);
-          const g = a.game;
-          if (a.driver === 'player' || b.driver === 'player') {
-            fx.requestShake(Math.min(10, impact * 0.4));
-            const other = a.driver === 'player' ? b : a;
-            g.onPlayerBump(other, impact);
-          }
+      const totalM = ma + mb;
+      a.x -= nx * overlap * (mb / totalM);
+      a.y -= ny * overlap * (mb / totalM);
+      b.x += nx * overlap * (ma / totalM);
+      b.y += ny * overlap * (ma / totalM);
+      const rel = Math.abs(a.speed - b.speed) + Math.abs(a.slide - b.slide) * 0.5;
+      const impact = rel;
+      if (impact > 70) {
+        const dmg = impact * CFG.CAR_HIT_DMG * 0.55;
+        a.damage(dmg * (mb / totalM) * 2);
+        b.damage(dmg * (ma / totalM) * 2);
+        a.speed *= 0.55; b.speed *= 0.55;
+        a.slide = clamp(a.slide - nx * impact * 0.3, -200, 200);
+        b.slide = clamp(b.slide + nx * impact * 0.3, -200, 200);
+        game.fx.impactSparks((a.x + b.x) / 2, (a.y + b.y) / 2, impact);
+        if (a.driver === 'player' || b.driver === 'player') {
+          game.shake(Math.min(impact * 0.012, 6));
+          game.police.crime(a.x, a.y, 3, 'ram');
         }
+      } else {
+        a.speed *= 0.96; b.speed *= 0.96;
       }
     }
   }
 }
+
+/** convenient spawner used by traffic, police and missions */
+export function spawnCar(type, x, y, angle, opts = {}) {
+  const rng = opts.rng || new RNG((x * 31 + y * 17 + Math.floor(angle * 8)) | 0);
+  const spec = CAR_SPECS[type];
+  const car = new Car(type, x, y, angle, opts.variant !== undefined ? opts.variant : rng.int(0, spec.hue.length));
+  if (opts.parked) { car.parked = true; car.lightsOn = false; }
+  if (opts.hp !== undefined) car.hp = opts.hp;
+  if (opts.tag) car.missionTag = opts.tag;
+  return car;
+}
+
+// ---------------------------------------------------------------------------
+// mass-scaled collision damage helper — heavier vehicles dish out more than
+// they take. Returns the damage the ATTACKER deals to the TARGET.
+// ---------------------------------------------------------------------------
+export function ramDamage(attacker, target, impact) {
+  const massRatio = attacker.spec.mass / (attacker.spec.mass + target.spec.mass);
+  return impact * CFG.CAR_HIT_DMG * 0.55 * 2 * massRatio;
+}
+
+/** per-type horn pitch (Hz) — the audio system reads this for variety */
+export const HORN_PITCH = {
+  compact: 520, sedan: 460, taxi: 480, sports: 600,
+  super: 620, van: 380, pickup: 400, bus: 300, police: 440,
+};

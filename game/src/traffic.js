@@ -1,293 +1,305 @@
-// ============================================================================
-// VICE PALMS — traffic.js
-// Civilian traffic: cars follow the right-hand lane grid, obey traffic lights,
-// queue behind each other, brake for pedestrians, panic at gunfire, pick
-// turns at intersections and despawn far from the player.
-// ============================================================================
+// ---------------------------------------------------------------------------
+// traffic.js — ambient civilians driving the road graph. Cars follow lanes on
+// the right, obey traffic lights, queue behind each other, brake for
+// pedestrians, show turn signals, have individual driving personalities
+// (cruise speed, aggression, politeness) and un-stick themselves when wedged.
+// Spawning stays near the player; distant cars despawn.
+// ---------------------------------------------------------------------------
 
-import { TRAFFIC, TILE, LANE, COLS, ROWS, CITY_W, CITY_H } from './config.js';
-import { clamp, angleDiff } from './util.js';
-import { Car, VEHICLES } from './cars.js';
+import { CFG, TRAFFIC_MIX } from './config.js';
+import { RNG } from './rng.js';
+import { Car } from './cars.js';
+import { clamp, dist2, wrapAngle } from './util.js';
 
-// dir index: 0=E(+x) 1=S(+y) 2=W(-x) 3=N(-y)
-const DV = [[1, 0], [0, 1], [-1, 0], [0, -1]];
-const CIVILIAN_WEIGHTS = [
-  ['sedan', 30], ['pickup', 16], ['van', 14], ['muscle', 12], ['taxi', 12],
-  ['sport', 10], ['bus', 6],
+const LANE = CFG.LANE_OFF;
+
+// driver personality — scales cruise speed and following distance
+const PERSONAS = [
+  { name: 'granny', cruise: [150, 195], gap: 1.6, signalP: 0.9 },
+  { name: 'commuter', cruise: [195, 250], gap: 1.2, signalP: 0.7 },
+  { name: 'courier', cruise: [240, 285], gap: 1.0, signalP: 0.5 },
+  { name: 'hothead', cruise: [275, 330], gap: 0.7, signalP: 0.2 },
 ];
 
-export function dirVec(d) {
-  return DV[d & 3];
-}
-
 export class Traffic {
-  constructor(game) {
-    this.game = game;
-    this.spawnT = 0;
-    this.initialized = false;
+  constructor(worldRef, rng) {
+    this.world = worldRef;
+    this.rng = rng;
+    this.cars = [];
+    this.spawnTimer = 0;
+    this.laneQueue = new Map();   // node id -> count of cars waiting (rough)
   }
 
-  count() {
-    let n = 0;
-    for (const c of this.game.cars) if (c.aiKind === 'civ' && !c.remove) n++;
-    return n;
+  count() { return this.cars.length; }
+
+  lightAt(node, axis, time) {
+    return this.world.lightState(node, axis, time);
   }
 
-  spawnInitial(n) {
-    if (this.initialized) return;
-    this.initialized = true;
-    for (let k = 0; k < n; k++) this.trySpawn(true);
-  }
-
-  pickType() {
-    const roll = this.game.rngWorld.next() * 100;
-    let acc = 0;
-    for (const [t, w] of CIVILIAN_WEIGHTS) {
-      acc += w;
-      if (roll < acc) return t;
+  update(dt, game) {
+    const player = game.player;
+    this.spawnTimer -= dt;
+    if (this.spawnTimer <= 0 && this.cars.length < CFG.TRAFFIC_TARGET) {
+      this.spawnTimer = 0.35;
+      this.trySpawn(game);
     }
-    return 'sedan';
+    for (let i = this.cars.length - 1; i >= 0; i--) {
+      const c = this.cars[i];
+      if (c.wrecked) {
+        c.wreckTimer = (c.wreckTimer || 14) - dt;
+        if (c.wreckTimer <= 0) this.cars.splice(i, 1);
+        continue;
+      }
+      if (c.driver === 'player') continue;      // player took this one over
+      if (c.parked) continue;
+      this.updateAI(c, dt, game);
+      const d2 = dist2(c.x, c.y, player.x, player.y);
+      if (d2 > CFG.TRAFFIC_CULL_R * CFG.TRAFFIC_CULL_R && !c.missionTag) {
+        this.cars.splice(i, 1);
+      }
+    }
   }
 
-  trySpawn(anywhere = false) {
-    const g = this.game;
-    const p = g.player.inCar || g.player;
-    const px = p.x, py = p.y;
-    const pt = g.world.randomLanePoint(g.rngWorld, px, py,
-      anywhere ? 20 : TRAFFIC.SPAWN_DIST_MIN,
-      anywhere ? 260 : TRAFFIC.SPAWN_DIST_MAX);
-    if (!pt) return null;
-    // Keep offscreen spawns only (unless seeding the world at boot).
-    if (!anywhere) {
-      const halfW = 640 / (g.cam.z * 7.2) + 8;
-      const halfH = 360 / (g.cam.z * 7.2) + 8;
-      if (Math.abs(pt.x - g.cam.x) < halfW && Math.abs(pt.y - g.cam.y) < halfH) return null;
+  /** right-hand lane position travelling from a toward b */
+  lanePos(a, b, t) {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    return { x: a.x + dx * t - uy * LANE, y: a.y + dy * t + ux * LANE, ux, uy, len };
+  }
+
+  trySpawn(game) {
+    const player = game.player;
+    for (let t = 0; t < 14; t++) {
+      const node = this.world.randomGraphNode(this.rng);
+      const d2 = dist2(node.x, node.y, player.x, player.y);
+      if (d2 < 620 * 620 || d2 > CFG.TRAFFIC_SPAWN_R * CFG.TRAFFIC_SPAWN_R) continue;
+      if (!node.edges.length) continue;
+      // don't spawn right on top of another car
+      if (this.tooClose(node.x, node.y, 90)) continue;
+      const edge = this.rng.pick(node.edges);
+      const type = this.rng.weighted(TRAFFIC_MIX);
+      const car = this.makeCar(type, node, edge.to);
+      car.driver = 'ai';
+      this.cars.push(car);
+      return car;
     }
-    const type = this.pickType();
-    const angle = pt.dir * (Math.PI / 2); // 0=E,1=S,2=W,3=N
-    const car = new Car(g, type, pt.x, pt.y, angle);
-    car.driver = 'ai';
-    car.aiKind = 'civ';
-    car.ai = {
-      dir: pt.dir,
-      laneCoord: this.laneCoordFor(pt),
-      turn: 0,
-      decidedKey: null,
-      fleeT: 0,
-      stuckT: 0,
-      cruise: car.spec.top * TRAFFIC.CIVILIAN_TOP,
-      laneJitter: g.rngWorld.range(-0.5, 0.5),
-    };
-    // A few cars drive a touch faster than others — texture, not chaos.
-    car.ai.cruise *= 0.85 + g.rngWorld.next() * 0.35;
-    g.cars.push(car);
+    return null;
+  }
+
+  tooClose(x, y, r) {
+    for (const c of this.cars) {
+      if (dist2(c.x, c.y, x, y) < r * r) return true;
+    }
+    return false;
+  }
+
+  makeCar(type, fromNode, toNode) {
+    const pos = this.lanePos(fromNode, toNode, 0);
+    const angle = Math.atan2(toNode.y - fromNode.y, toNode.x - fromNode.x);
+    const car = new Car(type, pos.x, pos.y, angle);
+    car.from = fromNode;
+    car.lastNode = fromNode;
+    car.route = [toNode];
+    car.segAxis = Math.abs(toNode.y - fromNode.y) > Math.abs(toNode.x - fromNode.x) ? 'v' : 'h';
+    car.t = 0;
+    const persona = this.rng.pick(PERSONAS);
+    car.persona = persona.name;
+    car.cruise = this.rng.range(persona.cruise[0], persona.cruise[1]);
+    car.gapK = persona.gap;
+    car.signalP = persona.signalP;
+    car.signal = 0;              // -1 left, 0 off, 1 right (visual)
     return car;
   }
 
-  laneCoordFor(pt) {
-    // For vertical movement the lane is a fixed x; for horizontal a fixed y.
-    const vertical = pt.dir === 1 || pt.dir === 3;
-    return vertical ? pt.x : pt.y;
-  }
+  updateAI(c, dt, game) {
+    if (!c.route || !c.route.length) this.pickRoute(c);
+    const target = c.route[0];
+    if (!target) { c.speed *= 0.9; c.step(dt, { throttle: 0, steer: 0 }, this.world); return; }
 
-  panic(x, y, r) {
-    for (const c of this.game.cars) {
-      if (c.aiKind !== 'civ' || !c.ai) continue;
-      const d = Math.hypot(c.x - x, c.y - y);
-      if (d < r) c.ai.fleeT = 2.5 + Math.random() * 3;
-    }
-  }
-
-  update(dt) {
-    const g = this.game;
-    if (!this.initialized) this.spawnInitial(Math.floor(TRAFFIC.MAX_CARS * 0.7));
-
-    // Top-up spawns.
-    this.spawnT -= dt;
-    if (this.spawnT <= 0 && this.count() < TRAFFIC.MAX_CARS) {
-      this.spawnT = 0.55;
-      this.trySpawn(false);
-    }
-
-    const t = g.time;
-    for (const car of g.cars) {
-      if (car.aiKind !== 'civ' || car.remove) continue;
-      if (car.wrecked) continue;
-      if (!car.ai) { car.aiKind = null; continue; }
-
-      const p = g.player.inCar || g.player;
-      const dPlayer = Math.hypot(car.x - p.x, car.y - p.y);
-      if (dPlayer > TRAFFIC.DESPAWN_DIST) { car.remove = true; continue; }
-
-      if (car.ai.fleeT > 0) car.ai.fleeT -= dt;
-      this.drive(car, dt, t);
-
-      // Stuck cleanup: immobile, offscreen, long enough -> gone.
-      if (car.speed() < 0.5 && dPlayer > 70) {
-        car.ai.stuckT += dt;
-        if (car.ai.stuckT > 6) car.remove = true;
-      } else {
-        car.ai.stuckT = 0;
-      }
-    }
-  }
-
-  drive(car, dt, t) {
-    const g = this.game;
-    const ai = car.ai;
-    const dv = DV[ai.dir];
-    const vertical = ai.dir === 1 || ai.dir === 3;
-
-    // --- next node ahead -------------------------------------------------
-    let nodeIdx, nodeDist;
-    if (vertical) {
-      const along = car.y;
-      if (ai.dir === 1) { nodeIdx = Math.ceil((along + 0.01) / TILE); nodeDist = nodeIdx * TILE - along; }
-      else { nodeIdx = Math.floor((along - 0.01) / TILE); nodeDist = along - nodeIdx * TILE; }
-    } else {
-      const along = car.x;
-      if (ai.dir === 0) { nodeIdx = Math.ceil((along + 0.01) / TILE); nodeDist = nodeIdx * TILE - along; }
-      else { nodeIdx = Math.floor((along - 0.01) / TILE); nodeDist = along - nodeIdx * TILE; }
-    }
-    const lineIdx = Math.round((vertical ? car.x : car.y) / TILE);
-    const ni = vertical ? lineIdx : nodeIdx;
-    const nj = vertical ? nodeIdx : lineIdx;
-
-    // --- decide the turn at this node --------------------------------------
-    const key = ni + ',' + nj;
-    if (nodeDist < 14 && ai.decidedKey !== key) {
-      ai.decidedKey = key;
-      ai.turn = this.chooseTurn(ai.dir, ni, nj, g.rngWorld);
-      car.blinker = ai.turn; // signal while the turn is pending
-    }
-    // Apply the turn once the node is (roughly) under the car.
-    if (nodeDist < 1.5 && ai.turn !== 0) {
-      const ndir = ai.turn === 1 ? (ai.dir + 1) & 3 : (ai.dir + 3) & 3;
-      const ndv = DV[ndir];
-      // New lane coordinate: right-hand side of the new heading.
-      const newVertical = ndir === 1 || ndir === 3;
-      if (newVertical) {
-        const nxLine = (ndir === 3) ? LANE : -LANE; // northbound: +x side
-        ai.laneCoord = ni * TILE + (ndir === 3 ? LANE : -LANE);
-        ai.dir = ndir;
-      } else {
-        ai.laneCoord = nj * TILE + (ndir === 0 ? LANE : -LANE);
-        ai.dir = ndir;
-      }
-      ai.turn = 0;
-      car.blinker = 0;
-      ai.decidedKey = null; // free to decide at the next node
-    }
-
-    // --- steering target ----------------------------------------------------
-    let tx, ty;
-    const dv2 = DV[ai.dir];
-    const vertical2 = ai.dir === 1 || ai.dir === 3;
-    if (vertical2) {
-      ty = car.y + dv2[1] * 11;
-      tx = ai.laneCoord + (ai.laneJitter || 0);
-    } else {
-      tx = car.x + dv2[0] * 11;
-      ty = ai.laneCoord + (ai.laneJitter || 0);
-    }
-    // While inside an intersection with an active turn, cut the corner.
-    if (nodeDist < 9 && nodeDist > 1.5 && ai.turn !== 0) {
-      const ndir = ai.turn === 1 ? (ai.dir + 1) & 3 : (ai.dir + 3) & 3;
-      const ndv2 = DV[ndir];
-      const nv = ndir === 1 || ndir === 3;
-      if (nv) tx = ni * TILE + (ndir === 3 ? LANE : -LANE) + ndv2[0] * 6;
-      else ty = nj * TILE + (ndir === 0 ? LANE : -LANE) + ndv2[1] * 6;
-    }
-
-    const desired = Math.atan2(ty - car.y, tx - car.x);
-    const diff = angleDiff(car.angle, desired);
-    car.steer = clamp(diff * 2.4, -1, 1);
-
-    // --- speed control -------------------------------------------------------
-    const turning = Math.abs(diff) > 0.45;
-    let cruise = ai.fleeT > 0 ? car.spec.top * 0.9 : ai.cruise;
-    if (turning) cruise = Math.min(cruise, 9);
-
-    // Red light: stop short of the node unless fleeing or already committed.
-    car.stopReason = null;
-    const axis = (ai.dir % 2 === 0) ? 'ew' : 'ns';
-    const gd = g.world.greenDir(ni, nj, t);
-    const yellow = g.world.isYellow(ni, nj, t);
-    const speed = car.speed();
-    const canRun = ai.fleeT > 0 || speed < 3.5 || nodeDist < 4.6;
-    if (!canRun && gd !== axis && !yellow && nodeDist < 12 && nodeDist > 4.6) {
-      cruise = 0;
-      car.stopReason = 'light';
-    }
-    // Left-turn yield: hold before crossing oncoming traffic.
-    if (ai.turn === -1 && !canRun && nodeDist < 11 && nodeDist > 3) {
-      for (const other of g.cars) {
-        if (other === car || other.remove || !other.ai) continue;
-        if (other.ai.dir !== ((ai.dir + 2) & 3)) continue;
-        const approaching = vertical
-          ? Math.abs(other.x - car.x) < 4.5 && Math.abs(other.y - nj * TILE) < 22 && Math.sign(other.y - car.y) === dv2[1] * -1
-          : Math.abs(other.y - car.y) < 4.5 && Math.abs(other.x - ni * TILE) < 22 && Math.sign(other.x - car.x) === dv2[0] * -1;
-        if (approaching && other.speed() > 3) {
-          cruise = 0;
-          car.stopReason = 'yield';
+    // buses dwell at the rank shelters for a few seconds (route romance)
+    if (c.type === 'bus' && !c.dwelled) {
+      for (const r of this.world.taxiRanks) {
+        if (dist2(c.x, c.y, r.x, r.y) < 60 * 60 && Math.abs(c.speed) < 20) {
+          c.dwelled = 3;
           break;
         }
       }
     }
-
-    // Queue / obstacle probe: sample points ahead of the nose.
-    const nose = car.nose();
-    for (const pd of [2.4, 4.6, 7]) {
-      const px = nose.x + dv2[0] * pd;
-      const py = nose.y + dv2[1] * pd;
-      let blockedBy = null;
-      for (const other of g.cars) {
-        if (other === car || other.remove) continue;
-        if (Math.abs(other.x - px) < 2.3 && Math.abs(other.y - py) < 2.3) { blockedBy = other; break; }
-      }
-      if (!blockedBy) {
-        const pl = g.player;
-        if (!pl.inCar && Math.abs(pl.x - px) < 2.2 && Math.abs(pl.y - py) < 2.2) blockedBy = pl;
-      }
-      if (!blockedBy) {
-        for (const ped of g.peds.list) {
-          if (ped.dead) continue;
-          if (Math.abs(ped.x - px) < 2.0 && Math.abs(ped.y - py) < 2.0) { blockedBy = ped; break; }
-        }
-      }
-      if (blockedBy) {
-        cruise = Math.min(cruise, pd < 4 ? 0 : speed * 0.5);
-        car.stopReason = car.stopReason || 'queue';
-        if (pd < 4 && Math.random() < 0.01) { car.honk = 0.4; g.audio.horn(); }
-        break;
-      }
+    if (c.dwelled > 0) {
+      c.dwelled -= dt;
+      c.speed *= 0.8;
+      c.step(dt, { throttle: 0, steer: 0 }, this.world);
+      if (c.dwelled <= 0) c.dwelled = -1; // -1 marks "already dwelled"
+      return;
     }
 
-    // P-controller to cruise speed.
-    const vf = car.forwardSpeed();
-    if (vf > cruise + 2.5) {
-      car.throttle = 0;
-      car.brake = clamp((vf - cruise) / 8, 0.2, 1);
-    } else {
-      car.brake = 0;
-      car.throttle = clamp((cruise - vf) * 0.55, 0, 1);
+    // keep the turn signal honest
+    this.updateSignal(c, target);
+
+    const lead = this.lanePos(c.from, target, clamp(c.t + 0.06, 0, 1));
+    const desired = Math.atan2(lead.y - c.y, lead.x - c.x);
+    const steer = clamp(wrapAngle(desired - c.angle) * 2.4, -1, 1);
+
+    // rain makes careful drivers cautious — personas ease off in the wet
+    if (game.weather && game.weather.intensity > 0 && !c.wetAdjusted) {
+      c.wetAdjusted = true;
+      c.cruise *= 0.82;
+    } else if ((!game.weather || game.weather.intensity === 0) && c.wetAdjusted) {
+      c.wetAdjusted = false;
+      c.cruise /= 0.82;
     }
-    if (cruise === 0 && vf < 1) { car.throttle = 0; car.brake = 1; }
+
+    // ---- desired speed: persona cruise minus lights, queues, hazards
+    let want = c.cruise;
+    const dNode = Math.hypot(target.x - c.x, target.y - c.y);
+    const axis = c.segAxis;
+    const light = this.world.lightState(target, axis, game.time);
+    if (light === 'stop' && dNode < 170) want = Math.min(want, (dNode - 52) * 2.2);
+    if (light === 'stop' && dNode < 58) want = 0;
+
+    const ahead = this.carAhead(c, game);
+    if (ahead) {
+      const gap = ahead.dist - (c.spec.len / 2 + ahead.car.spec.len / 2 + 12);
+      const polite = c.gapK || 1;
+      if (gap < 60 * polite) want = Math.min(want, ahead.car.speed * (0.85 + 0.1 * polite));
+      if (gap < 16 * polite) want = 0;
+    }
+    // pedestrians crossing the road ahead → hard brake (the AI tries to be good)
+    const pedBlock = this.pedAhead(c, game);
+    if (pedBlock) want = Math.min(want, 30);
+
+    // player on foot ahead → brake (don't murder pedestrians… on purpose)
+    const p = game.player;
+    if (!p.inCar) {
+      const pd = dist2(p.x, p.y, c.x, c.y);
+      if (pd < 120 * 120) {
+        const fwd = Math.cos(c.angle) * (p.x - c.x) + Math.sin(c.angle) * (p.y - c.y);
+        if (fwd > 0) want = Math.min(want, 40);
+      }
+    }
+    const dV = want - c.speed;
+    const throttle = dV > 24 ? 1 : dV < -24 ? -1 : 0;
+    // wedged against geometry? reverse out and straighten
+    if (c.isStuck(dt)) { c.unstuckStep(dt); return; }
+    c.step(dt, { throttle, steer, handbrake: false, grip: game.weather.gripMult() }, this.world);
+    c.collideWorld(this.world);
+
+    // ---- progress along the segment
+    const segLen = Math.hypot(target.x - c.from.x, target.y - c.from.y) || 1;
+    const along = ((c.x - c.from.x) * (target.x - c.from.x) + (c.y - c.from.y) * (target.y - c.from.y)) / segLen;
+    c.t = clamp(along / segLen, 0, 1.2);
+    if (dNode < 36) this.advanceNode(c, target);
+    if (c.speed < -5) c.speed = 0;
   }
 
-  chooseTurn(dir, i, j, rng) {
-    if (rng.next() > TRAFFIC.TURN_CHANCE) {
-      // Straight only if the road continues.
-      const dv = DV[dir];
-      const ni = i + dv[0], nj = j + dv[1];
-      if (ni >= 0 && ni <= COLS && nj >= 0 && nj <= ROWS) return 0;
+  updateSignal(c, target) {
+    // blinking in the direction of the upcoming turn
+    if (!c.route || c.route.length < 1) { c.signal = 0; return; }
+    const dNode = Math.hypot(target.x - c.x, target.y - c.y);
+    if (dNode > 190) { c.signal = 0; return; }
+    const next = this.nextTurnDir(c, target);
+    if (next === 0 || !this.rng.chance(c.signalP)) { c.signal = 0; return; }
+    c.signal = next;
+  }
+
+  /** +1 turns right at the upcoming node, -1 left, 0 straight */
+  nextTurnDir(c, target) {
+    const opts = target.edges.filter((e) => e.to !== (c.lastNode || c.from));
+    if (!opts.length || !c.route[0]) return 0;
+    const cur = c.route[0];
+    const heading = { x: cur.x - c.from.x, y: cur.y - c.from.y };
+    for (const e of opts) {
+      const nx = e.to.x - target.x, ny = e.to.y - target.y;
+      const cross = heading.x * ny - heading.y * nx;
+      if (Math.abs(cross) < 1) continue;
+      return cross > 0 ? 1 : -1;
     }
-    const right = (dir + 1) & 3, left = (dir + 3) & 3;
-    const options = [];
-    const rdv = DV[right], ldv = DV[left];
-    if (i + rdv[0] >= 0 && i + rdv[0] <= COLS && j + rdv[1] >= 0 && j + rdv[1] <= ROWS) options.push(1, 1); // prefer right
-    if (i + ldv[0] >= 0 && i + ldv[0] <= COLS && j + ldv[1] >= 0 && j + ldv[1] <= ROWS) options.push(-1);
-    if (!options.length) return 1;
-    return rng.pick(options);
+    return 0;
+  }
+
+  advanceNode(c, node) {
+    const came = c.lastNode || c.from;
+    const options = node.edges.filter((e) => e.to !== came);
+    const pool = options.length ? options : node.edges;
+    // dead end? spin the car around (u-turn) by picking the reverse edge
+    const uTurn = !options.length;
+    let edge = this.rng.pick(pool);
+    const straight = pool.find((e) => (e.seg.axis === 'v') === (c.segAxis === 'v'));
+    if (straight && this.rng.chance(uTurn ? 0 : 0.62)) edge = straight;
+    c.lastNode = node;
+    c.from = node;
+    c.route = [edge.to];
+    c.segAxis = edge.seg.axis;
+    c.t = 0;
+  }
+
+  pickRoute(c) {
+    const near = this.nearestNode(c.x, c.y);
+    if (!near || !near.node.edges.length) { c.route = []; return; }
+    c.from = near.node;
+    c.lastNode = near.node;
+    const edge = this.rng.pick(near.node.edges);
+    c.route = [edge.to];
+    c.segAxis = edge.seg.axis;
+    c.t = 0;
+  }
+
+  nearestNode(x, y) {
+    let best = null, bd = Infinity;
+    for (const n of this.world.nodes) {
+      const d = dist2(x, y, n.x, n.y);
+      if (d < bd) { bd = d; best = n; }
+    }
+    return best ? { node: best, d: bd } : null;
+  }
+
+  /** nearest vehicle ahead in the driving corridor */
+  carAhead(c, game) {
+    const fx = Math.cos(c.angle), fy = Math.sin(c.angle);
+    let best = null;
+    const check = (other) => {
+      if (other === c || other.wrecked) return;
+      const dx = other.x - c.x, dy = other.y - c.y;
+      const d = Math.hypot(dx, dy);
+      if (d > 130) return;
+      const fwd = (dx * fx + dy * fy) / (d || 1);
+      if (fwd < 0.7) return;
+      const lat = Math.abs(-fy * dx + fx * dy);
+      if (lat > 26) return;
+      if (!best || d < best.dist) best = { car: other, dist: d };
+    };
+    for (const o of this.cars) check(o);
+    for (const o of game.police.cruisers) check(o);
+    if (game.player.inCar && game.player.inCar !== c) check(game.player.inCar);
+    // queue etiquette: hotheads lean on the horn when stuck behind slowpokes
+    if (best && best.dist < 60 && best.car.speed < c.cruise * 0.4 && c.persona === 'hothead' && game.rng.chance(0.02)) {
+      best.car.honkedBy = c.id;
+      if (game.rng.chance(0.5)) game.audio.honk();
+    }
+    return best;
+  }
+
+  /** pedestrian inside the braking corridor ahead */
+  pedAhead(c, game) {
+    const fx = Math.cos(c.angle), fy = Math.sin(c.angle);
+    for (const p of game.peds.list) {
+      if (p.state === 'dead') continue;
+      const dx = p.x - c.x, dy = p.y - c.y;
+      const d = Math.hypot(dx, dy);
+      if (d > 90) continue;
+      const fwd = (dx * fx + dy * fy) / (d || 1);
+      if (fwd < 0.8) continue;
+      const lat = Math.abs(-fy * dx + fx * dy);
+      if (lat < 20) return true;
+    }
+    return false;
+  }
+
+  /** gunshots clear the road a little — drivers speed up and scatter */
+  panicNear(x, y, r) {
+    for (const c of this.cars) {
+      if (dist2(c.x, c.y, x, y) < r * r) c.cruise = Math.max(c.cruise, 320);
+    }
   }
 }

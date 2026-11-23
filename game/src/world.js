@@ -1,1377 +1,802 @@
-// ============================================================================
-// VICE PALMS — world.js
-// One deterministic night city: a road grid of blocks that becomes, by zone,
-// a downtown of neon towers, residential strips, a south beach + sea, a 2x2
-// park, the NORTH DOCKS (piers, containers, cranes, a moored ship) and the
-// PALM AIRFIELD (runway, hangars, tower). Builds collision solids, spawn
-// points, named locations and the prerendered minimap. Same seed => same city.
-// ============================================================================
+// ---------------------------------------------------------------------------
+// world.js — the static city of Vice Palms. Built once from a fixed seed:
+// road grid with trimmed park gap, uptown blocks, docks with piers/containers/
+// cranes/ship, Palm Airfield with runway/hangars/tower, beach and park.
+// Exposes solids for physics, a node graph for traffic AI, sight-blocking for
+// the police, spawn helpers and a pre-rendered minimap base.
+// ---------------------------------------------------------------------------
 
-import {
-  TILE, ROAD, LANE, COLS, ROWS, CITY_W, CITY_H, WATER_NORTH, WATER_SOUTH,
-  SIDEWALK, BEACH_ROW, DOCK_ROWS, AIR_COLS, AIR_ROWS, PARK_BLOCKS,
-  WORLD_X0, WORLD_Y0, WORLD_X1, WORLD_Y1, TRAFFIC, WEATHER as WEATHER_TYPES,
-} from './config.js';
-import { RNG, hashSeed, neonWord, streetName } from './rng.js';
-import { clamp, TAU } from './util.js';
+import { CFG } from './config.js';
+import { RNG } from './rng.js';
+import { clamp, dist2, segDist2 } from './util.js';
 
-const BLOCK_INNER = TILE - ROAD; // 78 — block edge length
-const BUILD_MIN = 14;            // smallest building side
+const RW = CFG.ROAD_W;
+const HRW = RW / 2;
 
-// Zone palette: [yard fill, edge tint]
-const YARD = {
-  downtown:   ['#1b1d26', '#14151c'],
-  commercial: ['#1d1e26', '#15161d'],
-  residential:['#191b20', '#131418'],
-  park:       ['#17321f', '#122718'],
-  beach:      ['#cbb27a', '#b09a63'],
-  docks:      ['#23262e', '#1a1c22'],
-  airfield:   ['#23262b', '#1b1d21'],
-  plaza:      ['#20222c', '#171821'],
-};
+const NEON_WORDS = [
+  'VICE', 'PALMS', 'OCEAN', 'MIRAGE', 'STARLITE', 'TIKI', 'EL RIO', 'GATOR',
+  'CUBAN', 'BINGO', 'LOANS', 'MOTEL', 'CLUB NEON', 'DINER', 'CASINO', '24-7',
+  'RAMEN', 'HOTEL', 'ROXY', 'FLAMINGO', 'MAMBA', 'PIERCED', 'KRAKEN', 'ZODIAC',
+];
 
-const WALL_TONES = ['#2a2c38', '#26272f', '#31333f', '#232530', '#2e2a36', '#3a3444'];
-const ROOF_TONES = ['#3a3d4c', '#34363f', '#43465a', '#2e303c', '#403a4e', '#4a4454'];
-const CONTAINER_COLORS = ['#b0483f', '#3f7ab0', '#4f9c58', '#b0913f', '#7a4fa0', '#3fa0a0'];
+export const world = {
+  built: false,
+  seed: 1337,
 
-export class World {
-  constructor(seed) {
+  // geometry ---------------------------------------------------------------
+  solids: [],        // {x, y, x2, y2, w, h, tag, tall}
+  circles: [],       // {x, y, r, tag}           trees, poles, tower
+  water: [],         // rects the player may wade but vehicles/peds cannot enter
+  piers: [],         // walkable decks carved out of water
+  zones: [],         // painted ground: {x0, y0, x1, y1, kind}
+  buildings: [],     // {x, y, w, h, ht, wall, roof, neon}
+  containers: [],    // dock props with collision
+  cranes: [],        // {x, y, flip, hue}
+  ship: null,        // big hull rect at the north pier
+  lamps: [],         // street light positions
+  palms: [],         // decorative palm trees (also in circles as solids)
+  hydrants: [],      // tiny sidewalk props
+  billboards: [],    // glowing roof panels
+  acUnits: [],       // rooftop clutter
+  bollards: [],      // dock mooring posts
+  umbrellas: [],     // beach umbrellas + towels
+  beds: [],          // park flowerbeds
+  edgeLights: [],    // runway edge lights
+  taxiRanks: [],     // rank shelters
+  gulls: [],         // seagulls wheeling over the piers
+  streetNames: new Map(), // road id → name
+  site: null,        // the construction site (crane + cones + footings)
+  parkingLots: [],   // painted stalls; the sim parks cars in some
+  boardwalk: null,   // beach boardwalk strip
+  busStops: [],      // shelters with signs
+  nodes: [],         // traffic graph nodes {i, x, y, edges[], lights}
+  roadRects: [],     // axis-aligned asphalt rectangles for point tests
+  segRects: [],      // same list, tagged with axis/road for convenience
+
+  // places -----------------------------------------------------------------
+  spawn: { x: 840, y: 3350, angle: -Math.PI / 2 },
+  hospital: { x: 2840, y: 3520 },
+  policeHQ: { x: 1240, y: 1920 },
+  downtown: { x: 2040, y: 2680 },
+
+  minimap: null,     // offscreen canvas built by buildMinimap()
+
+  // ------------------------------------------------------------------ build
+  build(seed = 1337) {
     this.seed = seed;
-    this.rng = new RNG(hashSeed('vice-palms-' + seed));
-    this.nameRng = new RNG(hashSeed('names-' + seed));
-    this.blocks = [];        // blocks[j][i]
-    this.solids = [];
-    this.hash = new Map();   // spatial hash of solids, cell 48
-    this.neon = [];          // {x,y,w,h,color,word,flicker}
-    this.streetlights = [];  // {x,y}
-    this.palms = [];         // {x,y,s,seed}
-    this.sandDots = [];      // beach texture specks
-    this.crosswalks = [];    // per-intersection marking flag
-    this.locations = {};
-    this.waves = [];         // water animation phase seeds
-    this.weather = null;
-    this.parkingSpots = [];  // {x,y,angle}
-    this.hydrants = [];      // {x,y}
-    this.busStops = [];      // {x,y,angle}
-    this.manholes = [];      // {x,y}
-    this.awnings = [];       // {x,y,w,color}
-    this.yachts = [];        // {x,y}
-    this.floodlights = [];   // {x,y}
-    this.runwayLights = [];  // {x,y,color}
-    this.boardwalk = null;   // {x0,x1,y,h}
-    this.ferris = null;      // {x,y,r}
-    this.roofPads = [];      // helipads {x,y}
-    this.roofTanks = [];     // water towers {x,y}
-    this.minimap = null;
-    this.mmScale = 0.26;     // minimap px per world unit
-    this.build();
+    const rng = new RNG(seed);
+    this.solids.length = 0;
+    this.circles.length = 0;
+    this.water.length = 0;
+    this.piers.length = 0;
+    this.zones.length = 0;
+    this.buildings.length = 0;
+    this.containers.length = 0;
+    this.cranes.length = 0;
+    this.lamps.length = 0;
+    this.palms.length = 0;
+    this.nodes.length = 0;
+    this.roadRects.length = 0;
+    this.segRects.length = 0;
+
+    this._buildWater();
+    this._buildRoads();
+    this._buildGraph();
+    this._buildCityBlocks(rng);
+    this._buildUptown(rng);
+    this._buildPark(rng);
+    this._buildDocks(rng);
+    this._buildAirfield(rng);
+    this._buildBeach(rng);
+    this._buildLamps();
+    this._buildDetail(rng);
+    this._edgeWalls();
+    this.built = true;
     this.buildMinimap();
-  }
+    this._buildDistricts();
+    return this;
+  },
 
-  // ---------------------------------------------------------------- building
-  build() {
-    const rng = this.rng;
-    // Block zones
-    for (let j = 0; j < ROWS; j++) {
-      this.blocks[j] = [];
-      for (let i = 0; i < COLS; i++) {
-        const b = {
-          i, j,
-          x: i * TILE + ROAD / 2,
-          y: j * TILE + ROAD / 2,
-          w: BLOCK_INNER,
-          h: BLOCK_INNER,
-          type: 'residential',
-          buildings: [],
-          props: [],
-          neon: [],
-          trees: [],
-        };
-        this.blocks[j][i] = b;
-        b.type = this.zoneFor(i, j, rng);
-        this.fillBlock(b, rng);
+  // named neighbourhoods — the HUD greets you when you cross the line
+  districts: [],
+  _buildDistricts() {
+    this.districts = [
+      { name: 'NORTH DOCKS', x0: 140, y0: 140, x1: 2440, y1: 760 },
+      { name: 'PALM AIRFIELD', x0: 2460, y0: 140, x1: 3820, y1: 760 },
+      { name: 'OCEAN DRIVE', x0: 3620, y0: 760, x1: 4096, y1: 4096 },
+      { name: 'SOUTH BEACH', x0: 0, y0: 3925, x1: 3620, y1: 4096 },
+      { name: 'MEMORIAL PARK', x0: 2085, y0: 1925, x1: 2795, y1: 2635 },
+      { name: 'DOWNTOWN', x0: 1440, y0: 1440, x1: 3040, y1: 3920 },
+      { name: 'LITTLE HAVANA', x0: 0, y0: 1440, x1: 1440, y1: 3920 },
+      { name: 'THE HEIGHTS', x0: 3040, y0: 1440, x1: 3620, y1: 3920 },
+      { name: 'UPTOWN', x0: 0, y0: 760, x1: 4096, y1: 1440 },
+    ];
+  },
+
+  districtAt(x, y) {
+    for (const d of this.districts) {
+      if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1) return d.name;
+    }
+    return 'VICE PALMS';
+  },
+
+  _addSolid(x, y, w, h, tag = 'bld', tall = true) {
+    this.solids.push({ x, y, x2: x + w, y2: y + h, w, h, tag, tall });
+  },
+
+  _buildWater() {
+    const W = CFG.WORLD;
+    // north sea: full width down to WATER_N, but the docks strip is a giant
+    // boardwalk so only the stretch east of the docks + the far west is open
+    // water; piers are carved out separately.
+    this.water.push({ x: 0, y: 0, x2: W, y2: CFG.WATER_N, tag: 'sea' });
+    this.water.push({ x: CFG.WATER_E, y: 0, x2: W, y2: W, tag: 'sea' });
+    this.zones.push({ x0: 0, y0: 0, x1: W, y1: CFG.WATER_N + 40, kind: 'water' });
+    this.zones.push({ x0: CFG.WATER_E - 40, y0: 0, x1: W, y1: W, kind: 'water' });
+  },
+
+  _road(x0, y0, x1, y1, axis, road) {
+    const r = { x: x0, y: y0, x2: x1, y2: y1, w: x1 - x0, h: y1 - y0, axis, road };
+    this.roadRects.push(r);
+    this.segRects.push(r);
+    return r;
+  },
+
+  _buildRoads() {
+    const V = CFG.CITY_VX, H = CFG.CITY_HY, C = CFG.CONNECTORS;
+    const park = CFG.PARK;
+    // harbour highway (full span)
+    this._road(CFG.HARBOR_X0, CFG.HARBOR_Y - HRW, CFG.HARBOR_X1, CFG.HARBOR_Y + HRW, 'h', 'h805');
+    // connectors run from the coast road into the grid; 440/1240/2040/2840/3640
+    for (const x of C) this._road(x - HRW, CFG.HARBOR_Y + HRW, x + HRW, H[0] - HRW, 'v', 'c' + x);
+    // city verticals; x=2440 is trimmed by the park
+    for (const x of V) {
+      if (x === 2440) {
+        this._road(x - HRW, H[0] - HRW, x + HRW, park.y0, 'v', 'v2440a');
+        this._road(x - HRW, park.y1, x + HRW, H[H.length - 1] + HRW, 'v', 'v2440b');
+      } else {
+        this._road(x - HRW, H[0] - HRW, x + HRW, H[H.length - 1] + HRW, 'v', 'v' + x);
       }
     }
-    this.placeStreetlights();
-    this.placePalms(rng);
-    this.placeBeachDetail(rng);
-    this.placeWaterWaves(rng);
-    this.buildWeather();
-    this.buildParking(rng);
-    this.buildStreetFurniture(rng);
-    this.buildHarborDetails(rng);
-    this.buildRunwayLights();
-    this.buildFerrisWheel();
-    this.buildBoardwalk();
-    this.buildRoofFeatures(rng);
-    this.nameLocations();
-    this.buildMinimap();
-  }
-
-  zoneFor(i, j, rng) {
-    if (j === BEACH_ROW) return 'beach';
-    if (j < DOCK_ROWS && i < 9) return 'docks';
-    if (AIR_COLS.includes(i) && AIR_ROWS.includes(j)) return 'airfield';
-    for (const [pi, pj] of PARK_BLOCKS) if (pi === i && pj === j) return 'park';
-    if (i >= 4 && i <= 8 && j >= 3 && j <= 6) return 'downtown';
-    if (i === 5 && j === 5) return 'plaza';
-    const central = i >= 3 && i <= 9 && j >= 2 && j <= 7;
-    if (central) return rng.chance(0.55) ? 'commercial' : 'downtown';
-    return rng.chance(0.4) ? 'commercial' : 'residential';
-  }
-
-  addSolid(x, y, w, h, kind) {
-    const s = { x, y, w, h, kind };
-    this.solids.push(s);
-    const x0 = Math.floor(x / 48), x1 = Math.floor((x + w) / 48);
-    const y0 = Math.floor(y / 48), y1 = Math.floor((y + h) / 48);
-    for (let cy = y0; cy <= y1; cy++) {
-      for (let cx = x0; cx <= x1; cx++) {
-        const k = cx + ',' + cy;
-        let arr = this.hash.get(k);
-        if (!arr) { arr = []; this.hash.set(k, arr); }
-        arr.push(s);
+    // city horizontals; y=2280 is trimmed by the park
+    for (const y of H) {
+      if (y === 2280) {
+        this._road(V[0] - HRW, y - HRW, park.x0, y + HRW, 'h', 'h2280a');
+        this._road(park.x1, y - HRW, V[V.length - 1] + HRW, y + HRW, 'h', 'h2280b');
+      } else {
+        this._road(V[0] - HRW, y - HRW, V[V.length - 1] + HRW, y + HRW, 'h', 'h' + y);
       }
     }
-    return s;
-  }
+  },
 
-  solidsNear(x, y, r = 1) {
-    const out = [];
-    const x0 = Math.floor((x - r) / 48), x1 = Math.floor((x + r) / 48);
-    const y0 = Math.floor((y - r) / 48), y1 = Math.floor((y + r) / 48);
-    for (let cy = y0; cy <= y1; cy++) {
-      for (let cx = x0; cx <= x1; cx++) {
-        const arr = this.hash.get(cx + ',' + cy);
-        if (arr) for (const s of arr) if (!out.includes(s)) out.push(s);
+  // every crossing of a vertical and horizontal road becomes a graph node;
+  // consecutive nodes along each road segment are linked.
+  _buildGraph() {
+    const segs = this.segRects;
+    const vSegs = segs.filter((s) => s.axis === 'v');
+    const hSegs = segs.filter((s) => s.axis === 'h');
+    const key = (x, y) => x + ':' + y;
+    const nodeMap = new Map();
+    const nodeAt = (x, y) => {
+      const k = key(x, y);
+      let n = nodeMap.get(k);
+      if (!n) {
+        n = { i: this.nodes.length, x, y, edges: [], lights: false };
+        nodeMap.set(k, n);
+        this.nodes.push(n);
+      }
+      return n;
+    };
+    for (const v of vSegs) {
+      const crossings = [];
+      for (const h of hSegs) {
+        if (v.x < h.x2 && v.x2 > h.x && h.y < v.y2 && h.y2 > v.y) {
+          crossings.push({ x: (Math.max(v.x, h.x) + Math.min(v.x2, h.x2)) / 2, y: (Math.max(v.y, h.y) + Math.min(v.y2, h.y2)) / 2, h });
+        }
+      }
+      crossings.sort((a, b) => a.y - b.y);
+      let prev = null;
+      for (const c of crossings) {
+        const n = nodeAt(Math.round((v.x + v.x2) / 2), Math.round(c.y));
+        if (prev && prev !== n) this._link(prev, n, v);
+        prev = n;
       }
     }
-    return out;
-  }
-
-  // Any solid containing the point (LOS blocking / bullet stop).
-  blockedAt(x, y) {
-    for (const s of this.solidsNear(x, y, 1)) {
-      if (x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h) return s;
+    for (const h of hSegs) {
+      const crossings = [];
+      for (const v of vSegs) {
+        if (v.x < h.x2 && v.x2 > h.x && h.y < v.y2 && h.y2 > v.y) {
+          crossings.push({ x: (Math.max(v.x, h.x) + Math.min(v.x2, h.x2)) / 2, y: (Math.max(v.y, h.y) + Math.min(v.y2, h.y2)) / 2 });
+        }
+      }
+      crossings.sort((a, b) => a.x - b.x);
+      let prev = null;
+      for (const c of crossings) {
+        const n = nodeAt(Math.round(c.x), Math.round((h.y + h.y2) / 2));
+        if (prev && prev !== n) this._link(prev, n, h);
+        prev = n;
+      }
     }
-    return null;
-  }
-
-  // True when nothing solid sits within r of the point (exact distance test,
-  // not the cell-level query — spawn checks need the precision).
-  clearAt(x, y, r) {
-    for (const s of this.solidsNear(x, y, r + 1)) {
-      const nx = clamp(x, s.x, s.x + s.w);
-      const ny = clamp(y, s.y, s.y + s.h);
-      const dx = x - nx, dy = y - ny;
-      if (dx * dx + dy * dy < r * r) return false;
+    // traffic lights at real city crossroads (3+ approaches), not dead ends
+    for (const n of this.nodes) {
+      n.lights = n.edges.length >= 3 && n.y > 1300 && n.x > 300;
     }
-    return true;
-  }
+    this.nodeMap = nodeMap;
+  },
 
-  // Point is on asphalt (road or runway).
-  isRoad(x, y) {
-    if (x < WORLD_X0 || x > WORLD_X1 || y < WORLD_Y0 || y > WORLD_Y1) return false;
-    // Runway
-    if (x > 874 && x < 1240 && y > 122 && y < 166) return true;
-    const fx = x - Math.round(x / TILE) * TILE;
-    const fy = y - Math.round(y / TILE) * TILE;
-    const inCityX = x >= -ROAD / 2 && x <= CITY_W + ROAD / 2;
-    const inCityY = y >= -ROAD / 2 && y <= CITY_H + ROAD / 2;
-    return (Math.abs(fx) <= ROAD / 2 && inCityY) || (Math.abs(fy) <= ROAD / 2 && inCityX);
-  }
+  _link(a, b, seg) {
+    a.edges.push({ to: b, seg });
+    b.edges.push({ to: a, seg });
+  },
 
-  isWater(x, y) {
-    return y < -ROAD / 2 || y > CITY_H + ROAD / 2;
-  }
+  // interior of a city block: between road edges, sidewalk margin applied
+  _blockRect(x0, y0, x1, y1, inset) {
+    const bx = x0 + HRW + inset, by = y0 + HRW + inset;
+    const bw = x1 - HRW - inset - bx, bh = y1 - HRW - inset - by;
+    return bw > 60 && bh > 60 ? { x: bx, y: by, w: bw, h: bh } : null;
+  },
 
-  regionAt(x, y) {
-    if (this.isWater(x, y)) return 'water';
-    if (y > 869 && y < 971) return 'beach';
-    if (x < 872 && y < 190) return 'docks';
-    if (x >= 872 && y < 384) return 'airfield';
-    for (const [pi, pj] of PARK_BLOCKS) {
-      if (x > pi * TILE + 9 && x < pi * TILE + 87 && y > pj * TILE + 9 && y < pj * TILE + 87) return 'park';
-    }
-    return 'city';
-  }
-
-  // Human name for where you're standing — HUD zone line + full map labels.
-  streetAt(x, y) {
-    const region = this.regionAt(x, y);
-    if (region === 'water') return 'OPEN WATER';
-    if (region === 'beach') return 'VICE BEACH';
-    if (region === 'docks') return 'NORTH DOCKS';
-    if (region === 'airfield') return 'PALM AIRFIELD';
-    if (region === 'park') return 'PALMS PARK';
-    const i = Math.round(x / TILE), j = Math.round(y / TILE);
-    const onV = Math.abs(x - i * TILE) <= ROAD / 2 + 3 && i >= 0 && i <= COLS && y >= -ROAD / 2 && y <= CITY_H + ROAD / 2;
-    const onH = Math.abs(y - j * TILE) <= ROAD / 2 + 3 && j >= 0 && j <= ROWS && x >= -ROAD / 2 && x <= CITY_W + ROAD / 2;
-    const nv = this.streetNames.v[i], nh = this.streetNames.h[j];
-    if (onV && onH && nv && nh) return nv + ' × ' + nh;
-    if (onV && nv) return nv;
-    if (onH && nh) return nh;
-    if (i >= 4 && i <= 8 && j >= 3 && j <= 6) return 'DOWNTOWN';
-    return 'BACKSTREETS';
-  }
-
-  // ------------------------------------------------------------------ blocks
-  fillBlock(b, rng) {
-    const bx = b.x, by = b.y;
-    const ix = bx + SIDEWALK, iy = by + SIDEWALK;   // buildable origin
-    const iw = BLOCK_INNER - SIDEWALK * 2, ih = BLOCK_INNER - SIDEWALK * 2; // 68x68
-
-    switch (b.type) {
-      case 'beach': this.fillBeach(b, rng, ix, iy, iw, ih); break;
-      case 'docks': this.fillDocks(b, rng, ix, iy, iw, ih); break;
-      case 'airfield': this.fillAirfield(b, rng, ix, iy, iw, ih); break;
-      case 'park': this.fillPark(b, rng, ix, iy, iw, ih); break;
-      default: this.fillCity(b, rng, ix, iy, iw, ih); break;
-    }
-  }
-
-  // Standard city block: 1-4 buildings with neon on commercial/downtown.
-  fillCity(b, rng, ix, iy, iw, ih) {
-    const downtown = b.type === 'downtown';
-    const neonChance = b.type === 'commercial' ? 0.6 : downtown ? 0.75 : 0.15;
-    const layout = rng.next();
-    const cells = [];
-
-    if (layout < 0.22) {
-      cells.push([ix, iy, iw, ih]);
-    } else if (layout < 0.5) {
-      const w1 = Math.floor(iw * rng.range(0.38, 0.62));
-      cells.push([ix, iy, w1 - 2, ih], [ix + w1 + 2, iy, iw - w1 - 2, ih]);
-    } else if (layout < 0.78) {
-      const h1 = Math.floor(ih * rng.range(0.38, 0.62));
-      cells.push([ix, iy, iw, h1 - 2], [ix, iy + h1 + 2, iw, ih - h1 - 2]);
+  _placeBuildings(rng, bx, by, bw, bh, opts = {}) {
+    const htBase = opts.ht || 60;
+    const pattern = opts.pattern !== undefined ? opts.pattern : rng.int(0, 4);
+    const list = [];
+    const mk = (x, y, w, h) => {
+      const dc = dist2(x + w / 2, y + h / 2, this.downtown.x, this.downtown.y);
+      const boost = Math.max(0, 1 - dc / 2600);
+      const ht = clamp(htBase * rng.range(0.8, 1.5) + boost * 95, 40, 168);
+      list.push({ x, y, w, h, ht });
+    };
+    if (pattern === 0) {
+      mk(bx + 8, by + 8, bw - 16, bh - 16);
+    } else if (pattern === 1) {
+      if (bw >= bh) {
+        const gap = 30, w1 = bw * rng.range(0.35, 0.62);
+        mk(bx + 8, by + 8, w1 - 8, bh - 16);
+        mk(bx + w1 + gap, by + 8, bw - w1 - gap - 8, bh - 16);
+      } else {
+        const gap = 30, h1 = bh * rng.range(0.35, 0.62);
+        mk(bx + 8, by + 8, bw - 16, h1 - 8);
+        mk(bx + 8, by + h1 + gap, bw - 16, bh - h1 - gap - 8);
+      }
+    } else if (pattern === 2) {
+      const gap = 26, w1 = bw * rng.range(0.4, 0.6), h1 = bh * rng.range(0.4, 0.6);
+      mk(bx + 8, by + 8, w1 - 8, h1 - 8);
+      mk(bx + w1 + gap, by + 8, bw - w1 - gap - 8, bh - 16);
+      mk(bx + 8, by + h1 + gap, w1 - 8, bh - h1 - gap - 8);
     } else {
-      const w1 = Math.floor(iw * rng.range(0.4, 0.6));
-      const h1 = Math.floor(ih * rng.range(0.4, 0.6));
-      cells.push(
-        [ix, iy, w1 - 2, h1 - 2],
-        [ix + w1 + 2, iy, iw - w1 - 2, h1 - 2],
-        [ix, iy + h1 + 2, w1 - 2, ih - h1 - 2],
-        [ix + w1 + 2, iy + h1 + 2, iw - w1 - 2, ih - h1 - 2],
-      );
+      // courtyard of four
+      const gap = 46, w1 = bw / 2 - gap / 2, h1 = bh / 2 - gap / 2;
+      mk(bx + 8, by + 8, w1, h1);
+      mk(bx + bw - w1 - 8, by + 8, w1, h1);
+      mk(bx + 8, by + bh - h1 - 8, w1, h1);
+      mk(bx + bw - w1 - 8, by + bh - h1 - 8, w1, h1);
     }
-
-    for (const [cx, cy, cw, ch] of cells) {
-      if (cw < BUILD_MIN || ch < BUILD_MIN) continue;
-      const inx = cx + rng.int(0, 2), iny = cy + rng.int(0, 2);
-      const bw = cw - rng.int(0, 3), bh = ch - rng.int(0, 3);
-      if (bw < BUILD_MIN || bh < BUILD_MIN) continue;
-      const ht = downtown ? rng.range(9, 19) : rng.range(4, 11);
-      const bl = {
-        x: inx, y: iny, w: bw, h: bh, ht,
-        wall: rng.pick(WALL_TONES),
-        roof: rng.pick(ROOF_TONES),
-        wseed: rng.int(1, 999999),
-        lit: rng.chance(0.8),
-        sign: null,
+    for (const b of list) {
+      const pal = rng.chance(0.3) ? CFG.COL.roof2 : CFG.COL.roof;
+      const bld = {
+        x: b.x, y: b.y, w: b.w, h: b.h, ht: b.ht,
+        wall: CFG.COL.buildingWall, roof: pal,
+        neon: null,
       };
-      b.buildings.push(bl);
-      this.addSolid(bl.x, bl.y, bl.w, bl.h, 'building');
-      if (rng.chance(neonChance) && bl.w >= 18 && bl.h >= 14) {
-        this.addNeonSign(b, bl, rng);
+      if (b.ht > 62 && rng.chance(0.38)) {
+        bld.neon = {
+          text: rng.pick(NEON_WORDS),
+          color: rng.pick(CFG.COL.neon),
+          x: b.x + b.w / 2,
+          y: b.y + b.h - 8,
+        };
+      }
+      this.buildings.push(bld);
+      this._addSolid(b.x, b.y, b.w, b.h, 'bld', true);
+    }
+  },
+
+  _buildCityBlocks(rng) {
+    const V = CFG.CITY_VX, H = CFG.CITY_HY;
+    const park = CFG.PARK;
+    this.zones.push({ x0: V[0] - HRW, y0: H[0] - HRW, x1: V[V.length - 1] + HRW, y1: H[H.length - 1] + HRW, kind: 'concrete' });
+    // two of the blocks are municipal parking lots instead of towers
+    const lots = [{ i: 2, j: 1 }, { i: 5, j: 4 }];
+    for (const { i, j } of lots) this._buildParkingLot(V[i], H[j], V[i + 1], H[j + 1]);
+    for (let i = 0; i < V.length - 1; i++) {
+      for (let j = 0; j < H.length - 1; j++) {
+        if (lots.some((l) => l.i === i && l.j === j)) continue;
+        const b = this._blockRect(V[i], H[j], V[i + 1], H[j + 1], CFG.SIDEWALK);
+        if (!b) continue;
+        // skip everything the park swallowed
+        if (b.x < park.x1 && b.x + b.w > park.x0 && b.y < park.y1 && b.y + b.h > park.y0) continue;
+        this._placeBuildings(rng, b.x, b.y, b.w, b.h, { ht: 58 });
+        if (rng.chance(0.35)) { // back-alley dumpster
+          const dx = b.x + rng.range(10, b.w - 40), dy = b.y + rng.range(10, b.h - 30);
+          this._addSolid(dx, dy, 30, 18, 'dump', false);
+          this.containers.push({ x: dx, y: dy, w: 30, h: 18, hue: rng.pick(['#2e6e4e', '#6e2e3d', '#3d5a7a']), alley: true });
+        }
       }
     }
+  },
 
-    // Alleys: a dumpster or two as small non-blocking props.
-    const props = rng.int(0, 2);
-    for (let p = 0; p < props; p++) {
-      b.props.push({
-        x: ix + rng.range(0, iw - 4), y: iy + rng.range(0, ih - 3),
-        w: rng.range(2, 3.4), h: rng.range(1.6, 2.4),
-        kind: rng.chance(0.5) ? 'dumpster' : 'planter',
+  /** a parking lot block: rows of painted stalls the sim can occupy */
+  _buildParkingLot(x0, y0, x1, y1) {
+    const inset = CFG.SIDEWALK + 14;
+    const bx = x0 + HRW + inset, by = y0 + HRW + inset;
+    const bw = x1 - HRW - inset - bx, bh = y1 - HRW - inset - by;
+    if (bw < 120 || bh < 120) return;
+    const lot = { x: bx, y: by, w: bw, h: bh, stalls: [], kind: 'lot' };
+    const stallW = 46, stallH = 74;
+    const cols = Math.floor((bw - 40) / (stallW + 6));
+    const rows = Math.floor((bh - 40) / (stallH + 30));
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const sx = bx + 26 + c * (stallW + 6);
+        const sy = by + 24 + r * (stallH + 30);
+        lot.stalls.push({ x: sx + stallW / 2, y: sy + stallH / 2, w: stallW, h: stallH, angle: 0, row: r });
+      }
+    }
+    this.zones.push({ x0: bx, y0: by, x1: bx + bw, y1: by + bh, kind: 'lot' });
+    this.parkingLots.push(lot);
+  },
+
+  _buildUptown(rng) {
+    // strip between the coast road and the city grid, bounded by connectors
+    const C = CFG.CONNECTORS;
+    const y0 = CFG.HARBOR_Y + HRW + 40, y1 = CFG.CITY_HY[0] - HRW - CFG.SIDEWALK;
+    this.zones.push({ x0: C[0] - HRW, y0: y0 - 40, x1: C[C.length - 1] + HRW, y1: y1 + 40, kind: 'dirt' });
+    for (let i = 0; i < C.length - 1; i++) {
+      const b = this._blockRect(C[i], y0 - 40, C[i + 1], y1 + 40, CFG.SIDEWALK);
+      if (!b) continue;
+      this._placeBuildings(rng, b.x, b.y, b.w, b.h, { ht: 44, pattern: rng.int(0, 3) });
+    }
+  },
+
+  _buildPark(rng) {
+    const p = CFG.PARK;
+    this.zones.push({ x0: p.x0 - 30, y0: p.y0 - 30, x1: p.x1 + 30, y1: p.y1 + 30, kind: 'grass' });
+    // pond with a rim
+    const pond = CFG.POND;
+    this.circles.push({ x: pond.x, y: pond.y, r: pond.r + 8, tag: 'pond' });
+    // diagonal paths
+    this.zones.push({ x0: p.x0, y0: (p.y0 + p.y1) / 2 - 12, x1: p.x1, y1: (p.y0 + p.y1) / 2 + 12, kind: 'path' });
+    this.zones.push({ x0: (p.x0 + p.x1) / 2 - 12, y0: p.y0, x1: (p.x0 + p.x1) / 2 + 12, y1: p.y1, kind: 'path' });
+    // fountain in the paths' crossing
+    this.circles.push({ x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2, r: 22, tag: 'fountain' });
+    // trees in a loose scatter, keeping clear of paths and pond
+    let tries = 0;
+    let placed = 0;
+    while (placed < 34 && tries < 300) {
+      tries++;
+      const x = rng.range(p.x0 + 30, p.x1 - 30), y = rng.range(p.y0 + 30, p.y1 - 30);
+      if (dist2(x, y, pond.x, pond.y) < (pond.r + 40) ** 2) continue;
+      if (Math.abs(y - (p.y0 + p.y1) / 2) < 30 || Math.abs(x - (p.x0 + p.x1) / 2) < 30) continue;
+      const r = rng.range(11, 17);
+      this.circles.push({ x, y, r, tag: 'tree' });
+      this.palms.push({ x, y, r, kind: 'oak' });
+      placed++;
+    }
+    // benches
+    for (let i = 0; i < 6; i++) {
+      const x = rng.range(p.x0 + 40, p.x1 - 60), y = rng.range(p.y0 + 40, p.y1 - 60);
+      if (dist2(x, y, pond.x, pond.y) < (pond.r + 50) ** 2) continue;
+      this._addSolid(x, y, 26, 10, 'bench', false);
+    }
+  },
+
+  _buildDocks(rng) {
+    const d = CFG.DOCKS;
+    this.zones.push({ x0: d.x0, y0: d.y0, x1: d.x1, y1: d.y1, kind: 'concrete' });
+    // harbor fence along the waterline gap between piers (with two gates)
+    for (let x = 820; x < 1540; x += 20) {
+      if (Math.abs(x - 1180) < 40) continue; // gate
+      this._addSolid(x, 165, 10, 14, 'fence', false);
+    }
+    for (let x = 1700; x < 2280; x += 20) {
+      if (Math.abs(x - 1980) < 40) continue;
+      this._addSolid(x, 165, 10, 14, 'fence', false);
+    }
+    // two piers reaching into the sea
+    const pier1 = { x: 700, y: 20, w: 90, h: CFG.WATER_N - 20 + 30 };
+    const pier2 = { x: 1560, y: 20, w: 90, h: CFG.WATER_N - 20 + 30 };
+    this.piers.push(pier1, pier2);
+    // cargo ship moored along the first pier (hull is solid)
+    this.ship = { x: pier1.x + 110, y: -20, w: 190, h: 300, bridge: 46 };
+    this._addSolid(this.ship.x, this.ship.y, this.ship.w, this.ship.h, 'ship', true);
+    // cranes at each pier foot
+    this.cranes.push({ x: pier1.x - 60, y: CFG.WATER_N + 40, flip: false, hue: '#c2782e' });
+    this.cranes.push({ x: pier2.x + 110, y: CFG.WATER_N + 40, flip: true, hue: '#2e7ac2' });
+    this._addSolid(pier1.x - 74, CFG.WATER_N + 30, 44, 44, 'crane', true);
+    this._addSolid(pier2.x + 96, CFG.WATER_N + 30, 44, 44, 'crane', true);
+    // container yard: rows of stacked boxes with alleys
+    const rows = 5;
+    for (let r = 0; r < rows; r++) {
+      const y = 260 + r * 70;
+      let x = 240;
+      while (x < 1380) {
+        const w = rng.pick([62, 62, 90]);
+        if (rng.chance(0.82)) {
+          const hue = rng.pick(['#7a3d2e', '#2e6e5a', '#8a6a2e', '#3d4a7a', '#5a2e6e', '#6e2e3d']);
+          this._addSolid(x, y, w, 30, 'cont', false);
+          this.containers.push({ x, y, w, h: 30, hue, stack: rng.int(1, 4) });
+        }
+        x += w + rng.range(26, 70);
+      }
+    }
+    // warehouses along the south edge of the docks
+    for (let i = 0; i < 3; i++) {
+      const x = 250 + i * 640, y = 580;
+      this._addSolid(x, y, 260, 105, 'wh', true);
+      this.buildings.push({ x, y, w: 260, h: 105, ht: 52, wall: CFG.COL.buildingWall, roof: '#3a4250', neon: i === 1 ? { text: 'DOCKS', color: '#3fd9ff', x: x + 130, y: y + 92 } : null, flat: true });
+    }
+    // pier bait-and-tackle shacks at the foot of each pier
+    this.buildings.push({ x: 820, y: 175, w: 80, h: 54, ht: 34, wall: CFG.COL.buildingWall, roof: '#4e4335', neon: { text: 'BAIT', color: '#8bff5e', x: 860, y: 222 }, flat: true });
+    this._addSolid(820, 175, 80, 54, 'shack', true);
+    this.buildings.push({ x: 1680, y: 175, w: 80, h: 54, ht: 34, wall: CFG.COL.buildingWall, roof: '#4e4335', neon: { text: 'TACKLE', color: '#ffd23e', x: 1720, y: 222 }, flat: true });
+    this._addSolid(1680, 175, 80, 54, 'shack', true);
+  },
+
+  _buildAirfield(rng) {
+    const a = CFG.AIRFIELD;
+    this.zones.push({ x0: a.x0, y0: a.y0, x1: a.x1, y1: a.y1, kind: 'dirt' });
+    const rw = CFG.RUNWAY;
+    this.zones.push({ x0: rw.x0, y0: rw.y0, x1: rw.x1, y1: rw.y1, kind: 'runway' });
+    // hangars
+    for (let i = 0; i < 3; i++) {
+      const x = 2600 + i * 330, y = 180;
+      this._addSolid(x, y, 220, 120, 'hangar', true);
+      this.buildings.push({ x, y, w: 220, h: 120, ht: 58, wall: CFG.COL.buildingWall, roof: '#39424f', neon: i === 0 ? { text: 'PALM AIR', color: '#8bff5e', x: x + 110, y: y + 108 } : null, flat: true, arch: true });
+    }
+    // tower
+    this.circles.push({ x: 3640, y: 260, r: 26, tag: 'tower' });
+    this.buildings.push({ x: 3606, y: 320, w: 68, h: 54, ht: 120, wall: CFG.COL.buildingWall, roof: '#414a5c', neon: { text: 'ATC', color: '#ff5e5e', x: 3640, y: 366 }, flat: true });
+    // crates and fuel drums
+    for (let i = 0; i < 8; i++) {
+      const x = rng.range(2560, 3700), y = rng.range(600, 680);
+      this._addSolid(x, y, 34, 34, 'crate', false);
+      this.containers.push({ x, y, w: 34, h: 34, hue: '#7a6a3d', alley: true });
+    }
+  },
+
+  _buildBeach(rng) {
+    // north sand in front of the docks and east sand strip
+    this.zones.push({ x0: 0, y0: CFG.WATER_N, x1: CFG.WATER_E, y1: CFG.SAND_N1, kind: 'sand' });
+    this.zones.push({ x0: CFG.SAND_E0, y0: 0, x1: CFG.WATER_E, y1: CFG.WORLD, kind: 'sand' });
+    // the boardwalk: planked strip along the north beach
+    this.boardwalk = { x: 2400, y: CFG.SAND_N1, w: 1220, h: 60 };
+    this.zones.push({ x0: this.boardwalk.x, y0: this.boardwalk.y, x1: this.boardwalk.x + this.boardwalk.w, y1: this.boardwalk.y + this.boardwalk.h, kind: 'boardwalk' });
+    // palms scattered on both beaches
+    let placed = 0, tries = 0;
+    while (placed < 26 && tries < 200) {
+      tries++;
+      const north = rng.chance(0.5);
+      const x = north ? rng.range(60, 2400) : rng.range(CFG.SAND_E0 + 30, CFG.WATER_E - 30);
+      const y = north ? rng.range(CFG.WATER_N + 24, CFG.SAND_N1 - 10) : rng.range(240, 3900);
+      if (this.solidHit(x, y, 30)) continue;
+      if (this.nearRoad(x, y, 70)) continue;
+      const r = rng.range(12, 16);
+      this.circles.push({ x, y, r, tag: 'palm' });
+      this.palms.push({ x, y, r, kind: 'palm' });
+      placed++;
+    }
+    // south beach strip below the last road
+    this.zones.push({ x0: 0, y0: CFG.CITY_HY[CFG.CITY_HY.length - 1] + HRW, x1: CFG.SAND_E0, y1: CFG.WORLD, kind: 'sand' });
+    for (let i = 0; i < 10; i++) {
+      const x = rng.range(300, 3400), y = rng.range(3990, 4060);
+      if (this.solidHit(x, y, 30)) continue;
+      const r = rng.range(12, 16);
+      this.circles.push({ x, y, r, tag: 'palm' });
+      this.palms.push({ x, y, r, kind: 'palm' });
+    }
+  },
+
+  _buildLamps() {
+    for (const s of this.segRects) {
+      if (s.axis === 'v') {
+        for (let y = s.y + 130; y < s.y2 - 60; y += 300) {
+          this.lamps.push({ x: s.x - HRW - 10, y, side: -1 });
+          this.lamps.push({ x: s.x2 + HRW + 10, y: y + 150, side: 1 });
+        }
+      } else {
+        for (let x = s.x + 130; x < s.x2 - 60; x += 300) {
+          this.lamps.push({ x, y: s.y - HRW - 10, side: -1 });
+          this.lamps.push({ x: x + 150, y: s.y2 + HRW + 10, side: 1 });
+        }
+      }
+    }
+  },
+
+  _buildDetail(rng) {
+    // rooftop clutter + glowing billboards on bigger roofs
+    for (const b of this.buildings) {
+      if (b.w > 90 && b.h > 90 && rng.chance(0.55)) {
+        const n = rng.int(1, 3);
+        for (let i = 0; i < n; i++) {
+          this.acUnits.push({
+            x: b.x + rng.range(12, b.w - 22),
+            y: b.y + rng.range(12, b.h - 22),
+            w: rng.range(12, 20),
+          });
+        }
+      }
+      if (b.w > 120 && b.h > 70 && rng.chance(0.4)) {
+        this.billboards.push({
+          x: b.x + b.w / 2,
+          y: b.y + 26,
+          w: Math.min(b.w - 40, 120),
+          text: rng.pick(['PALM FM 101.3', 'EL BANCO', 'BEACH OPEN 24H', 'V-ICE COLA', 'GATOR GYM', 'CRUZ AUTO']),
+          hue: rng.pick(CFG.COL.neon),
+        });
+      }
+    }
+    // hydrants beside sidewalks (visual only, they are family)
+    for (const s of this.segRects) {
+      if (!s.axis && s.axis !== 'v' && s.axis !== 'h') continue;
+      const n = 2 + Math.floor(rng.next() * 3);
+      for (let i = 0; i < n; i++) {
+        if (s.axis === 'v') {
+          this.hydrants.push({ x: s.x - HRW - 12, y: rng.range(s.y + 60, s.y2 - 60) });
+        } else {
+          this.hydrants.push({ x: rng.range(s.x + 60, s.x2 - 60), y: s.y - HRW - 12 });
+        }
+      }
+    }
+    // dock bollards along the waterline
+    for (let x = 260; x < 2300; x += 130) {
+      this.bollards.push({ x, y: CFG.WATER_N + 18 });
+    }
+    // beach umbrellas + towels
+    for (let i = 0; i < 14; i++) {
+      const east = rng.chance(0.5);
+      const x = east ? rng.range(CFG.SAND_E0 + 40, CFG.WATER_E - 60) : rng.range(2400, 3600);
+      const y = east ? rng.range(240, 3900) : rng.range(CFG.SAND_N1 + 60, 320);
+      if (this.solidHit(x, y, 20) || this.nearRoad(x, y, 60)) continue;
+      this.umbrellas.push({
+        x, y, r: rng.range(16, 24),
+        hue: rng.pick(['#ff4d9d', '#3fd9ff', '#ffd23e', '#ff8a3d']),
+        towel: rng.chance(0.7),
+        towelRot: rng.range(-0.4, 0.4),
       });
     }
-  }
-
-  addNeonSign(b, bl, rng) {
-    const colorRoll = rng.next();
-    const color = colorRoll < 0.2 ? '#ff3ca0' : colorRoll < 0.4 ? '#25e8ff' : colorRoll < 0.55 ? '#8dff4a'
-      : colorRoll < 0.7 ? '#ffb02e' : colorRoll < 0.85 ? '#a06bff' : '#2effc8';
-    const word = neonWord(this.nameRng);
-    const onSouth = rng.chance(0.65);
-    const w = Math.min(bl.w * 0.8, 4 + word.length * 2.2);
-    const sign = {
-      x: bl.x + (bl.w - w) / 2,
-      y: onSouth ? bl.y + bl.h - 1.6 : bl.y + 0.4,
-      w, h: 2.6,
-      color,
-      word,
-      flicker: rng.chance(0.14) ? rng.range(6, 14) : 0,
-      phase: rng.range(0, 10),
+    // park flowerbeds
+    const p = CFG.PARK;
+    for (let i = 0; i < 8; i++) {
+      const x = rng.range(p.x0 + 60, p.x1 - 60);
+      const y = rng.range(p.y0 + 60, p.y1 - 60);
+      if (dist2(x, y, CFG.POND.x, CFG.POND.y) < (CFG.POND.r + 60) ** 2) continue;
+      this.beds.push({ x, y, w: rng.range(26, 44), hue: rng.pick(['#e86a8a', '#e8c85e', '#c07be8', '#8ab0e8']) });
+    }
+    // runway edge lights
+    for (let x = CFG.RUNWAY.x0; x <= CFG.RUNWAY.x1; x += 80) {
+      this.edgeLights.push({ x, y: CFG.RUNWAY.y0 - 6 });
+      this.edgeLights.push({ x, y: CFG.RUNWAY.y1 + 6 });
+    }
+    // taxi ranks at three corners
+    for (const [x, y, a] of [[1240, 1545, 0], [3240, 3545, 0], [440, 3460, Math.PI / 2]]) {
+      this.taxiRanks.push({ x, y, angle: a });
+    }
+    // seagulls wheeling over the piers and the beach
+    for (let i = 0; i < 9; i++) {
+      this.gulls.push({
+        cx: rng.pick([745, 1610, 3400, 1800]),
+        cy: rng.pick([90, 90, 200, 300]),
+        r: rng.range(60, 190),
+        w: rng.range(0.3, 0.8) * (rng.chance(0.5) ? 1 : -1),
+        ph: rng.range(0, 6.3),
+        bob: rng.range(3, 9),
+      });
+    }
+    // street names on the main roads (HUD reads these)
+    const names = [
+      ['h805', 'HARBOR FWY'], ['h1480', 'FLAMINGO RD'], ['h1880', 'PALM ST'],
+      ['h2280', 'MIRAGE AVE'], ['h2680', 'FLAMINGO RD'], ['h3080', 'OCEAN AVE'],
+      ['h3480', 'MERIDIAN ST'], ['h3880', 'SOUTH BEACH RD'],
+      ['v440', '1ST ST'], ['v840', '3RD ST'], ['v1240', 'STARLITE BLVD'],
+      ['v1640', '5TH ST'], ['v2040', 'ROXANNE AVE'], ['v2440', '7TH ST'],
+      ['v2840', 'MERCY AVE'], ['v3240', '9TH ST'], ['v3640', 'COAST HWY'],
+    ];
+    for (const [id, name] of names) this.streetNames.set(id, name);
+    // a fenced construction site in a downtown block corner
+    const sx = 3260, sy = 1960;
+    this.site = {
+      x: sx, y: sy, w: 300, h: 240,
+      footings: [], coneX: [], craneX: sx + 40, craneY: sy + 40,
     };
-    b.neon.push(sign);
-    this.neon.push(sign);
-    bl.sign = sign;
-  }
+    for (let i = 0; i < 4; i++) {
+      this.site.footings.push({ x: sx + 40 + (i % 2) * 150, y: sy + 60 + Math.floor(i / 2) * 110, r: 22 });
+      this._addSolid(sx + 28 + (i % 2) * 150, sy + 48 + Math.floor(i / 2) * 110, 44, 44, 'foot', false);
+    }
+    for (let i = 0; i < 6; i++) {
+      this.site.coneX.push({ x: sx - 20 + i * 55, y: sy + this.site.h + 20 });
+    }
+  },
 
-  // Beach row: dunes, palms, lifeguard huts, a shack or two.
-  fillBeach(b, rng, ix, iy, iw, ih) {
-    const huts = rng.int(0, 2);
-    for (let k = 0; k < huts; k++) {
-      const w = rng.range(8, 12), h = rng.range(6, 8);
-      const x = ix + rng.range(4, iw - w - 4), y = iy + rng.range(6, ih - h - 10);
-      b.buildings.push({ x, y, w, h, ht: 3.4, wall: '#5a4a38', roof: '#8a5a3a', wseed: rng.int(1, 999999), lit: false, shack: true, sign: null });
-      this.addSolid(x, y, w, h, 'hut');
-    }
-    if (b.i === 3) {
-      // Rico's beach shack — a mission landmark.
-      b.buildings.push({ x: ix + 28, y: iy + 44, w: 14, h: 10, ht: 3.8, wall: '#6a4f3a', roof: '#d0843c', wseed: 77, lit: true, shack: true, sign: null });
-      this.addSolid(ix + 28, iy + 44, 14, 10, 'hut');
-    }
-    for (let k = 0; k < 6; k++) {
-      const px = ix + rng.range(2, iw - 2), py = iy + rng.range(2, ih - 2);
-      if (this.blockedAt(px, py) === null) b.trees.push({ x: px, y: py, palm: true, s: rng.range(0.85, 1.25), seed: rng.int(1, 999999) });
-    }
-  }
+  _edgeWalls() {
+    const W = CFG.WORLD;
+    this._addSolid(-40, 0, 180, W, 'wall', true);       // west
+    this._addSolid(-40, W - 120, W, 160, 'wall', true); // south
+  },
 
-  // Docks: paved lots, container stacks, crane feet, quay details.
-  fillDocks(b, rng, ix, iy, iw, ih) {
-    const stacks = rng.int(2, 5);
-    for (let k = 0; k < stacks; k++) {
-      const rows = rng.int(1, 2), cols = rng.int(1, 3);
-      const cx0 = ix + rng.range(2, Math.max(2, iw - cols * 7 - 2));
-      const cy0 = iy + rng.range(2, Math.max(2, ih - rows * 3.4 - 2));
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const x = cx0 + c * 7.4, y = cy0 + r * 3.8;
-          b.props.push({ x, y, w: 6.6, h: 3, kind: 'container', color: rng.pick(CONTAINER_COLORS) });
-          this.addSolid(x, y, 6.6, 3, 'container');
-        }
+  // ---------------------------------------------------------------- queries
+  /** is a point on asphalt? */
+  isRoad(x, y) {
+    for (const r of this.roadRects) {
+      if (x >= r.x && x <= r.x2 && y >= r.y && y <= r.y2) return true;
+    }
+    return false;
+  },
+
+  nearRoad(x, y, pad = 0) {
+    for (const r of this.roadRects) {
+      if (x >= r.x - pad && x <= r.x2 + pad && y >= r.y - pad && y <= r.y2 + pad) return true;
+    }
+    return false;
+  },
+
+  isWater(x, y) {
+    if (y < CFG.WATER_N || x > CFG.WATER_E) {
+      // piers override
+      for (const p of this.piers) {
+        if (x >= p.x - 6 && x <= p.x + p.w + 6 && y >= p.y - 6 && y <= p.y + p.h + 6) return false;
       }
+      return true;
     }
-    if (rng.chance(0.45)) {
-      const x = ix + rng.range(6, iw - 8), y = iy + rng.range(6, ih - 8);
-      b.props.push({ x, y, w: 4, h: 4, kind: 'crane', color: '#c8862a' });
-      this.addSolid(x, y, 4, 4, 'crane');
-    }
-  }
+    return false;
+  },
 
-  // Airfield: runway strip (visual), hangars, tower, parked plane, fuel tanks.
-  fillAirfield(b, rng, ix, iy, iw, ih) {
-    if (b.j === 2) {
-      // Hangar row along the south apron.
-      const hangarW = 30, hangarH = 17;
-      const hx = ix + 12 + (b.i - 10) * 4, hy = iy + 34;
-      b.buildings.push({ x: hx, y: hy, w: hangarW, h: hangarH, ht: 7, wall: '#3c4048', roof: '#565b66', wseed: 4242, lit: true, hangar: true, sign: null });
-      this.addSolid(hx, hy, hangarW, hangarH, 'hangar');
-      if (rng.chance(0.6)) {
-        const tx = ix + rng.range(3, iw - 6), ty = iy + rng.range(3, 14);
-        b.props.push({ x: tx, y: ty, w: 5, h: 5, kind: 'fuel', color: '#8a2f2f' });
-        this.addSolid(tx, ty, 5, 5, 'fuel');
-      }
-    } else if (b.j === 0 && b.i === 10) {
-      // Control tower
-      b.props.push({ x: ix + 22, y: iy + 24, w: 7, h: 7, kind: 'tower', color: '#4a4f5c' });
-      this.addSolid(ix + 22, iy + 24, 7, 7, 'tower');
-    } else if (b.j === 3 && b.i === 12) {
-      // A parked twin-prop, nose west.
-      b.props.push({ x: ix + 18, y: iy + 22, w: 24, h: 9, kind: 'plane', color: '#cfd3da' });
-      this.addSolid(ix + 18, iy + 22, 24, 9, 'plane');
+  solidHit(x, y, pad = 0) {
+    for (const s of this.solids) {
+      if (x >= s.x - pad && x <= s.x2 + pad && y >= s.y - pad && y <= s.y2 + pad) return s;
     }
-  }
-
-  // Park: paths, pond, benches, dense palms/trees.
-  fillPark(b, rng, ix, iy, iw, ih) {
-    b.pond = (b.i === 7 && b.j === 6) ? { x: ix + 16, y: iy + 14, w: 34, h: 30 } : null;
-    const trees = rng.int(7, 11);
-    for (let k = 0; k < trees; k++) {
-      const px = ix + rng.range(3, iw - 3), py = iy + rng.range(3, ih - 3);
-      if (b.pond && px > b.pond.x - 2 && px < b.pond.x + b.pond.w + 2 && py > b.pond.y - 2 && py < b.pond.y + b.pond.h + 2) continue;
-      if (this.blockedAt(px, py)) continue;
-      b.trees.push({ x: px, y: py, palm: rng.chance(0.7), s: rng.range(0.9, 1.4), seed: rng.int(1, 999999) });
-    }
-    for (let k = 0; k < 3; k++) {
-      b.props.push({ x: ix + rng.range(4, iw - 6), y: iy + rng.range(4, ih - 4), w: 2.6, h: 1, kind: 'bench' });
-    }
-  }
-
-  placeStreetlights() {
-    for (let j = 0; j <= ROWS; j++) {
-      for (let i = 0; i <= COLS; i++) {
-        const x = i * TILE, y = j * TILE;
-        if (y > CITY_H) continue; // beach sea edge
-        if ((i + j) % 2 === 0) {
-          this.streetlights.push({ x: x - ROAD / 2 - 1.2, y: y - ROAD / 2 - 1.2 });
-        } else {
-          this.streetlights.push({ x: x + ROAD / 2 + 1.2, y: y + ROAD / 2 + 1.2 });
-        }
-      }
-    }
-    // Extra lamps along the beach boulevard.
-    for (let x = 40; x < CITY_W; x += 96) this.streetlights.push({ x, y: CITY_H - ROAD / 2 - 2 });
-  }
-
-  placePalms(rng) {
-    // Beach boulevard median + sand fringe.
-    for (let x = 24; x < CITY_W; x += 21) {
-      if (!rng.chance(0.8)) continue;
-      this.palms.push({ x: x + rng.range(-4, 4), y: CITY_H - ROAD / 2 - 8 + rng.range(-2, 2), s: rng.range(1, 1.4), seed: rng.int(1, 999999) });
-    }
-    // Downtown avenues: sporadic sidewalk palms.
-    for (let i = 0; i <= COLS; i += 1) {
-      for (let y = 60; y < CITY_H - 120; y += 130) {
-        if (rng.chance(0.22)) this.palms.push({ x: i * TILE + ROAD / 2 + 2.5, y: y + rng.range(-20, 20), s: rng.range(0.9, 1.2), seed: rng.int(1, 999999) });
-      }
-    }
-    for (const p of this.palms) {
-      this.addSolid(p.x - 0.7, p.y - 0.7, 1.4, 1.4, 'palm');
-    }
-    // Park trees also block (they live in blocks; re-add here for solids).
-    for (let j = 0; j < ROWS; j++) for (let i = 0; i < COLS; i++) {
-      const b = this.blocks[j][i];
-      for (const t of b.trees) this.addSolid(t.x - 0.7, t.y - 0.7, 1.4, 1.4, 'tree');
-    }
-  }
-
-  placeBeachDetail(rng) {
-    for (let k = 0; k < 420; k++) {
-      const x = rng.range(6, CITY_W - 6), y = rng.range(BEACH_ROW * TILE + 14, CITY_H + 4);
-      this.sandDots.push({ x, y, s: rng.range(0.5, 1.6), d: rng.chance(0.5) });
-    }
-    // Parasols + a couple of lifeguard towers.
-    this.beachProps = [];
-    const PARA = ['#ff3ca0', '#ffb02e', '#25e8ff', '#8dff4a'];
-    for (let k = 0; k < 26; k++) {
-      const x = rng.range(14, CITY_W - 14), y = rng.range(BEACH_ROW * TILE + 16, CITY_H - 6);
-      if (this.blockedAt(x, y)) continue;
-      this.beachProps.push({ x, y, kind: 'parasol', color: rng.pick(PARA), seed: rng.int(1, 999999) });
-    }
-    for (let k = 0; k < 3; k++) {
-      const x = 150 + k * 340 + rng.range(-30, 30);
-      const y = rng.range(BEACH_ROW * TILE + 30, CITY_H - 20);
-      if (this.blockedAt(x, y)) continue;
-      this.beachProps.push({ x, y, kind: 'lifeguard', seed: rng.int(1, 999999) });
-      this.addSolid(x - 2, y - 2, 4, 4, 'hut');
-    }
-  }
-
-  placeWaterWaves(rng) {
-    for (let k = 0; k < 26; k++) this.waves.push({ phase: rng.range(0, TAU), speed: rng.range(0.5, 1.3) });
-  }
-
-  // ------------------------------------------------------------- extras
-  buildWeather() {
-    const types = WEATHER_TYPES;
-    this.weather = this.rng.chance(0.45) ? types[0] : this.rng.pick(types);
-  }
-
-  // Curb-side parking on residential/commercial/docks roads + two lots.
-  buildParking(rng) {
-    for (let j = 1; j < ROWS - 1; j++) {
-      for (let i = 0; i < COLS; i++) {
-        const b = this.blocks[j][i];
-        if (b.type === 'beach' || b.type === 'park' || b.type === 'airfield') continue;
-        if (!rng.chance(0.5)) continue;
-        // North curb of the road below the block: y = (j+1)*TILE - 7.
-        const count = rng.int(1, 3);
-        for (let k = 0; k < count; k++) {
-          const x = b.x + 10 + k * 7 + rng.range(0, 2);
-          if (x > b.x + b.w - 6) break;
-          this.parkingSpots.push({ x, y: (j + 1) * TILE - 7, angle: rng.chance(0.8) ? 0 : Math.PI });
-        }
-      }
-    }
-    // A proper lot in the docks and one near the airfield.
-    const lot = (lx, ly, cols, rows) => {
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          this.parkingSpots.push({ x: lx + c * 7, y: ly + r * 6, angle: Math.PI / 2 });
-        }
-      }
-    };
-    lot(120, 60, 6, 3);
-    lot(890, 300, 5, 3);
-  }
-
-  buildStreetFurniture(rng) {
-    // Hydrants at some block corners (tiny solids).
-    for (let j = 0; j < ROWS; j++) {
-      for (let i = 0; i < COLS; i++) {
-        const b = this.blocks[j][i];
-        if (b.type === 'beach' || b.type === 'park') continue;
-        if (rng.chance(0.4)) {
-          const hx = b.x - 2.6, hy = b.y + 6 + rng.range(0, b.h - 12);
-          this.hydrants.push({ x: hx, y: hy });
-          this.addSolid(hx - 0.5, hy - 0.5, 1, 1, 'hydrant');
-        }
-        if (rng.chance(0.22)) {
-          // Bus stop shelter on the east sidewalk.
-          const sx = b.x + b.w - SIDEWALK / 2, sy = b.y + rng.range(12, b.h - 16);
-          this.busStops.push({ x: sx, y: sy });
-          this.addSolid(sx - 1.6, sy - 1.4, 3.2, 2.8, 'shelter');
-        }
-      }
-    }
-    // Manholes on roads (pure deco, drawn with the markings).
-    for (let k = 0; k < 130; k++) {
-      const vertical = rng.chance(0.5);
-      const line = rng.int(0, vertical ? COLS : ROWS) * TILE;
-      const along = rng.range(10, (vertical ? CITY_H : CITY_W) - 10);
-      if (vertical) this.manholes.push({ x: line + rng.range(-5, 5), y: along });
-      else this.manholes.push({ x: along, y: line + rng.range(-5, 5) });
-    }
-  }
-
-  buildHarborDetails(rng) {
-    // Yachts moored between the piers.
-    const spots = [240, 340, 660, 760, 1000];
-    for (let k = 0; k < spots.length; k++) {
-      if (rng.chance(0.75)) {
-        const x = spots[k], y = -30 - rng.range(0, 10);
-        this.yachts.push({ x, y });
-        this.addSolid(x - 4, y - 1.5, 8, 3, 'yacht');
-      }
-    }
-    // Dock floodlight masts along the quay and yards.
-    for (let x = 60; x < 850; x += 140) {
-      this.floodlights.push({ x, y: 2 + rng.range(-2, 2) });
-    }
-    this.floodlights.push({ x: 200, y: 150 }, { x: 500, y: 120 }, { x: 760, y: 168 });
-  }
-
-  buildRunwayLights() {
-    for (let x = 874; x <= 1240; x += 12) {
-      this.runwayLights.push({ x, y: 120, color: x % 48 < 24 ? '#e8f4ff' : '#ffb02e' });
-      this.runwayLights.push({ x, y: 168, color: x % 48 < 24 ? '#e8f4ff' : '#ffb02e' });
-    }
-    for (let y = 126; y <= 162; y += 9) {
-      this.runwayLights.push({ x: 872, y, color: '#7dff8a' });
-    }
-  }
-
-  buildFerrisWheel() {
-    // Landmark: the Palms Wheel on block (8, BEACH_ROW).
-    const x = 8 * TILE + 48, y = 9 * TILE + 40;
-    this.ferris = { x, y, r: 22 };
-    this.addSolid(x - 3, y + 16, 6, 5, 'ferris');
-  }
-
-  buildBoardwalk() {
-    this.boardwalk = { x0: -9, x1: CITY_W + 9, y: 9 * TILE - 2, h: 8 };
-  }
-
-  buildRoofFeatures(rng) {
-    for (let j = 0; j < ROWS; j++) {
-      for (let i = 0; i < COLS; i++) {
-        const b = this.blocks[j][i];
-        for (const bl of b.buildings) {
-          if (bl.shack || bl.hangar) continue;
-          // Awnings over shopfronts (south face, commercial feel).
-          if ((b.type === 'commercial' || b.type === 'residential') && bl.h < 9 && bl.w >= 16) {
-            const colors = ['#b0483f', '#2f7a5e', '#3f5ab0', '#b08a2f'];
-            const aw = {
-              x: bl.x + 2, y: bl.y + bl.h, w: Math.min(bl.w - 4, 18),
-              color: rng.pick(colors),
-            };
-            this.awnings.push(aw);
-            bl.awning = aw;
-          }
-          // Helipads on towers.
-          if (bl.ht >= 15 && bl.w >= 22) {
-            this.roofPads.push({ x: bl.x + bl.w / 2, y: bl.y + bl.h / 2 });
-            bl.helipad = true;
-          } else if (bl.ht >= 8 && rng.chance(0.3)) {
-            this.roofTanks.push({ x: bl.x + bl.w / 2, y: bl.y + bl.h / 2 });
-            bl.tank = true;
-          }
-        }
-      }
-    }
-  }
-
-  nameLocations() {
-    // Street names per grid line (deterministic, seeded).
-    this.streetNames = { v: [], h: [] };
-    for (let i = 0; i <= COLS; i++) this.streetNames.v[i] = streetName(this.nameRng);
-    for (let j = 0; j <= ROWS; j++) this.streetNames.h[j] = streetName(this.nameRng);
-    // Ocean Drive & Neon Strip: fixed landmarks on the beach + main drag.
-    this.streetNames.h[ROWS] = 'OCEAN DRIVE';
-    this.streetNames.v[5] = 'NEON STRIP';
-    const L = (n, x, y) => (this.locations[n] = { x, y });
-    L('hospital', 5 * TILE + 48, 4 * TILE - 10);
-    L('policeSt', 8 * TILE + 48, 4 * TILE - 10);
-    L('plaza', 5 * TILE + 48, 5 * TILE + 48);
-    L('club', 2 * TILE + 48, 3 * TILE + 48);
-    L('hotel', 6 * TILE + 48, 2 * TILE + 48);
-    L('market', 9 * TILE + 48, 6 * TILE + 48);
-    L('garage', 2 * TILE + 48, 6 * TILE - 10);
-    L('docksGate', 4 * TILE, 1 * TILE + 48);
-    L('pier1', 192, -34);
-    L('pier2', 572, -34);
-    L('dockShip', 430, -30);
-    L('crane', 768, 60);
-    L('hangar', 11 * TILE + 48, 2 * TILE + 62);
-    L('runwayW', 10 * TILE + 8, 144);
-    L('runwayE', 12 * TILE + 60, 144);
-    L('runwayMid', 11 * TILE + 48, 144);
-    L('towerLoc', 1005, 60);
-    L('beachShack', 3 * TILE + 48, 9 * TILE + 62);
-    L('mansion', 7 * TILE + 48, 8 * TILE + 48);
-    L('taxiDepot', 1 * TILE + 48, 6 * TILE + 48);
-    L('busStop', 5 * TILE - 10, 7 * TILE + 48);
-  }
-
-  // ---------------------------------------------------------------- spawning
-  // Random lane point on the road grid, a given distance band from (px,py).
-  // Strategy: pick a road LINE that passes near the anchor first, then a
-  // point along that line inside the distance band — high yield, seeded.
-  randomLanePoint(rng, px, py, minD, maxD) {
-    for (let t = 0; t < 40; t++) {
-      const vertical = rng.chance(0.5);
-      const maxLine = vertical ? COLS : ROWS;
-      const cands = [];
-      for (let i = 0; i <= maxLine; i++) {
-        const coord = i * TILE;
-        const perp = vertical ? Math.abs(coord - px) : Math.abs(coord - py);
-        if (perp <= maxD + 6) cands.push(i);
-      }
-      if (!cands.length) return null;
-      const line = rng.pick(cands);
-      const lineCoord = line * TILE;
-      const along = vertical ? py : px;
-      for (let k = 0; k < 8; k++) {
-        let x, y, dir;
-        const a = clamp(along + rng.range(-maxD, maxD), -ROAD / 2 + 4, (vertical ? CITY_H : CITY_W) + ROAD / 2 - 4);
-        if (vertical) {
-          x = lineCoord + (rng.chance(0.5) ? LANE : -LANE);
-          y = a;
-          dir = x > lineCoord ? 3 : 1;   // right-hand: +lane drives north
-        } else {
-          y = lineCoord + (rng.chance(0.5) ? LANE : -LANE);
-          x = a;
-          dir = y > lineCoord ? 0 : 2;   // +lane south of line drives east
-        }
-        if (vertical && y > CITY_H - 4) continue;              // beach sea edge
-        if (y < 6 && rng.chance(0.5)) continue;                // thin harbor road traffic
-        const d = Math.hypot(x - px, y - py);
-        if (d < minD || d > maxD) continue;
-        if (!this.clearAt(x, y, 3)) continue;
-        return { x, y, dir };
-      }
+    for (const c of this.circles) {
+      if (dist2(x, y, c.x, c.y) <= (c.r + pad) * (c.r + pad)) return c;
     }
     return null;
-  }
+  },
 
-  // Sidewalk point around a random block.
-  randomSidewalkPoint(rng, px, py, minD, maxD) {
+  /**
+   * Resolve a circle against solids + water. Returns the corrected position
+   * or null if nothing was hit. `opts.water` treats sea as solid (cars, peds).
+   */
+  collide(x, y, r, opts = {}) {
+    let hit = false;
+    let nx = x, ny = y;
+    for (const s of this.solids) {
+      const p = this._pushCircleRect(nx, ny, r, s);
+      if (p) { nx += p.x; ny += p.y; hit = true; }
+    }
+    for (const c of this.circles) {
+      const dx = nx - c.x, dy = ny - c.y;
+      const d2 = dx * dx + dy * dy;
+      const rr = r + c.r;
+      if (d2 < rr * rr && d2 > 0.0001) {
+        const d = Math.sqrt(d2);
+        nx = c.x + (dx / d) * rr;
+        ny = c.y + (dy / d) * rr;
+        hit = true;
+      }
+    }
+    if (opts.water !== false && this.isWater(nx, ny) && !this.onPier(nx, ny)) {
+      // block at the shoreline: push back toward the given fallback heading
+      if (ny < CFG.WATER_N) { ny = CFG.WATER_N + r; hit = true; }
+      if (nx > CFG.WATER_E) { nx = CFG.WATER_E - r; hit = true; }
+    }
+    nx = clamp(nx, 24, CFG.WORLD - 24);
+    ny = clamp(ny, 24, CFG.WORLD - 24);
+    return hit ? { x: nx, y: ny } : null;
+  },
+
+  onPier(x, y) {
+    for (const p of this.piers) {
+      if (x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) return true;
+    }
+    return false;
+  },
+
+  _pushCircleRect(cx, cy, r, rect) {
+    if (cx + r <= rect.x || cx - r >= rect.x2 || cy + r <= rect.y || cy - r >= rect.y2) return null;
+    const left = cx - (rect.x - r);
+    const right = (rect.x2 + r) - cx;
+    const top = cy - (rect.y - r);
+    const bottom = (rect.y2 + r) - cy;
+    const m = Math.min(left, right, top, bottom);
+    if (m <= 0) return null;
+    if (m === left) return { x: -left, y: 0 };
+    if (m === right) return { x: right, y: 0 };
+    if (m === top) return { x: 0, y: -top };
+    return { x: 0, y: bottom };
+  },
+
+  /** true when a wall/building blocks sight between two points */
+  sightBlocked(x0, y0, x1, y1, step = 30) {
+    const d = Math.hypot(x1 - x0, y1 - y0);
+    const n = Math.max(1, Math.ceil(d / step));
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      const x = x0 + (x1 - x0) * t, y = y0 + (y1 - y0) * t;
+      for (const s of this.solids) {
+        if (!s.tall) continue;
+        if (x >= s.x && x <= s.x2 && y >= s.y && y <= s.y2) return true;
+      }
+    }
+    return false;
+  },
+
+  /** snap to the nearest point on any road centreline */
+  nearestRoadPoint(x, y) {
+    let best = null, bestD = Infinity;
+    for (const r of this.roadRects) {
+      const cx = clamp(x, r.x, r.x2), cy = clamp(y, r.y, r.y2);
+      const d = dist2(x, y, cx, cy);
+      if (d < bestD) { bestD = d; best = { x: cx, y: cy, seg: r }; }
+    }
+    return best;
+  },
+
+  /** random point on a sidewalk band beside any road */
+  randomSidewalkPoint(rng) {
     for (let t = 0; t < 40; t++) {
-      const i = rng.int(0, COLS - 1), j = rng.int(0, ROWS - 1);
-      const b = this.blocks[j][i];
-      if (b.type === 'beach' || b.type === 'docks' || b.type === 'airfield') continue;
-      const side = rng.int(0, 3);
-      const t2 = rng.range(4, BLOCK_INNER - 4);
+      const seg = rng.pick(this.segRects);
+      const off = HRW + CFG.SIDEWALK * 0.5;
       let x, y;
-      if (side === 0) { x = b.x + t2; y = b.y + SIDEWALK / 2; }
-      else if (side === 1) { x = b.x + t2; y = b.y + BLOCK_INNER - SIDEWALK / 2; }
-      else if (side === 2) { x = b.x + SIDEWALK / 2; y = b.y + t2; }
-      else { x = b.x + BLOCK_INNER - SIDEWALK / 2; y = b.y + t2; }
-      const d = Math.hypot(x - px, y - py);
-      if (d < minD || d > maxD) continue;
-      if (this.blockedAt(x, y)) continue;
-      return { x, y };
+      if (seg.axis === 'v') {
+        x = seg.x - off + rng.range(0, off * 2);
+        y = rng.range(seg.y + 20, seg.y2 - 20);
+      } else {
+        x = rng.range(seg.x + 20, seg.x2 - 20);
+        y = seg.y - off + rng.range(0, off * 2);
+      }
+      if (!this.solidHit(x, y, 4) && !this.isRoad(x, y)) return { x, y };
     }
-    return null;
-  }
+    return { x: this.spawn.x + 60, y: this.spawn.y + 60 };
+  },
 
-  // ------------------------------------------------------------------ lights
-  // Which direction has green at intersection (i, j)? Returns 'ns' | 'ew'.
-  greenDir(ix, iy, t) {
-    const offset = (ix + iy) & 1;
-    return Math.floor(t / TRAFFIC.LIGHT_CYCLE + offset) % 2 === 0 ? 'ns' : 'ew';
-  }
+  randomGraphNode(rng) {
+    return rng.pick(this.nodes);
+  },
 
-  // Yellow warning window?
-  isYellow(ix, iy, t) {
-    const cycle = TRAFFIC.LIGHT_CYCLE;
-    const off = ((ix + iy) & 1) * 0; // phases align to grid parity
-    const ft = (t + off) % cycle;
-    return ft > cycle - TRAFFIC.LIGHT_YELLOW;
-  }
+  // ---------------------------------------------------------------- lights
+  /** 'go' | 'stop' for a travelling axis at a lighted node */
+  lightState(n, axis, time) {
+    if (!n.lights) return 'go';
+    const cyc = time % 19;
+    const ns = axis === 'v';
+    if (cyc < 8) return ns ? 'go' : 'stop';
+    if (cyc < 9.5) return 'stop';                    // all red
+    if (cyc < 17.5) return ns ? 'stop' : 'go';
+    return 'stop';                                    // all red
+  },
 
   // ---------------------------------------------------------------- minimap
   buildMinimap() {
-    const s = this.mmScale;
-    const w = Math.ceil((WORLD_X1 - WORLD_X0) * s);
-    const h = Math.ceil((WORLD_Y1 - WORLD_Y0) * s);
+    const S = 512;
     const cv = document.createElement('canvas');
-    cv.width = w; cv.height = h;
-    const c = cv.getContext('2d');
-    const wx = (x) => (x - WORLD_X0) * s;
-    const wy = (y) => (y - WORLD_Y0) * s;
-
-    // Base
-    c.fillStyle = '#101322';
-    c.fillRect(0, 0, w, h);
-    // Harbor + sea
-    c.fillStyle = '#0c2740';
-    c.fillRect(0, 0, w, wy(-ROAD / 2));
-    c.fillRect(0, wy(CITY_H + ROAD / 2), w, h);
-    // Beach sand
-    c.fillStyle = '#6e6042';
-    c.fillRect(0, wy(BEACH_ROW * TILE + 9), w, wy(CITY_H) - wy(BEACH_ROW * TILE + 9) + 4);
-    // Blocks
-    for (let j = 0; j < ROWS; j++) {
-      for (let i = 0; i < COLS; i++) {
-        const b = this.blocks[j][i];
-        c.fillStyle = YARD[b.type][0];
-        c.fillRect(wx(b.x), wy(b.y), b.w * s, b.h * s);
-        if (b.pond) {
-          c.fillStyle = '#0c2740';
-          c.fillRect(wx(b.pond.x), wy(b.pond.y), b.pond.w * s, b.pond.h * s);
-        }
-        for (const bl of b.buildings) {
-          c.fillStyle = '#262a38';
-          c.fillRect(wx(bl.x), wy(bl.y), bl.w * s, bl.h * s);
-        }
-      }
+    cv.width = S; cv.height = S;
+    const g = cv.getContext('2d');
+    const k = S / CFG.WORLD;
+    g.fillStyle = '#10141c';
+    g.fillRect(0, 0, S, S);
+    // zones
+    for (const z of this.zones) {
+      g.fillStyle = z.kind === 'water' ? '#0c2233'
+        : z.kind === 'sand' ? '#6e6248'
+        : z.kind === 'grass' ? '#24402c'
+        : z.kind === 'path' ? '#4a4438'
+        : z.kind === 'dirt' ? '#2a2a24'
+        : z.kind === 'runway' ? '#2e3238'
+        : '#20242c';
+      g.fillRect(z.x0 * k, z.y0 * k, (z.x1 - z.x0) * k, (z.y1 - z.y0) * k);
     }
-    // Roads
-    c.fillStyle = '#3a3f52';
-    for (let i = 0; i <= COLS; i++) c.fillRect(wx(i * TILE - ROAD / 2), wy(-ROAD / 2), ROAD * s, (CITY_H + ROAD) * s);
-    for (let j = 0; j <= ROWS; j++) c.fillRect(wx(-ROAD / 2), wy(j * TILE - ROAD / 2), (CITY_W + ROAD) * s, ROAD * s);
-    // Runway
-    c.fillStyle = '#4a4e58';
-    c.fillRect(wx(874), wy(122), (1240 - 874) * s, 44 * s);
-    // Ship + piers
-    c.fillStyle = '#39424e';
-    c.fillRect(wx(360), wy(-70), 200 * s, 54 * s);
+    // roads
+    g.fillStyle = '#4d5666';
+    for (const r of this.roadRects) g.fillRect(r.x * k, r.y * k, r.w * k, r.h * k);
+    // buildings (raised blocks)
+    g.fillStyle = '#68707e';
+    for (const b of this.buildings) g.fillRect(b.x * k, b.y * k, b.w * k, b.h * k);
+    // piers + ship
+    g.fillStyle = '#5c5648';
+    for (const p of this.piers) g.fillRect(p.x * k, p.y * k, p.w * k, p.h * k);
+    if (this.ship) {
+      g.fillStyle = '#7a8496';
+      g.fillRect(this.ship.x * k, this.ship.y * k, this.ship.w * k, this.ship.h * k);
+    }
     this.minimap = cv;
-  }
-
-  // ------------------------------------------------------------------ drawing
-  // Ground pass: everything flat under entities.
-  drawGround(ctx, vx0, vy0, vx1, vy1, t) {
-    // Base asphalt over the whole city band.
-    ctx.fillStyle = '#20222c';
-    ctx.fillRect(vx0, Math.max(vy0, -ROAD / 2), vx1 - vx0, Math.min(vy1, CITY_H + ROAD / 2) - Math.max(vy0, -ROAD / 2));
-
-    // Blocks (yards, sidewalks, markings) within view.
-    const i0 = clamp(Math.floor((vx0 - ROAD) / TILE), 0, COLS - 1);
-    const i1 = clamp(Math.ceil((vx1 + ROAD) / TILE), 0, COLS - 1);
-    const j0 = clamp(Math.floor((vy0 - ROAD) / TILE), 0, ROWS - 1);
-    const j1 = clamp(Math.ceil((vy1 + ROAD) / TILE), 0, ROWS - 1);
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        this.drawBlockGround(ctx, this.blocks[j][i], t);
-      }
-    }
-    this.drawRoadMarkings(ctx, vx0, vy0, vx1, vy1, t);
-    this.drawWater(ctx, vx0, vy0, vx1, vy1, t);
-  }
-
-  drawBlockGround(ctx, b, t) {
-    const [fill, edge] = YARD[b.type];
-    // Sidewalk slab then yard inset.
-    ctx.fillStyle = '#33363f';
-    ctx.fillRect(b.x, b.y, b.w, b.h);
-    ctx.fillStyle = fill;
-    ctx.fillRect(b.x + SIDEWALK, b.y + SIDEWALK, b.w - SIDEWALK * 2, b.h - SIDEWALK * 2);
-
-    if (b.type === 'beach') {
-      // Sand swallows the sidewalk: full sand fill + specks.
-      ctx.fillStyle = YARD.beach[0];
-      ctx.fillRect(b.x, b.y, b.w, b.h);
-      ctx.fillStyle = 'rgba(255,255,255,0.05)';
-      for (const d of this.sandDots) {
-        if (d.x > b.x && d.x < b.x + b.w && d.y > b.y && d.y < b.y + b.h) {
-          ctx.fillRect(d.x, d.y, d.s, d.s * 0.6);
-        }
-      }
-    }
-
-    if (b.type === 'park') {
-      // Diagonal paths
-      ctx.strokeStyle = '#5a5344';
-      ctx.lineWidth = 2.4;
-      ctx.beginPath();
-      ctx.moveTo(b.x + 6, b.y + b.h / 2);
-      ctx.lineTo(b.x + b.w - 6, b.y + b.h / 2);
-      ctx.moveTo(b.x + b.w / 2, b.y + 6);
-      ctx.lineTo(b.x + b.w / 2, b.y + b.h - 6);
-      ctx.stroke();
-      if (b.pond) {
-        ctx.fillStyle = '#0d3352';
-        ctx.beginPath();
-        ctx.ellipse(b.pond.x + b.pond.w / 2, b.pond.y + b.pond.h / 2, b.pond.w / 2, b.pond.h / 2, 0, 0, TAU);
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(140,220,255,0.25)';
-        ctx.lineWidth = 0.6;
-        ctx.stroke();
-      }
-    }
-
-    if (b.type === 'docks') {
-      // Painted lot lanes
-      ctx.strokeStyle = 'rgba(255,200,80,0.16)';
-      ctx.lineWidth = 0.5;
-      for (let y = b.y + 14; y < b.y + b.h; y += 18) {
-        ctx.beginPath(); ctx.moveTo(b.x + 6, y); ctx.lineTo(b.x + b.w - 6, y); ctx.stroke();
-      }
-    }
-
-    if (b.type === 'airfield') {
-      ctx.fillStyle = '#3c3f47';
-      ctx.fillRect(b.x, b.y, b.w, b.h);
-    }
-
-    // Props (flat parts: containers drawn as solids at entity height though)
-    for (const p of b.props) {
-      if (p.kind === 'bench') {
-        ctx.fillStyle = '#4a3d2c';
-        ctx.fillRect(p.x, p.y, p.w, p.h);
-      } else if (p.kind === 'planter') {
-        ctx.fillStyle = '#2c4432';
-        ctx.fillRect(p.x, p.y, p.w, p.h);
-      }
-    }
-  }
-
-  drawRoadMarkings(ctx, vx0, vy0, vx1, vy1, t) {
-    const i0 = clamp(Math.floor(vx0 / TILE) - 1, 0, COLS);
-    const i1 = clamp(Math.ceil(vx1 / TILE) + 1, 0, COLS);
-    const j0 = clamp(Math.floor(vy0 / TILE) - 1, 0, ROWS);
-    const j1 = clamp(Math.ceil(vy1 / TILE) + 1, 0, ROWS);
-
-    ctx.strokeStyle = 'rgba(230,220,140,0.34)';
-    ctx.lineWidth = 0.35;
-    ctx.setLineDash([2.6, 3.2]);
-    ctx.beginPath();
-    for (let i = i0; i <= i1; i++) {
-      ctx.moveTo(i * TILE, Math.max(vy0, 0));
-      ctx.lineTo(i * TILE, Math.min(vy1, CITY_H));
-    }
-    for (let j = j0; j <= j1; j++) {
-      ctx.moveTo(Math.max(vx0, 0), j * TILE);
-      ctx.lineTo(Math.min(vx1, CITY_W), j * TILE);
-    }
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Crosswalks at downtown-ish intersections
-    ctx.fillStyle = 'rgba(220,225,235,0.30)';
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        const x = i * TILE, y = j * TILE;
-        if (y > CITY_H - 2 || (x > 860 && y < 390)) continue; // skip sea edge & airfield
-        for (let k = -1; k <= 1; k += 2) {
-          ctx.fillRect(x - ROAD / 2 + 2, y + k * (ROAD / 2 + 1.2) - 0.8, ROAD - 4, 1.6);
-          ctx.fillRect(x + k * (ROAD / 2 + 1.2) - 0.8, y - ROAD / 2 + 2, 1.6, ROAD - 4);
-        }
-      }
-    }
-
-    // Manholes and drains (pure deco).
-    ctx.fillStyle = 'rgba(8,10,14,0.5)';
-    for (const m of this.manholes) {
-      if (m.x < vx0 || m.x > vx1 || m.y < vy0 || m.y > vy1) continue;
-      ctx.beginPath();
-      ctx.arc(m.x, m.y, 1.1, 0, TAU);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(120,126,140,0.35)';
-      ctx.lineWidth = 0.15;
-      ctx.stroke();
-    }
-
-    // Runway strip + dashes
-    if (vx1 > 860 && vy0 < 180 && vy1 > 110) {
-      ctx.fillStyle = '#33363e';
-      ctx.fillRect(874, 122, 366, 44);
-      ctx.strokeStyle = 'rgba(240,240,240,0.5)';
-      ctx.lineWidth = 0.7;
-      ctx.setLineDash([6, 6]);
-      ctx.beginPath();
-      ctx.moveTo(884, 144);
-      ctx.lineTo(1230, 144);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.strokeStyle = 'rgba(240,240,240,0.75)';
-      ctx.strokeRect(874, 122, 366, 44);
-    }
-
-    // Traffic lights (heads only; glow is the light pass's job)
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        if (i === 0 && j === 0) continue;
-        const x = i * TILE, y = j * TILE;
-        if (y > CITY_H - 2 || (x > 860 && y < 390)) continue;
-        const gd = this.greenDir(i, j, t);
-        const yellow = this.isYellow(i, j, t);
-        this.drawLightHead(ctx, x - ROAD / 2 - 2.4, y - ROAD / 2 - 2.4, gd === 'ns' ? 'g' : yellow ? 'y' : 'r');
-        this.drawLightHead(ctx, x + ROAD / 2 + 2.4, y + ROAD / 2 + 2.4, gd === 'ew' ? 'g' : yellow ? 'y' : 'r');
-      }
-    }
-  }
-
-  drawLightHead(ctx, x, y, state) {
-    ctx.fillStyle = '#14161c';
-    ctx.fillRect(x - 1, y - 1, 2, 2);
-    const col = state === 'g' ? '#2ecc71' : state === 'y' ? '#f1c40f' : '#e74c3c';
-    ctx.fillStyle = col;
-    ctx.fillRect(x - 0.55, y - 0.55, 1.1, 1.1);
-  }
-
-  drawWater(ctx, vx0, vy0, vx1, vy1, t) {
-    const bands = [];
-    if (vy0 < -ROAD / 2) bands.push([vy0, -ROAD / 2]);                 // harbor
-    if (vy1 > CITY_H + ROAD / 2) bands.push([CITY_H + ROAD / 2, vy1]); // sea
-    for (const [y0, y1] of bands) {
-      ctx.fillStyle = '#0a2038';
-      ctx.fillRect(vx0, y0, vx1 - vx0, y1 - y0);
-      // Wave lines
-      ctx.strokeStyle = 'rgba(90,170,220,0.20)';
-      ctx.lineWidth = 0.4;
-      for (let wi = 0; wi < this.waves.length; wi++) {
-        const w = this.waves[wi];
-        const wy = y0 + ((wi * 7.3) % (y1 - y0));
-        const off = Math.sin(t * w.speed + w.phase) * 6;
-        ctx.beginPath();
-        ctx.moveTo(Math.max(vx0, -10) + off, wy);
-        ctx.lineTo(Math.min(vx1, WORLD_X1) - 10 + off, wy);
-        ctx.stroke();
-      }
-      // Foam edge along the shoreline
-      const shoreY = y0 < 0 ? -ROAD / 2 : CITY_H + ROAD / 2;
-      ctx.fillStyle = 'rgba(200,235,255,0.22)';
-      const foam = 0.6 + Math.sin(t * 1.4) * 0.35;
-      ctx.fillRect(Math.max(vx0, -10), y0 < 0 ? shoreY - foam : shoreY, vx1 - vx0, foam + 0.8);
-    }
-  }
-
-  // Solid props & structures (containers, cranes, ship, hangars, tower...).
-  drawStructures(ctx, vx0, vy0, vx1, vy1, t = 0) {
-    // Ship in the harbor
-    if (vy0 < 30) {
-      ctx.save();
-      // hull
-      ctx.fillStyle = '#2e3846';
-      ctx.fillRect(360, -70, 200, 50);
-      ctx.fillStyle = '#39434f';
-      ctx.fillRect(364, -66, 192, 42);
-      // deck house
-      ctx.fillStyle = '#4d5866';
-      ctx.fillRect(500, -62, 40, 18);
-      ctx.fillStyle = '#ffd23c';
-      ctx.fillRect(516, -60, 6, 6);
-      // containers on deck
-      const deckCols = ['#b0483f', '#3f7ab0', '#4f9c58'];
-      for (let k = 0; k < 6; k++) {
-        ctx.fillStyle = deckCols[k % 3];
-        ctx.fillRect(374 + (k % 3) * 22, -34 + Math.floor(k / 3) * 8, 19, 6);
-      }
-      // navigation lights + name
-      const blink = Math.sin(t * 2.4) > 0.4 ? 1 : 0.25;
-      ctx.fillStyle = `rgba(46,204,113,${blink})`;
-      ctx.fillRect(366, -66, 1.6, 1.6);            // starboard
-      ctx.fillStyle = `rgba(231,76,60,${blink})`;
-      ctx.fillRect(552, -66, 1.6, 1.6);            // port
-      ctx.fillStyle = 'rgba(255,220,150,0.85)';
-      ctx.fillRect(506, -60, 2, 2);
-      ctx.fillRect(512, -60, 2, 2);
-      ctx.fillRect(530, -60, 2, 2);
-      ctx.fillStyle = 'rgba(220,230,240,0.75)';
-      ctx.font = '700 8px "Consolas", monospace';
-      ctx.fillText('M/V VICE PALMS', 396, -52);
-      ctx.restore();
-    }
-    // Docks & airfield solid props from blocks in view
-    const i0 = clamp(Math.floor((vx0 - ROAD) / TILE), 0, COLS - 1);
-    const i1 = clamp(Math.ceil((vx1 + ROAD) / TILE), 0, COLS - 1);
-    const j0 = clamp(Math.floor((vy0 - ROAD) / TILE), 0, ROWS - 1);
-    const j1 = clamp(Math.ceil((vy1 + ROAD) / TILE), 0, ROWS - 1);
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        const b = this.blocks[j][i];
-        for (const p of b.props) {
-          if (p.kind === 'container') {
-            ctx.fillStyle = p.color;
-            ctx.fillRect(p.x, p.y, p.w, p.h);
-            ctx.fillStyle = 'rgba(0,0,0,0.35)';
-            for (let rx = p.x + 1; rx < p.x + p.w - 0.6; rx += 1.4) ctx.fillRect(rx, p.y + 0.3, 0.35, p.h - 0.6);
-            ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-            ctx.strokeRect(p.x, p.y, p.w, p.h);
-          } else if (p.kind === 'crane') {
-            ctx.fillStyle = '#c8862a';
-            ctx.fillRect(p.x, p.y, p.w, p.h);
-            ctx.strokeStyle = '#e8b04a';
-            ctx.lineWidth = 1.4;
-            ctx.beginPath();
-            ctx.moveTo(p.x + 2, p.y + 2); ctx.lineTo(p.x + 2, p.y - 26);
-            ctx.lineTo(p.x + 30, p.y - 26); ctx.lineTo(p.x + 26, p.y + 2);
-            ctx.stroke();
-          } else if (p.kind === 'fuel') {
-            ctx.fillStyle = '#8a2f2f';
-            ctx.fillRect(p.x, p.y, p.w, p.h);
-            ctx.fillStyle = '#d5d9df';
-            ctx.font = '700 4px monospace';
-            ctx.fillText('FUEL', p.x + 0.6, p.y + 3.2);
-          } else if (p.kind === 'tower') {
-            ctx.fillStyle = '#4a4f5c';
-            ctx.fillRect(p.x, p.y, p.w, p.h);
-            ctx.fillStyle = '#2a2e3a';
-            ctx.fillRect(p.x + 1, p.y + 1, p.w - 2, p.h - 2);
-            ctx.fillStyle = '#7ee6ff';
-            ctx.fillRect(p.x + 1.4, p.y + 1.4, p.w - 2.8, 2.2);
-            ctx.strokeStyle = '#e74c3c';
-            ctx.lineWidth = 0.5;
-            ctx.beginPath();
-            ctx.moveTo(p.x + p.w / 2, p.y + p.h / 2); ctx.lineTo(p.x + p.w / 2, p.y - 10);
-            ctx.stroke();
-          } else if (p.kind === 'plane') {
-            ctx.fillStyle = '#9aa2ae';
-            ctx.fillRect(p.x, p.y + 3, p.w, 3);            // fuselage
-            ctx.fillRect(p.x + p.w * 0.42, p.y, 3.2, 9);   // wing
-            ctx.fillStyle = '#c9cfd8';
-            ctx.fillRect(p.x + p.w - 6, p.y + 1.4, 5, 6.2); // tail
-            ctx.fillStyle = '#2a2e3a';
-            ctx.fillRect(p.x + 1, p.y + 4.2, 2.4, 0.8);    // cockpit
-          } else if (p.kind === 'dumpster') {
-            ctx.fillStyle = '#3d5c46';
-            ctx.fillRect(p.x, p.y, p.w, p.h);
-            ctx.fillStyle = 'rgba(255,255,255,0.12)';
-            ctx.fillRect(p.x, p.y, p.w, 0.6);
-          }
-        }
-        for (const tr of b.trees) this.drawTree(ctx, tr);
-      }
-    }
-    // Palms (from the global list, view-culled)
-    for (const p of this.palms) {
-      if (p.x < vx0 - 8 || p.x > vx1 + 8 || p.y < vy0 - 8 || p.y > vy1 + 8) continue;
-      this.drawPalm(ctx, p);
-    }
-    // Streetlight poles
-    for (const s of this.streetlights) {
-      if (s.x < vx0 - 4 || s.x > vx1 + 4 || s.y < vy0 - 4 || s.y > vy1 + 4) continue;
-      ctx.fillStyle = '#3a3f4a';
-      ctx.beginPath(); ctx.arc(s.x, s.y, 0.55, 0, TAU); ctx.fill();
-      ctx.fillStyle = '#e8e2c8';
-      ctx.beginPath(); ctx.arc(s.x, s.y, 0.3, 0, TAU); ctx.fill();
-    }
-    // Boardwalk planks along the beach top edge.
-    if (this.boardwalk && vy1 > this.boardwalk.y - 6 && vy0 < this.boardwalk.y + this.boardwalk.h + 6) {
-      const bw = this.boardwalk;
-      ctx.fillStyle = '#6b5232';
-      ctx.fillRect(bw.x0, bw.y, bw.x1 - bw.x0, bw.h);
-      ctx.strokeStyle = 'rgba(0,0,0,0.28)';
-      ctx.lineWidth = 0.22;
-      ctx.beginPath();
-      for (let x = bw.x0; x < bw.x1; x += 3.2) {
-        ctx.moveTo(x, bw.y);
-        ctx.lineTo(x, bw.y + bw.h);
-      }
-      ctx.stroke();
-      // Rail toward the sand.
-      ctx.strokeStyle = '#8a6a40';
-      ctx.lineWidth = 0.5;
-      ctx.beginPath();
-      ctx.moveTo(bw.x0, bw.y + bw.h);
-      ctx.lineTo(bw.x1, bw.y + bw.h);
-      ctx.stroke();
-    }
-
-    // Yachts in the harbor.
-    for (const y of this.yachts) {
-      if (y.x < vx0 - 20 || y.x > vx1 + 20 || y.y < vy0 - 20 || y.y > vy1 + 20) continue;
-      ctx.fillStyle = 'rgba(0,0,0,0.35)';
-      ctx.beginPath(); ctx.ellipse(y.x + 0.6, y.y + 1.6, 4.6, 2.2, 0, 0, TAU); ctx.fill();
-      ctx.fillStyle = '#e8ecf2';
-      ctx.beginPath();
-      ctx.moveTo(y.x - 4.4, y.y);
-      ctx.quadraticCurveTo(y.x, y.y - 2.6, y.x + 4.4, y.y);
-      ctx.quadraticCurveTo(y.x, y.y + 2.2, y.x - 4.4, y.y);
-      ctx.fill();
-      ctx.fillStyle = '#39506e';
-      ctx.fillRect(y.x - 1, y.y - 1.6, 2, 1.6);
-      ctx.fillStyle = 'rgba(255,220,140,0.8)';
-      ctx.fillRect(y.x + 1.2, y.y - 1.2, 1.4, 0.9);
-    }
-
-    // Ferris wheel — the Palms Wheel.
-    if (this.ferris && this.ferris.x > vx0 - 40 && this.ferris.x < vx1 + 40 && this.ferris.y > vy0 - 40 && this.ferris.y < vy1 + 40) {
-      const f = this.ferris;
-      const rot = t * 0.22;
-      // Supports
-      ctx.strokeStyle = '#4a4f5c';
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.moveTo(f.x - 8, f.y + 18); ctx.lineTo(f.x, f.y);
-      ctx.moveTo(f.x + 8, f.y + 18); ctx.lineTo(f.x, f.y);
-      ctx.stroke();
-      // Rim + spokes
-      ctx.strokeStyle = '#ff3ca0';
-      ctx.lineWidth = 0.7;
-      ctx.beginPath();
-      ctx.arc(f.x, f.y, f.r, 0, TAU);
-      ctx.stroke();
-      for (let k = 0; k < 8; k++) {
-        const a = rot + (k / 8) * TAU;
-        const cx = f.x + Math.cos(a) * f.r, cy = f.y + Math.sin(a) * f.r;
-        ctx.beginPath();
-        ctx.moveTo(f.x, f.y);
-        ctx.lineTo(cx, cy);
-        ctx.stroke();
-        // Cabin
-        ctx.fillStyle = ['#ff3ca0', '#25e8ff', '#8dff4a', '#ffb02e'][k % 4];
-        ctx.fillRect(cx - 1.2, cy - 0.6, 2.4, 2);
-      }
-      // Hub
-      ctx.fillStyle = '#e8ecf2';
-      ctx.beginPath(); ctx.arc(f.x, f.y, 1.6, 0, TAU); ctx.fill();
-    }
-
-    // Beach parasols & lifeguard towers.
-    if (this.beachProps && vy1 > 860) {
-      for (const bp of this.beachProps) {
-        if (bp.x < vx0 - 8 || bp.x > vx1 + 8 || bp.y < vy0 - 8 || bp.y > vy1 + 8) continue;
-        if (bp.kind === 'parasol') {
-          const sway = Math.sin((bp.seed % 53) + (this._gt || 0) * 0.7) * 0.3;
-          ctx.fillStyle = 'rgba(0,0,0,0.28)';
-          ctx.beginPath(); ctx.ellipse(bp.x + 1, bp.y + 0.8, 2.2, 1.2, 0, 0, TAU); ctx.fill();
-          ctx.strokeStyle = '#8a6a40';
-          ctx.lineWidth = 0.3;
-          ctx.beginPath(); ctx.moveTo(bp.x, bp.y); ctx.lineTo(bp.x + sway, bp.y - 2.6); ctx.stroke();
-          ctx.fillStyle = bp.color;
-          ctx.beginPath(); ctx.arc(bp.x + sway, bp.y - 2.6, 2.1, 0, TAU); ctx.fill();
-          ctx.fillStyle = 'rgba(255,255,255,0.4)';
-          ctx.beginPath(); ctx.arc(bp.x + sway - 0.5, bp.y - 3, 0.8, 0, TAU); ctx.fill();
-        } else {
-          // Lifeguard tower on stilts
-          ctx.fillStyle = 'rgba(0,0,0,0.3)';
-          ctx.fillRect(bp.x - 2.4, bp.y + 1.4, 5, 1.6);
-          ctx.strokeStyle = '#7a5a3a';
-          ctx.lineWidth = 0.4;
-          ctx.beginPath();
-          ctx.moveTo(bp.x - 1.6, bp.y + 1.4); ctx.lineTo(bp.x - 1, bp.y - 2.2);
-          ctx.moveTo(bp.x + 1.6, bp.y + 1.4); ctx.lineTo(bp.x + 1, bp.y - 2.2);
-          ctx.stroke();
-          ctx.fillStyle = '#d8604a';
-          ctx.fillRect(bp.x - 2.2, bp.y - 3.6, 4.4, 2.6);
-          ctx.fillStyle = '#f2efe8';
-          ctx.fillRect(bp.x - 2.2, bp.y - 3.6, 4.4, 0.7);
-        }
-      }
-    }
-
-    // Hydrants + bus stops.
-    for (const h of this.hydrants) {
-      if (h.x < vx0 - 4 || h.x > vx1 + 4 || h.y < vy0 - 4 || h.y > vy1 + 4) continue;
-      ctx.fillStyle = '#b03a2e';
-      ctx.beginPath(); ctx.arc(h.x, h.y, 0.55, 0, TAU); ctx.fill();
-      ctx.fillStyle = '#e85a4e';
-      ctx.beginPath(); ctx.arc(h.x, h.y, 0.3, 0, TAU); ctx.fill();
-    }
-    for (const bs of this.busStops) {
-      if (bs.x < vx0 - 8 || bs.x > vx1 + 8 || bs.y < vy0 - 8 || bs.y > vy1 + 8) continue;
-      ctx.fillStyle = 'rgba(80,90,110,0.9)';
-      ctx.fillRect(bs.x - 1.6, bs.y - 1.4, 3.2, 0.4);      // roof
-      ctx.fillStyle = '#3f4654';
-      ctx.fillRect(bs.x - 1.5, bs.y - 1, 0.3, 2.4);        // post
-      ctx.fillRect(bs.x + 1.2, bs.y - 1, 0.3, 2.4);
-      ctx.fillStyle = '#ffd23c';
-      ctx.fillRect(bs.x - 0.9, bs.y - 1.1, 1.8, 0.5);      // sign
-    }
-
-    // Airfield fence (painted, non-solid)
-    if (vx1 > 900 && vy0 < 380) {
-      ctx.strokeStyle = 'rgba(190,196,210,0.4)';
-      ctx.lineWidth = 0.45;
-      ctx.setLineDash([2.4, 2]);
-      ctx.strokeRect(930, 30, 310, 330);
-      ctx.setLineDash([]);
-    }
-  }
-
-  drawTree(ctx, tr) {
-    if (tr.palm) this.drawPalm(ctx, { x: tr.x, y: tr.y, s: tr.s, seed: tr.seed });
-    else {
-      ctx.fillStyle = 'rgba(0,0,0,0.3)';
-      ctx.beginPath(); ctx.arc(tr.x + 0.8, tr.y + 0.9, 1.7 * tr.s, 0, TAU); ctx.fill();
-      ctx.fillStyle = '#1e4a2a';
-      ctx.beginPath(); ctx.arc(tr.x, tr.y, 1.7 * tr.s, 0, TAU); ctx.fill();
-      ctx.fillStyle = '#2c6438';
-      ctx.beginPath(); ctx.arc(tr.x - 0.3, tr.y - 0.4, 1.15 * tr.s, 0, TAU); ctx.fill();
-    }
-  }
-
-  drawPalm(ctx, p) {
-    const sway = Math.sin((p.seed % 97) + this.gameTimeSafe() * 0.9) * 0.35;
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-    ctx.beginPath(); ctx.ellipse(p.x + 1.2, p.y + 1, 2.4 * p.s, 1.5 * p.s, 0, 0, TAU); ctx.fill();
-    ctx.strokeStyle = '#6b4d2e';
-    ctx.lineWidth = 0.65 * p.s;
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
-    ctx.quadraticCurveTo(p.x + sway * 0.6, p.y - 1.6 * p.s, p.x + sway, p.y - 3.1 * p.s);
-    ctx.stroke();
-    const tx = p.x + sway, ty = p.y - 3.1 * p.s;
-    ctx.strokeStyle = '#2f7a3e';
-    ctx.lineWidth = 0.5 * p.s;
-    for (let f = 0; f < 6; f++) {
-      const a = (f / 6) * TAU + (p.seed % 7) * 0.3;
-      ctx.beginPath();
-      ctx.moveTo(tx, ty);
-      ctx.quadraticCurveTo(tx + Math.cos(a) * 1.6 * p.s, ty + Math.sin(a) * 1.6 * p.s - 0.5,
-        tx + Math.cos(a) * 2.7 * p.s, ty + Math.sin(a) * 2.2 * p.s + 0.5);
-      ctx.stroke();
-    }
-  }
-
-  gameTimeSafe() {
-    // Cheap static sway time; render passes the real t via game when present.
-    return (typeof this._gt === 'number') ? this._gt : 0;
-  }
-
-  // A single building with pseudo-3D parallax extrusion.
-  drawBuilding(ctx, bl, cam, t) {
-    const cx = bl.x + bl.w / 2, cy = bl.y + bl.h / 2;
-    const k = 0.0011 * bl.ht * cam.z * 7.2 / 7.2; // parallax per unit height
-    const ox = (cx - cam.x) * bl.ht * 0.0016 * (cam.z * 7.2) / 7.2;
-    const oy = (cy - cam.y) * bl.ht * 0.0016 * (cam.z * 7.2) / 7.2;
-    const roofX = bl.x + ox, roofY = bl.y + oy;
-
-    // Visible wall faces: toward the offset direction.
-    ctx.fillStyle = bl.wall;
-    if (oy > 0.05) {
-      // south face visible
-      ctx.fillRect(bl.x, bl.y + bl.h, bl.w, oy);
-      this.drawWindows(ctx, bl.x, bl.y + bl.h, bl.w, oy, bl, true, t);
-    } else if (oy < -0.05) {
-      ctx.fillRect(bl.x + ox, bl.y + oy, bl.w, -oy);
-      this.drawWindows(ctx, bl.x + ox, bl.y + oy, bl.w, -oy, bl, true, t);
-    }
-    if (ox > 0.05) {
-      ctx.fillRect(bl.x + bl.w, bl.y + Math.max(0, oy), ox, bl.h - Math.abs(oy));
-      this.drawWindows(ctx, bl.x + bl.w, bl.y + Math.max(0, oy), ox, bl.h - Math.abs(oy), bl, false, t);
-    } else if (ox < -0.05) {
-      ctx.fillRect(bl.x + ox, bl.y + Math.max(0, -oy), -ox, bl.h - Math.abs(oy));
-      this.drawWindows(ctx, bl.x + ox, bl.y + Math.max(0, -oy), -ox, bl.h - Math.abs(oy), bl, false, t);
-    }
-
-    // Roof slab
-    ctx.fillStyle = bl.roof;
-    ctx.fillRect(roofX, roofY, bl.w, bl.h);
-    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-    ctx.lineWidth = 0.3;
-    ctx.strokeRect(roofX, roofY, bl.w, bl.h);
-
-    // Roof clutter for taller buildings
-    if (bl.ht > 8 && !bl.shack) {
-      const s = bl.wseed;
-      const acX = roofX + 4 + (s % Math.max(1, bl.w - 10));
-      const acY = roofY + 4 + ((s >> 3) % Math.max(1, bl.h - 10));
-      ctx.fillStyle = '#23252e';
-      ctx.fillRect(acX, acY, 3, 2.4);
-      ctx.fillStyle = '#31343f';
-      ctx.fillRect(acX + 0.3, acY + 0.3, 2.4, 1.8);
-      if (bl.ht > 13) {
-        ctx.fillStyle = '#e74c3c';
-        ctx.beginPath();
-        ctx.arc(roofX + bl.w * 0.82, roofY + bl.h * 0.2, 0.5 + Math.sin(t * 3) * 0.15, 0, TAU);
-        ctx.fill();
-      }
-    }
-    // Helipad on towers
-    if (bl.helipad) {
-      const hx = roofX + bl.w / 2, hy = roofY + bl.h / 2;
-      ctx.strokeStyle = 'rgba(240,244,248,0.75)';
-      ctx.lineWidth = 0.45;
-      ctx.beginPath();
-      ctx.arc(hx, hy, 5, 0, TAU);
-      ctx.stroke();
-      ctx.fillStyle = 'rgba(240,244,248,0.75)';
-      ctx.font = '700 6px "Consolas", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('H', hx, hy + 2.2);
-      ctx.textAlign = 'left';
-    }
-    // Water tank
-    if (bl.tank) {
-      const tx = roofX + bl.w / 2, ty = roofY + bl.h / 2;
-      ctx.fillStyle = '#2c3340';
-      ctx.beginPath(); ctx.arc(tx, ty, 2.3, 0, TAU); ctx.fill();
-      ctx.fillStyle = '#4c5666';
-      ctx.beginPath(); ctx.arc(tx - 0.3, ty - 0.4, 1.7, 0, TAU); ctx.fill();
-      ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-      ctx.lineWidth = 0.2;
-      ctx.beginPath(); ctx.arc(tx, ty, 2.3, 0, TAU); ctx.stroke();
-    }
-    if (bl.hangar) {
-      // Arched roof stripes
-      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-      ctx.lineWidth = 0.8;
-      for (let yy = roofY + 3; yy < roofY + bl.h - 2; yy += 3.4) {
-        ctx.beginPath();
-        ctx.moveTo(roofX + 1.4, yy);
-        ctx.lineTo(roofX + bl.w - 1.4, yy);
-        ctx.stroke();
-      }
-      ctx.fillStyle = '#565b66';
-      ctx.fillRect(roofX + bl.w * 0.3, roofY + bl.h - 0.4, bl.w * 0.4, 1.6);
-    }
-  }
-
-  drawWindows(ctx, x, y, w, h, bl, horizontal, t) {
-    if (!bl.lit || w < 4 || h < 1.2) return;
-    const rng = (n) => {
-      const s = Math.sin(n * 127.1 + bl.wseed * 0.001) * 43758.5453;
-      return s - Math.floor(s);
-    };
-    let rows, cols, rw, rh;
-    if (horizontal) { rows = Math.max(1, Math.floor(h / 2.4)); cols = Math.max(1, Math.floor(w / 3.2)); rw = 1.6; rh = 1.1; }
-    else { rows = Math.max(1, Math.floor(h / 3.2)); cols = Math.max(1, Math.floor(w / 2.4)); rw = 1.1; rh = 1.6; }
-    const gx = horizontal ? 3.2 : 2.4;
-    const gy = horizontal ? 2.4 : 3.2;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const lit = rng(r * 61 + c * 7 + 3) < 0.34;
-        if (!lit) continue;
-        const wx = x + 0.8 + c * gx + (horizontal ? 0 : (w - cols * gx) / 2);
-        const wy = y + 0.5 + r * gy + (horizontal ? (h - rows * gy) / 2 : 0);
-        const warm = rng(r * 13 + c * 29 + 7) < 0.7;
-        ctx.fillStyle = warm ? 'rgba(255,190,110,0.75)' : 'rgba(120,220,255,0.6)';
-        ctx.fillRect(wx, wy, rw, rh);
-      }
-    }
-  }
-
-    // Neon sign faces (bright boxes + text); glow comes from the light pass.
-  drawNeon(ctx, t) {
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const storm = this.weather && this.weather.id === 'storm';
-    for (const n of this.neon) {
-      if (n._vx === undefined) { n._vx = n.x; n._vy = n.y; }
-      if (n._vx > vx1hack + 40 || n._vx < vx0hack - 40) continue;
-      let on = 1;
-      if (n.flicker) on = (Math.sin(t * n.flicker + n.phase) > -0.82) ? 1 : 0.25;
-      if (storm && Math.sin(t * 31 + n.phase * 7) < -0.985) on *= 0.3; // storm flicker
-      const a = on;
-      // Mounting frame
-      ctx.globalAlpha = 0.5 * a;
-      ctx.fillStyle = '#0e1018';
-      ctx.fillRect(n._vx - 0.7, n._vy - 0.7, n.w + 1.4, n.h + 1.4);
-      ctx.globalAlpha = 0.28 * a;
-      ctx.fillStyle = n.color;
-      ctx.fillRect(n._vx - 0.4, n._vy - 0.4, n.w + 0.8, n.h + 0.8);
-      ctx.globalAlpha = 0.95 * a;
-      ctx.fillRect(n._vx, n._vy, n.w, n.h);
-      ctx.fillStyle = '#0c0d14';
-      ctx.font = '700 2.2px "Consolas", monospace';
-      ctx.fillText(n.word, n._vx + n.w / 2, n._vy + n.h / 2 + 0.15);
-    }
-    ctx.globalAlpha = 1;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'alphabetic';
-  }
-}
-
-// Cull window shared by drawNeon (set each frame by the renderer).
-let vx0hack = 0, vx1hack = 0, vy0hack = 0, vy1hack = 0;
-export function setNeonCull(vx0, vy0, vx1, vy1) {
-  vx0hack = vx0; vy0hack = vy0; vx1hack = vx1; vy1hack = vy1;
-}
+    this.minimapScale = k;
+  },
+};

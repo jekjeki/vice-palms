@@ -1,31 +1,6 @@
-{
-  "game": "VICE PALMS",
-  "size": [1280, 720],
-  "note": "Deterministic staged scenes rendered from the live game via ?shot= URLs. Same seed => same frame.",
-  "shots": [
-    {
-      "file": "1-start.jpg",
-      "shot": "start",
-      "url": "/?shot=start&seed=1337",
-      "caption": "Title screen: the neon skyline over a live city — traffic and pedestrians already moving behind the menu."
-    },
-    {
-      "file": "2-play.jpg",
-      "shot": "play",
-      "url": "/?shot=play&seed=4242",
-      "caption": "Mid-game: the Banshee GT rolling down Ocean Drive at 01:00 — headlights, wet asphalt sheen, traffic, and the story marker on the minimap."
-    },
-    {
-      "file": "3-end.jpg",
-      "shot": "end",
-      "url": "/?shot=end&seed=4242",
-      "caption": "Mission passed: the payout banner over live streets after the final story mission."
-    },
-    {
-      "file": "4-chaos.jpg",
-      "shot": "chaos",
-      "url": "/?shot=chaos&seed=777",
-      "caption": "Four stars of trouble: cruisers closing in, a sedan cooking off, the searchlight, and the plaza lighting up."
-    }
-  ]
-}
+[
+  { "name": "1-start", "file": "screenshots/1-start.jpg", "url": "http://localhost:8080/?shot=start&seed=7", "width": 1280, "height": 720, "description": "Title screen — neon logo over the city" },
+  { "name": "2-play", "file": "screenshots/2-play.jpg", "url": "http://localhost:8080/?shot=play&seed=7", "width": 1280, "height": 720, "description": "Night drive through downtown, HUD up" },
+  { "name": "3-end", "file": "screenshots/3-end.jpg", "url": "http://localhost:8080/?shot=end&seed=7", "width": 1280, "height": 720, "description": "Mission passed at the marina" },
+  { "name": "4-chaos", "file": "screenshots/4-chaos.jpg", "url": "http://localhost:8080/?shot=chaos&seed=7", "width": 1280, "height": 720, "description": "Four stars, cruisers, burning wrecks" }
+]

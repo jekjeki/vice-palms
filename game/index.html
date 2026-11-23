@@ -2,59 +2,37 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Vice Palms — a neon-night open-world driving game. Original code, no external assets.">
-<title>VICE PALMS</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="description" content="Vice Palms — a top-down neon-city crime playground. Vanilla JS, Canvas 2D, WebAudio. No libraries, no network.">
+<title>Vice Palms — a night in the neon city</title>
 <style>
   html, body {
-    margin: 0;
-    padding: 0;
-    background: #04050c;
+    margin: 0; padding: 0;
+    background: #06080d;
     height: 100%;
     overflow: hidden;
-  }
-  body {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    font-family: "Segoe UI", Arial, sans-serif;
   }
   #wrap {
-    position: relative;
-    line-height: 0;
-  }
-  canvas#game {
-    display: block;
-    width: 1280px;
-    height: 720px;
-    border-radius: 6px;
-    box-shadow:
-      0 0 90px rgba(255, 64, 168, 0.16),
-      0 0 34px rgba(24, 220, 255, 0.10),
-      0 0 18px rgba(0, 0, 0, 0.85);
-    background: #04050c;
-    cursor: crosshair;
-  }
-  #boot {
-    position: absolute;
-    inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #37e6ff;
-    font: 700 18px/1.4 "Consolas", "Courier New", monospace;
-    letter-spacing: 0.35em;
-    text-shadow: 0 0 18px rgba(55, 230, 255, 0.8);
-    pointer-events: none;
-    transition: opacity 0.4s ease;
+    height: 100%;
   }
-  #boot.gone { opacity: 0; }
+  canvas#game {
+    background: #06080d;
+    image-rendering: auto;
+    box-shadow: 0 0 80px rgba(64, 100, 160, 0.25);
+    outline: none;
+    cursor: crosshair;
+  }
 </style>
 </head>
 <body>
-  <div id="wrap">
-    <canvas id="game" width="1280" height="720"></canvas>
-    <div id="boot">LOADING VICE PALMS&hellip;</div>
-  </div>
-  <script type="module" src="./src/main.js"></script>
+<div id="wrap">
+  <canvas id="game" width="1280" height="720" tabindex="0"></canvas>
+</div>
+<noscript><p style="color:#dfe6ee;font-family:sans-serif;text-align:center">Vice Palms needs JavaScript — the whole city lives in it.</p></noscript>
+<script type="module" src="src/main.js"></script>
 </body>
 </html>

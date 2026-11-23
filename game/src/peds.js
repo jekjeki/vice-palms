@@ -1,318 +1,250 @@
-// ============================================================================
-// VICE PALMS — peds.js
-// Night-time pedestrians: sidewalk wandering, panic flight from gunfire,
-// explosions and wrong-way cars; they can be run over or shot, and the
-// consequences (blood, witnesses, heat) ripple through the game.
-// ============================================================================
+// ---------------------------------------------------------------------------
+// peds.js — pedestrians. Wander sidewalks, cross roads, panic at gunfire and
+// near speeding cars, flee burning vehicles and report crimes (raising heat).
+// ---------------------------------------------------------------------------
 
-import { PEDS, SKINS, SHIRTS, BEACH_ROW, CITY_W, CITY_H, TILE } from './config.js';
-import { TAU, clamp, angleTowards, resolveCircleRect, shadowBlob } from './util.js';
+import { CFG } from './config.js';
 import { RNG } from './rng.js';
+import { clamp, dist2, wrapAngle, angleDamp } from './util.js';
 
+const SKINS = ['#c8a080', '#8a6248', '#6e4a34', '#d8b090', '#a87858'];
+const SHIRTS = ['#8a4a4a', '#4a6a8a', '#6a8a4a', '#8a7a4a', '#7a4a8a', '#4a8a7a', '#9a9a9a', '#3d4a5a'];
+const PANTS = ['#2e3440', '#3d3a2e', '#4a3d4a', '#26323c'];
+
+// things people shout when the night goes sideways
 const BARKS = [
-  '"Hey, watch it!"', '"I am walking here!"', '"Whoa!"', '"Nice driving, pal."',
-  '"Watch the shoes!"', '"It is midnide already?"', '"Tourists…"', '"Neon everywhere."',
+  '¡Ay, dios mío!', 'He\'s got a gun!', 'Call 911!', 'Not again…',
+  'Run!', 'Somebody help!', 'My taxi money!', 'This city, man…',
+  '¡Qué locura!', 'Not the shoes!', 'I saw nothing!', 'Meredith, RUN!',
+];
+
+// calm-chatter lines (rare, adds life)
+const CHATTER = [
+  '…and I said no way.', 'Fresh mangos, two bucks.', 'The pier? Ha.',
+  'This heat is unnatural.', 'Did you see the game?', 'Mangos are UP, I tell you.',
+  '…so the flamingo walks in…', 'Six blocks for a cafecito.',
 ];
 
 export class Ped {
-  constructor(game, x, y) {
-    this.game = game;
-    this.x = x; this.y = y;
-    this.angle = game.rngPeds.angle();
-    this.state = 'walk';        // walk | idle | flee | sun | dead
-    this.idleT = 0;
-    this.fleeT = 0;
-    this.tx = x; this.ty = y;   // current walk target
-    this.hasTarget = false;
-    this.speed = PEDS.WALK * game.rngPeds.range(0.8, 1.2);
-    this.skin = game.rngPeds.pick(SKINS);
-    this.shirt = game.rngPeds.pick(SHIRTS);
-    this.hp = PEDS.HP;
-    this.dead = false;
+  constructor(x, y, rng) {
+    this.x = x;
+    this.y = y;
+    this.angle = rng.range(-Math.PI, Math.PI);
+    this.speed = 0;
+    this.state = 'walk';        // walk | idle | flee | dead
+    // street types: strollers amble, walkers wander, joggers hustle the sand
+    const roll = rng.next();
+    this.kind = roll < 0.15 ? 'jogger' : roll < 0.25 ? 'dogwalker' : 'walker';
+    this.hp = 100;
+    this.skin = rng.pick(SKINS);
+    this.shirt = rng.pick(SHIRTS);
+    this.pants = rng.pick(PANTS);
+    this.target = { x, y };
+    this.idleT = rng.range(0, 3);
+    this.panicT = 0;
+    this.panicFrom = { x, y };
     this.deadT = 0;
-    this.bob = game.rngPeds.range(0, TAU);
-    this.step = 0;
-    this.remove = false;
-    this.kind = 'civ';
-    this.barkCd = 0;
-    // Variants: joggers book it, drunks wobble, sunbathers bake.
-    const roll = game.rngPeds.next();
-    this.variant = roll < 0.12 ? 'jogger' : roll < 0.2 ? 'drunk' : roll < 0.26 ? 'phone' : 'normal';
-    if (this.variant === 'jogger') { this.speed = PEDS.WALK * 2.1; this.shirt = game.rngPeds.pick(['#ff6a3c', '#8dff4a', '#25e8ff']); }
-    if (this.variant === 'drunk') this.speed = PEDS.WALK * 0.55;
-    this.wobble = game.rngPeds.range(0, TAU);
+    this.walkPhase = rng.range(0, 10);
+    this.reported = false;
+    this.staggerT = 0;
+    this.staggerX = 0;
+    this.staggerY = 0;
   }
 
-  bark() {
-    if (this.barkCd > 0 || this.dead || this.state === 'flee') return;
-    this.barkCd = 6;
-    this.game.fx.text(this.x, this.y - 1.6, this.game.rngPeds.pick(BARKS), '#f2f0e8', 12);
-  }
-
-  hurt(n, cause) {
-    if (this.dead) return;
-    this.hp -= n;
-    if (this.hp <= 0) this.die(cause);
-    else if (!this.dead && this.state !== 'flee') {
-      this.state = 'flee';
-      this.fleeT = PEDS.FLEE_TIME;
-    }
-  }
-
-  die(cause) {
-    if (this.dead) return;
-    this.dead = true;
-    this.deadT = 22;
-    this.state = 'dead';
-    this.game.fx.bloodBurst(this.x, this.y, cause === 'runover' ? 12 : 8);
-    this.game.onPedKilled(this, cause);
-  }
-
-  update(dt) {
-    const g = this.game;
-    if (this.barkCd > 0) this.barkCd -= dt;
-    if (this.dead) {
-      this.deadT -= dt;
-      if (this.deadT <= 0) this.remove = true;
+  update(dt, game) {
+    if (this.state === 'dead') {
+      this.deadT += dt;
       return;
     }
-    // Run over by any fast car.
-    for (const car of g.cars) {
-      if (car.remove) continue;
-      const sp = car.speed();
-      if (sp < 4) continue;
-      const d = Math.hypot(car.x - this.x, car.y - this.y);
-      if (d < car.radius * 0.85) {
-        this.die('runover');
-        car.vx *= 0.96; car.vy *= 0.96;
-        return;
-      }
-      // Near miss: dodge away.
-      if (d < car.radius + 2.4 && this.state !== 'flee') {
-        this.state = 'flee';
-        this.fleeT = 2.2;
-        this.threat = { x: car.x, y: car.y };
-      }
-    }
-
-    if (this.state === 'sun') {
-      // Baking on the sand; panic wakes them up.
+    // shot peds stagger before running
+    if (this.staggerT > 0) {
+      this.staggerT -= dt;
+      this.speed = 0;
+      this.x += (this.staggerX || 0) * dt * 30;
+      this.y += (this.staggerY || 0) * dt * 30;
       return;
     }
+    const W = this.world(game);
+    const speed = this.state === 'flee' ? CFG.PED_FLEE
+      : this.kind === 'stroller' ? CFG.PED_WALK * 0.6
+      : this.kind === 'sunbather' ? 0
+      : this.kind === 'jogger' ? CFG.PED_WALK * 2.1
+      : CFG.PED_WALK;
+
     if (this.state === 'flee') {
-      this.fleeT -= dt;
-      if (this.fleeT <= 0) {
-        this.state = 'walk';
-        this.hasTarget = false;
-        // Sunbathers go back to their towel.
-        if (this.variant === 'sunbather' && g.world.regionAt(this.x, this.y) === 'beach') this.state = 'sun';
-      }
-      const th = this.threat || { x: this.x + 1, y: this.y };
-      const away = Math.atan2(this.y - th.y, this.x - th.x);
-      this.angle = angleTowards(this.angle, away, 6 * dt);
-      this.step += dt * 14;
-      this.walk(dt, PEDS.RUN * (this.variant === 'jogger' ? 1.1 : 1));
-    } else if (this.state === 'idle') {
-      this.idleT -= dt;
-      if (this.idleT <= 0) this.state = 'walk';
+      this.panicT -= dt;
+      const dx = this.x - this.panicFrom.x, dy = this.y - this.panicFrom.y;
+      const d = Math.hypot(dx, dy) || 1;
+      this.angle = angleDamp(this.angle, Math.atan2(dy, dx), 8, dt);
+      if (this.panicT <= 0) this.state = 'walk';
     } else {
-      // walk toward target
-      if (!this.hasTarget) {
-        const pt = g.world.randomSidewalkPoint(g.rngPeds, this.x, this.y, 8, 60);
-        if (pt) { this.tx = pt.x; this.ty = pt.y; this.hasTarget = true; }
-      }
-      if (this.hasTarget) {
-        const d = Math.hypot(this.tx - this.x, this.ty - this.y);
-        if (d < 1.2) {
-          this.hasTarget = false;
-          if (g.rngPeds.chance(0.35)) { this.state = 'idle'; this.idleT = g.rngPeds.range(1, 4); }
-        } else {
-          const want = Math.atan2(this.ty - this.y, this.tx - this.x);
-          this.angle = angleTowards(this.angle, want, (this.variant === 'drunk' ? 2.2 : 5) * dt);
-          if (this.variant === 'drunk') this.angle += Math.sin(g.realT * 2.2 + this.wobble) * 0.04;
-          this.step += dt * 8;
-          this.walk(dt, this.speed);
+      // wander toward target, pick a new one on arrival
+      const dx = this.target.x - this.x, dy = this.target.y - this.y;
+      const d = Math.hypot(dx, dy);
+      if (d < 14 || (this.idleT -= dt) <= 0) {
+        this.idleT = game.rng.range(2, this.kind === 'jogger' ? 1 : 7);
+        const p = this.kind === 'dogwalker'
+          ? this.world(game).randomSidewalkPoint(game.rng)
+          : game.world.randomSidewalkPoint(game.rng);
+        this.target = p;
+        // rare idle chatter
+        if (game.rng.chance(0.06)) {
+          game.fx.text(this.x, this.y - 18, game.rng.pick(CHATTER), 'rgba(225,225,215,0.8)');
         }
       }
+      if (d >= 14) this.angle = angleDamp(this.angle, Math.atan2(dy, dx), 6, dt);
     }
 
-    // Push out of solids.
-    const res = g.world.solidsNear(this.x, this.y, 1.2);
-    for (const rect of res) {
-      const r = resolveCircleRect(this.x, this.y, 0.5, rect);
-      if (r) { this.x += r.nx * r.depth; this.y += r.ny * r.depth; }
+    this.speed = this.state === 'idle' ? 0 : speed;
+    if (this.speed > 0) {
+      const nx = this.x + Math.cos(this.angle) * this.speed * dt;
+      const ny = this.y + Math.sin(this.angle) * this.speed * dt;
+      const fixed = W.collide(nx, ny, CFG.PED_R);
+      if (fixed) {
+        this.x = fixed.x; this.y = fixed.y;
+        if (this.state === 'walk') {
+          // blocked → new target soon
+          this.idleT = Math.min(this.idleT, 0.2);
+          this.angle += game.rng.range(-1.4, 1.4);
+        } else {
+          this.angle += game.rng.range(-0.7, 0.7);
+        }
+      } else {
+        this.x = nx; this.y = ny;
+      }
+    }
+    this.walkPhase += dt * this.speed * 0.12;
+  }
+
+  world(game) { return game.world; }
+
+  panic(x, y, game) {
+    if (this.state === 'dead') return;
+    const wasCalm = this.state !== 'flee';
+    this.state = 'flee';
+    this.panicT = game.rng.range(3, 6);
+    this.panicFrom = { x, y };
+    if (wasCalm && game.rng.chance(0.25)) {
+      game.fx.text(this.x, this.y - 20, game.rng.pick(BARKS), '#e8e0d0');
+    }
+    // screaming for help raises heat once per ped
+    if (!this.reported && dist2(x, y, this.x, this.y) < 300 * 300) {
+      this.reported = true;
+      game.police.crime(this.x, this.y, 1.5, 'panic');
     }
   }
 
-  walk(dt, speed) {
-    this.x += Math.cos(this.angle) * speed * dt;
-    this.y += Math.sin(this.angle) * speed * dt;
-    // Water is fatal eventually; step back out.
-    if (this.game.world.isWater(this.x, this.y)) {
-      this.hasTarget = false;
-      this.angle += Math.PI;
-      this.x += Math.cos(this.angle) * 1.5;
-      this.y += Math.sin(this.angle) * 1.5;
+  hurt(dmg, fromX, fromY, game) {
+    if (this.state === 'dead') return false;
+    this.hp -= dmg;
+    // stagger first, then flee
+    const a = Math.atan2(this.y - fromY, this.x - fromX);
+    this.staggerT = 0.22;
+    this.staggerX = Math.cos(a);
+    this.staggerY = Math.sin(a);
+    this.panic(fromX, fromY, game);
+    game.fx.blood(this.x, this.y, 6);
+    if (this.hp <= 0) {
+      this.state = 'dead';
+      this.deadT = 0;
+      game.fx.blood(this.x, this.y, 14);
+      game.police.crime(this.x, this.y, 30, 'murder');
+      return true;
     }
+    game.police.crime(this.x, this.y, 6, 'assault');
+    return false;
   }
 
-  draw(ctx, t) {
-    if (this.dead) {
-      ctx.save();
-      ctx.translate(this.x, this.y);
-      ctx.rotate(this.angle);
-      ctx.globalAlpha = clamp(this.deadT / 4, 0, 1);
-      ctx.fillStyle = this.shirt;
-      ctx.fillRect(-0.9, -0.42, 1.8, 0.84);
-      ctx.fillStyle = this.skin;
-      ctx.beginPath();
-      ctx.arc(1.0, 0, 0.3, 0, TAU);
-      ctx.fill();
-      ctx.restore();
-      ctx.globalAlpha = 1;
-      return;
-    }
-    if (this.state === 'sun') {
-      // Towel + sunbather
-      ctx.fillStyle = '#3fa0a0';
-      ctx.fillRect(this.x - 0.9, this.y - 1.6, 1.8, 3.2);
-      ctx.fillStyle = 'rgba(255,255,255,0.25)';
-      ctx.fillRect(this.x - 0.9, this.y - 0.2, 1.8, 0.3);
-      ctx.save();
-      ctx.translate(this.x, this.y + 0.6);
-      ctx.rotate(Math.PI / 2 + this.angle);
-      ctx.fillStyle = this.skin;
-      ctx.fillRect(-0.7, -0.25, 1.3, 0.5);
-      ctx.beginPath(); ctx.arc(0.75, 0, 0.24, 0, TAU); ctx.fill();
-      ctx.restore();
-      return;
-    }
-    const bob = Math.sin(this.step) * 0.06;
-    shadowBlob(ctx, this.x + 0.25, this.y + 0.3, 0.55, 0.3);
-    ctx.save();
-    ctx.translate(this.x, this.y);
-    ctx.rotate(this.angle);
-    // Legs
-    ctx.fillStyle = '#23242e';
-    const ls = Math.sin(this.step) * 0.22;
-    ctx.fillRect(-0.15, -0.34 + ls, 0.5, 0.22);
-    ctx.fillRect(-0.15, 0.12 - ls, 0.5, 0.22);
-    // Body
-    ctx.fillStyle = this.shirt;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, 0.42, 0.34 + bob, 0, 0, TAU);
-    ctx.fill();
-    // Head
-    ctx.fillStyle = this.skin;
-    ctx.beginPath();
-    ctx.arc(0.06, 0, 0.26, 0, TAU);
-    ctx.fill();
-    // Phone glow beside the head
-    if (this.variant === 'phone') {
-      ctx.fillStyle = 'rgba(160,230,255,0.9)';
-      ctx.fillRect(0.2, 0.3, 0.2, 0.3);
-    }
-    ctx.restore();
-    // Umbrellas come out in a storm.
-    if (this.game.world.weather && this.game.world.weather.id === 'storm') {
-      ctx.fillStyle = '#1a1c26';
-      ctx.beginPath(); ctx.arc(this.x, this.y - 1.15, 0.85, 0, TAU); ctx.fill();
-      ctx.fillStyle = this.shirt;
-      ctx.beginPath(); ctx.arc(this.x, this.y - 1.2, 0.72, 0, TAU); ctx.fill();
-      ctx.strokeStyle = '#3a3f4d';
-      ctx.lineWidth = 0.12;
-      ctx.beginPath(); ctx.moveTo(this.x, this.y - 0.5); ctx.lineTo(this.x, this.y - 1.1); ctx.stroke();
-    }
+  runOver(car, game) {
+    if (this.state === 'dead') return false;
+    if (car.speed < 60) return false;
+    this.state = 'dead';
+    this.deadT = 0;
+    this.x += Math.cos(car.angle) * 14;
+    this.y += Math.sin(car.angle) * 14;
+    game.fx.blood(this.x, this.y, 18);
+    game.police.crime(this.x, this.y, 40, 'vehicular');
+    game.audio.hurt();
+    return true;
   }
 }
 
 export class Peds {
-  constructor(game) {
-    this.game = game;
+  constructor(worldRef, rng) {
+    this.world = worldRef;
+    this.rng = rng;
     this.list = [];
-    this.spawnT = 0;
+    this.spawnTimer = 0;
   }
 
-  spawnInitial(n) {
-    for (let k = 0; k < n; k++) this.trySpawn(true);
-  }
-
-  count() {
-    let n = 0;
-    for (const p of this.list) if (!p.remove && !p.dead) n++;
-    return n;
-  }
-
-  trySpawn(anywhere = false) {
-    const g = this.game;
-    const anchor = g.player.inCar || g.player;
-    // Sunbathers on the sand when the player is near the beach.
-    if (anchor.y > BEACH_ROW * TILE && g.rngPeds.chance(0.3)) {
-      for (let t = 0; t < 12; t++) {
-        const x = g.rngPeds.range(12, CITY_W - 12);
-        const y = g.rngPeds.range(BEACH_ROW * TILE + 12, CITY_H - 4);
-        if (g.world.blockedAt(x, y)) continue;
-        const d = Math.hypot(x - anchor.x, y - anchor.y);
-        if (d < 20 || d > 130) continue;
-        const ped = new Ped(g, x, y);
-        if (g.rngPeds.chance(0.55)) {
-          ped.variant = 'sunbather';
-          ped.state = 'sun';
-        }
-        this.list.push(ped);
-        return ped;
-      }
+  update(dt, game) {
+    const player = game.player;
+    this.spawnTimer -= dt;
+    if (this.spawnTimer <= 0 && this.list.length < CFG.PEDS_TARGET) {
+      this.spawnTimer = 0.3;
+      this.trySpawn(game);
     }
-    const pt = g.world.randomSidewalkPoint(g.rngPeds, anchor.x, anchor.y,
-      anywhere ? 20 : 45, anywhere ? 240 : PEDS.DESPAWN_DIST * 0.8);
-    if (!pt) return null;
-    if (!anywhere) {
-      const halfW = 640 / (g.cam.z * 7.2) + 6;
-      const halfH = 360 / (g.cam.z * 7.2) + 6;
-      if (Math.abs(pt.x - g.cam.x) < halfW && Math.abs(pt.y - g.cam.y) < halfH) return null;
-    }
-    const ped = new Ped(g, pt.x, pt.y);
-    this.list.push(ped);
-    return ped;
-  }
-
-  panic(x, y, r) {
-    for (const p of this.list) {
-      if (p.dead) continue;
-      if (Math.hypot(p.x - x, p.y - y) < r) {
-        p.state = 'flee';
-        p.fleeT = PEDS.FLEE_TIME * (0.7 + Math.random() * 0.6);
-        p.threat = { x, y };
-        p.hasTarget = false;
-      }
-    }
-  }
-
-  update(dt) {
-    const g = this.game;
-    if (this.count() < PEDS.MAX) {
-      this.spawnT -= dt;
-      if (this.spawnT <= 0) {
-        this.spawnT = 0.4;
-        this.trySpawn(false);
-      }
-    }
-    const anchor = g.player.inCar || g.player;
     for (let i = this.list.length - 1; i >= 0; i--) {
       const p = this.list[i];
-      const d = Math.hypot(p.x - anchor.x, p.y - anchor.y);
-      if (d > PEDS.DESPAWN_DIST + 40 || (p.remove && p.deadT <= 0)) {
-        this.list.splice(i, 1);
-        continue;
+      p.update(dt, game);
+      // car proximity check (run over)
+      const car = player.inCar;
+      if (car && !car.wrecked && p.state !== 'dead') {
+        if (dist2(p.x, p.y, car.x, car.y) < (car.radius + 6) ** 2 && car.containsPoint(p.x, p.y)) {
+          p.runOver(car, game);
+        } else if (car.speed > 180 && dist2(p.x, p.y, car.x, car.y) < 120 * 120) {
+          p.panic(car.x, car.y, game);
+        }
       }
-      if (d < 130) p.update(dt);
+      if (p.state === 'dead' && p.deadT > 25) this.list.splice(i, 1);
+      else if (p.state !== 'dead') {
+        const d2 = dist2(p.x, p.y, player.x, player.y);
+        if (d2 > CFG.PED_CULL_R * CFG.PED_CULL_R) this.list.splice(i, 1);
+      }
     }
   }
 
-  draw(ctx, t) {
-    for (const p of this.list) {
-      if (Math.abs(p.x - this.game.cam.x) > 120 || Math.abs(p.y - this.game.cam.y) > 80) continue;
-      p.draw(ctx, t);
+  trySpawn(game) {
+    const player = game.player;
+    for (let t = 0; t < 10; t++) {
+      const pt = this.world.randomSidewalkPoint(this.rng);
+      const d2 = dist2(pt.x, pt.y, player.x, player.y);
+      if (d2 < 260 * 260 || d2 > CFG.PED_SPAWN_R * CFG.PED_SPAWN_R) continue;
+      if (this.world.solidHit(pt.x, pt.y, CFG.PED_R + 2)) continue;
+      const ped = new Ped(pt.x, pt.y, this.rng);
+      // beach strollers: slower, pastel, toes in the sand
+      const onSand = pt.y < CFG.SAND_N1 || pt.x > CFG.SAND_E0 || pt.y > 3925;
+      if (onSand) {
+        ped.kind = 'stroller';
+        ped.shirt = this.rng.pick(['#e8c8d8', '#c8e0e8', '#e8e0c0', '#d0e8c8']);
+        if (this.rng.chance(0.4)) ped.kind = 'sunbather';
+      }
+      this.list.push(ped);
+      return;
     }
+  }
+
+  panicNear(x, y, r, game) {
+    for (const p of this.list) {
+      if (p.state === 'dead') continue;
+      if (dist2(p.x, p.y, x, y) < r * r) p.panic(x, y, game);
+    }
+  }
+
+  /** kick a carjacked driver onto the street, screaming */
+  spawnFleeingDriver(car) {
+    const p = new Ped(car.x + Math.cos(car.angle + Math.PI / 2) * 26, car.y + Math.sin(car.angle + Math.PI / 2) * 26, this.rng);
+    p.state = 'flee';
+    p.panicT = 5;
+    p.panicFrom = { x: car.x, y: car.y };
+    p.reported = true; // jacking heat already handled by the car
+    this.list.push(p);
+    return p;
+  }
+
+  aliveCount() {
+    let n = 0;
+    for (const p of this.list) if (p.state !== 'dead') n++;
+    return n;
   }
 }

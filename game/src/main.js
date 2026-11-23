@@ -1,58 +1,73 @@
-// ============================================================================
-// VICE PALMS — main.js
-// Boot: parse URL params (shot / seed / mute), build the Game, start the
-// loop, and expose a few window hooks for headless tooling. All local —
-// the game makes zero network requests.
-// ============================================================================
+// ---------------------------------------------------------------------------
+// main.js — boot: canvas, game instance, RAF loop with fps meter, error
+// surface, and the staged-shot URL contract handoff to shots.js.
+// ---------------------------------------------------------------------------
 
+import { VIEW } from './view.js';
 import { Game } from './game.js';
-import { parseShotParams, ShotDirector } from './shots.js';
+import { readShotParams, applyShot } from './shots.js';
 
-function fitCanvas(canvas) {
-  const fit = () => {
-    const s = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
-    canvas.style.width = Math.floor(1280 * s) + 'px';
-    canvas.style.height = Math.floor(720 * s) + 'px';
-  };
-  window.addEventListener('resize', fit);
-  fit();
+const canvas = document.getElementById('game');
+canvas.width = VIEW.w;
+canvas.height = VIEW.h;
+
+function fit() {
+  const w = window.innerWidth, h = window.innerHeight;
+  const s = Math.min(w / VIEW.w, h / VIEW.h);
+  canvas.style.width = Math.floor(VIEW.w * s) + 'px';
+  canvas.style.height = Math.floor(VIEW.h * s) + 'px';
 }
+window.addEventListener('resize', fit);
+fit();
 
-function boot() {
-  const canvas = document.getElementById('game');
-  if (!canvas) return;
-  fitCanvas(canvas);
+const game = new Game(canvas);
+window.game = game;              // tests + debugging hook
+window.__VICE_READY = true;
 
-  const { shot, seed, mute } = parseShotParams(window.location.search);
-  const qs = new URLSearchParams(window.location.search);
-  const fps = qs.get('fps') === '1';
-  const weather = qs.get('weather');
-  const spawn = qs.get('spawn');
-
-  const game = new Game(canvas, {
-    seed: seed != null ? seed : undefined,
-    mute,
-    fps,
-    weather: weather || undefined,
-    spawn: spawn || undefined,
-  });
-
-  if (shot && ShotDirector && shot !== 'none') {
-    game.shot = new ShotDirector(game, shot);
-    game.shot.setup();
-  }
-
-  // Headless tooling hooks (used by the screenshot rig and play-tests).
+// staged screenshot scene?
+const shot = readShotParams();
+if (shot) {
   try {
-    window.__game = game;
-    window.__shotReady = false;
-    game.onFirstFrame = () => {
-      window.__ready = true;
-      console.log('[vice-palms] ready — seed=' + game.seed + ' shot=' + (shot || 'none') + ' muted=' + game.audio.muted);
-    };
-  } catch (e) { /* ignore */ }
-
-  game.start();
+    applyShot(game, shot);
+  } catch (e) {
+    console.error('shot staging failed', e);
+  }
 }
 
-boot();
+let last = performance.now();
+let fpsAcc = 0, fpsN = 0, fpsT = 0;
+function loop(now) {
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  // fps meter (feeds the HUD once a second)
+  fpsAcc += dt; fpsN++; fpsT += dt;
+  if (fpsT >= 1) {
+    game.fps = fpsN / fpsAcc;
+    fpsAcc = 0; fpsN = 0; fpsT = 0;
+  }
+  try {
+    game.frame(dt);
+  } catch (e) {
+    console.error(e);
+    const g = canvas.getContext('2d');
+    g.fillStyle = '#300a0e';
+    g.fillRect(0, 0, VIEW.w, 64);
+    g.fillStyle = '#ffd7dc';
+    g.font = 'bold 14px monospace';
+    g.textAlign = 'left';
+    g.fillText('error: ' + e.message, 12, 26);
+    g.font = '12px monospace';
+    g.fillText(String(e.stack).split('\n').slice(1, 4).join('  |  '), 12, 48);
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// unlock audio on the first interaction (browsers require a gesture)
+const unlock = () => {
+  game.audio.unlock();
+  window.removeEventListener('pointerdown', unlock);
+  window.removeEventListener('keydown', unlock);
+};
+window.addEventListener('pointerdown', unlock);
+window.addEventListener('keydown', unlock);

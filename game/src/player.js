@@ -1,423 +1,319 @@
-// ============================================================================
-// VICE PALMS — player.js
-// The protagonist on foot and behind the wheel: walk/sprint, aim & shoot the
-// pistol, throw punches, carjack (F), enter/exit, drive-by, pickups, health
-// and armor, and the slow night-city health trickle.
-// ============================================================================
+// ---------------------------------------------------------------------------
+// player.js — the hood. Walk, sprint, take cover, throw fists, fire the
+// pistol with mouse aim, jack cars with F, ride, bail, bleed.
+// ---------------------------------------------------------------------------
 
-import {
-  PLAYER, WEAPONS, ECON, SKINS, SHIRTS, RADIO,
-} from './config.js';
-import {
-  TAU, clamp, dist, angleTowards, resolveCircleRect, shadowBlob, glow,
-} from './util.js';
+import { CFG } from './config.js';
+import { clamp, dist2, wrapAngle, angleDamp } from './util.js';
+import { CAR_BLURBS } from './cars.js';
 
 export class Player {
-  constructor(game, x, y) {
-    this.game = game;
-    this.x = x; this.y = y;
-    this.angle = -Math.PI / 2;
-    this.hp = PLAYER.HP_MAX;
+  constructor(x, y, angle = 0) {
+    this.x = x;
+    this.y = y;
+    this.angle = angle;
+    this.vx = 0;
+    this.vy = 0;
+    this.health = CFG.HEALTH_MAX;
     this.armor = 0;
-    this.money = ECON.START_MONEY;
-    this.inCar = null;
-    this.enterCd = 0;
-    this.shootCd = 0;
-    this.meleeCd = 0;
-    this.curWeapon = 1;          // 0 fists, 1 pistol
-    this.pistolAmmo = 24;
-    this.dead = false;
+    this.money = 250;
+    this.ammo = 34;
+    this.weapon = 'pistol';       // 'fist' | 'pistol'
+    this.inCar = null;            // Car reference while driving
+    this.fireCd = 0;
+    this.walkPhase = 0;
     this.hurtT = 0;
-    this.regenT = 0;
-    this.step = 0;
-    this.skin = '#e8b48a';
-    this.shirt = '#f0f0f0';
-    this.hurtFlash = 0;
+    this.skin = '#d8ae86';
+    this.shirt = '#3fd9ff';
+    this.pants = '#2e3440';
     this.exitCd = 0;
-    this.aim = { x: x, y: y - 5 };
+    this.jackCd = 0;
+    this.aimAngle = angle;
+    this.dead = false;
     this.stamina = 100;
+    this.sprinting = false;
+    this.swimming = false;
+    this.swimT = 0;
   }
 
-  addMoney(n, label) {
-    this.money = Math.max(0, this.money + n);
-    this.game.fx.text(this.x, this.y - 2.4, (n >= 0 ? '+' : '') + '$' + Math.abs(Math.round(n)), n >= 0 ? '#7dffa8' : '#ff7d7d');
-  }
+  get radius() { return CFG.PLAYER_R; }
 
-  weapon() {
-    return WEAPONS[this.curWeapon];
-  }
-
-  // ------------------------------------------------------------------ update
-  update(dt) {
-    const g = this.game;
-    const inp = g.input;
-
-    if (this.hurtT > 0) this.hurtT -= dt;
-    if (this.hurtFlash > 0) this.hurtFlash -= dt * 3;
-    if (this.enterCd > 0) this.enterCd -= dt;
-    if (this.exitCd > 0) this.exitCd -= dt;
-    if (this.shootCd > 0) this.shootCd -= dt;
-    if (this.meleeCd > 0) this.meleeCd -= dt;
-
-    // Slow trickle regen out of combat.
-    this.regenT += dt;
-    if (this.regenT > PLAYER.REGEN_DELAY && this.hp < PLAYER.HP_MAX && this.hp > 0) {
-      this.hp = Math.min(PLAYER.HP_MAX, this.hp + PLAYER.REGEN_RATE * dt);
-    }
-
+  update(dt, game) {
+    this.fireCd = Math.max(0, this.fireCd - dt);
+    this.hurtT = Math.max(0, this.hurtT - dt);
+    this.exitCd = Math.max(0, this.exitCd - dt);
+    this.jackCd = Math.max(0, this.jackCd - dt);
     if (this.inCar) {
-      this.updateInCar(dt);
-    } else {
-      this.updateOnFoot(dt);
-    }
-    this.updatePickups();
-  }
-
-  updateInCar(dt) {
-    const g = this.game;
-    const car = this.inCar;
-    const inp = g.input;
-
-    // The car may have been destroyed under us.
-    if (car.wrecked || car.remove) {
-      this.exitCar(true);
+      this.x = this.inCar.x;
+      this.y = this.inCar.y;
+      this.angle = this.inCar.angle;
+      this.driveControls(dt, game);
       return;
     }
-
-    car.throttle = inp.throttleAxis();
-    car.steer = inp.steerAxis();
-    car.handbrake = inp.handbrake();
-    this.x = car.x; this.y = car.y;
-    this.angle = car.angle;
-
-    if (inp.wasPressed('KeyF') || inp.wasPressed('KeyE')) this.exitCar(false);
-    if (inp.wasPressed('KeyH')) g.audio.horn();
-    if (inp.wasPressed('KeyR')) {
-      g.radio = (g.radio + 1) % RADIO.length;
-      g.hud.toast('RADIO — ' + RADIO[g.radio].name);
-    }
-    if (inp.wasPressed('Digit1')) this.curWeapon = 0;
-    if (inp.wasPressed('Digit2')) this.curWeapon = 1;
-    if (inp.wasPressed('KeyQ')) this.curWeapon = (this.curWeapon + 1) % WEAPONS.length;
-
-    // Drive-by shooting.
-    this.aim = inp.aimWorld(g.cam);
-    if (inp.firing() && this.shootCd <= 0 && this.weapon().id === 'pistol' && this.pistolAmmo > 0) {
-      this.shootCd = PLAYER.SHOOT_CD * 1.5;
-      const side = Math.abs(Math.cos(car.angle)) > Math.abs(Math.sin(car.angle)) ? 1 : -1;
-      this.fireBullet(car.x - Math.sin(car.angle) * side, car.y + Math.cos(car.angle) * side, true);
-    }
+    this.footControls(dt, game);
   }
 
-  updateOnFoot(dt) {
-    const g = this.game;
-    const inp = g.input;
-    const mv = inp.moveVec();
+  footControls(dt, game) {
+    const input = game.input;
+    const world = game.world;
 
-    if (mv.x || mv.y) {
-      const wantSprint = inp.sprinting() && this.stamina > 4;
-      const sp = wantSprint ? PLAYER.SPRINT : PLAYER.WALK;
-      this.x += mv.x * sp * dt;
-      this.y += mv.y * sp * dt;
-      this.angle = angleTowards(this.angle, Math.atan2(mv.y, mv.x), 12 * dt);
-      this.step += dt * (wantSprint ? 13 : 9);
-      this.stamina = clamp(this.stamina - (wantSprint ? 22 : -14) * dt, 0, 100);
+    // ---- aim: mouse if it moved, else movement facing
+    const worldMouse = game.renderer.screenToWorld(input.mouse.x, input.mouse.y);
+    if (input.mouse.moved || input.mouse.down) {
+      this.aimAngle = Math.atan2(worldMouse.y - this.y, worldMouse.x - this.x);
+    }
+
+    // ---- movement
+    let mx = 0, my = 0;
+    if (input.isDown('KeyW', 'ArrowUp')) my -= 1;
+    if (input.isDown('KeyS', 'ArrowDown')) my += 1;
+    if (input.isDown('KeyA', 'ArrowLeft')) mx -= 1;
+    if (input.isDown('KeyD', 'ArrowRight')) mx += 1;
+    const mag = Math.hypot(mx, my);
+
+    // swimming? (sea covers most of the north; piers are safe)
+    this.swimming = game.world.isWater(this.x, this.y) && !game.world.onPier(this.x, this.y);
+    if (this.swimming) {
+      this.swimT = (this.swimT || 0) + dt;
+      if (this.swimT > 6) this.health -= dt * 3;   // cold water gets you eventually
+      if (this.health <= 0) game.onPlayerDeath('drowned');
     } else {
-      this.stamina = clamp(this.stamina + 14 * dt, 0, 100);
+      this.swimT = 0;
     }
 
-    // Solid collision.
-    const near = g.world.solidsNear(this.x, this.y, 1.4);
-    for (const rect of near) {
-      const r = resolveCircleRect(this.x, this.y, PLAYER.RADIUS, rect);
-      if (r) { this.x += r.nx * r.depth; this.y += r.ny * r.depth; }
+    // sprint stamina
+    const wantSprint = input.isDown('ShiftLeft', 'ShiftRight') && mag > 0;
+    if (wantSprint && this.stamina > 0 && !this.swimming) {
+      this.stamina = Math.max(0, this.stamina - dt * 22);
+      this.sprinting = true;
+    } else {
+      this.stamina = Math.min(100, this.stamina + dt * (mag > 0 ? 9 : 16));
+      this.sprinting = false;
+      if (this.stamina <= 0) this.sprinting = false;
     }
-    // Cars push the player around (and hurt at speed).
-    for (const car of g.cars) {
-      if (car.remove) continue;
-      const d = dist(this.x, this.y, car.x, car.y);
-      const minD = car.radius * 0.9;
-      if (d < minD && d > 0.01) {
-        const nx = (this.x - car.x) / d, ny = (this.y - car.y) / d;
-        const sp = car.speed();
-        this.x += nx * (minD - d);
-        this.y += ny * (minD - d);
-        if (sp > 9 && car.driver !== 'player' && this.hurtT <= 0) {
-          this.damage(sp * 2.2, 'car');
-        }
+
+    const speed = this.swimming ? 74 : (this.sprinting ? CFG.SPRINT : CFG.WALK);
+    if (mag > 0) {
+      mx /= mag; my /= mag;
+      this.x += mx * speed * dt;
+      this.y += my * speed * dt;
+      if (!(input.mouse.moved || input.mouse.down)) {
+        this.angle = wrapAngle(Math.atan2(my, mx));
       }
-    }
-    // Shoulder checks with pedestrians — they have opinions.
-    for (const p of g.peds.list) {
-      if (p.dead) continue;
-      const d = dist(this.x, this.y, p.x, p.y);
-      if (d < 0.95 && d > 0.01) {
-        const nx = (p.x - this.x) / d, ny = (p.y - this.y) / d;
-        p.x += nx * (0.95 - d) * 0.7;
-        p.y += ny * (0.95 - d) * 0.7;
-        p.bark();
+      this.walkPhase += dt * (this.sprinting ? 14 : this.swimming ? 6 : 9);
+      // kicked-up heel dust when sprinting on dry land
+      if (this.sprinting && !this.swimming && Math.random() < dt * 14) {
+        game.fx.smokePuff(this.x - mx * 8, this.y - my * 8, '#3a3f48', 2);
       }
+    } else {
+      this.walkPhase += dt * 2;
+    }
+    if (input.mouse.moved || input.mouse.down) {
+      this.angle = this.aimAngle;
+    } else if (this.weapon === 'pistol' && input.mouse.down) {
+      this.angle = this.aimAngle;
     }
 
-    // Aim & fire.
-    this.aim = inp.aimWorld(g.cam);
-    if (inp.wasPressed('Digit1')) this.curWeapon = 0;
-    if (inp.wasPressed('Digit2') && this.pistolAmmo > 0) this.curWeapon = 1;
-    if (inp.wasPressed('KeyQ')) {
-      this.curWeapon = (this.curWeapon + 1) % WEAPONS.length;
-      if (this.weapon().id === 'pistol' && this.pistolAmmo <= 0) this.curWeapon = 0;
+    // ---- world collision
+    const fixed = world.collide(this.x, this.y, CFG.PLAYER_R);
+    if (fixed) { this.x = fixed.x; this.y = fixed.y; }
+
+    // ---- footsteps (soft ticks, faster when sprinting)
+    this.stepAcc = (this.stepAcc || 0) + dt * (mag > 0 ? (this.sprinting ? 2.4 : 1.5) : 0);
+    if (this.stepAcc > 1) {
+      this.stepAcc = 0;
+      game.audio.footstep(this.swimming);
+      if (this.swimming) game.fx.ripple(this.x, this.y);
     }
 
-    if (inp.firing() && this.shootCd <= 0) {
-      if (this.weapon().id === 'pistol') {
-        if (this.pistolAmmo > 0) {
-          this.shootCd = PLAYER.SHOOT_CD;
-          const c = Math.cos(this.angle), s = Math.sin(this.angle);
-          this.fireBullet(this.x + c * 0.9, this.y + s * 0.9, true);
-        } else {
-          this.shootCd = 0.4;
-          g.hud.toast('OUT OF AMMO');
-        }
-      } else {
-        this.melee();
-      }
+    // ---- weapons
+    if (this.fireCd <= 0 && (input.mouse.down || input.mouse.clicked || input.isDown('Space'))) {
+      this.fire(game);
     }
+    if (input.wasPressed('Digit1')) this.weapon = 'fist';
+    if (input.wasPressed('Digit2')) this.weapon = 'pistol';
 
-    // Enter / carjack.
-    if ((inp.wasPressed('KeyF') || inp.wasPressed('KeyE')) && this.enterCd <= 0) {
-      this.enterCd = PLAYER.ENTER_CD;
-      this.tryEnterCar();
+    // ---- vehicle interaction
+    if (input.wasPressed('KeyF') && this.jackCd <= 0) {
+      this.tryCarInteract(game);
     }
   }
 
-  tryEnterCar() {
-    const g = this.game;
-    let best = null, bestD = PLAYER.ENTER_DIST;
-    for (const car of g.cars) {
-      if (car.wrecked || car.remove) continue;
-      const d = dist(this.x, this.y, car.x, car.y);
-      if (d < bestD) { best = car; bestD = d; }
+  driveControls(dt, game) {
+    const input = game.input;
+    const car = this.inCar;
+    // engine audio
+    game.audio.engineUpdate(car.speed01, input.isDown('KeyW', 'ArrowUp') ? 1 : 0);
+    if (input.wasPressed('KeyF') && this.exitCd <= 0) {
+      this.exitCar(game);
+      return;
+    }
+    // horn / siren toggle for fun
+    if (input.wasPressed('KeyH') && car.type === 'police') car.siren = !car.siren;
+    if (input.wasPressed('KeyH') && car.type !== 'police') this.honk(game);
+    // shooting from the car: allow pistol fire out the window
+    if (this.fireCd <= 0 && (input.mouse.clicked || input.wasPressed('Space'))) {
+      this.fireFromCar(game);
+    }
+  }
+
+  fire(game) {
+    const input = game.input;
+    if (this.weapon === 'fist') {
+      this.fireCd = CFG.FIST_CD;
+      this.punch(game);
+      return;
+    }
+    if (this.ammo <= 0) {
+      // dry click — swap to fists so the player notices
+      this.weapon = 'fist';
+      return;
+    }
+    this.ammo--;
+    this.fireCd = CFG.PISTOL_CD;
+    const a = this.aimAngle;
+    const mx = this.x + Math.cos(a) * 16, my = this.y + Math.sin(a) * 16;
+    game.fx.muzzleFlash(mx, my, a);
+    game.fx.muzzleSmoke(mx, my);
+    game.fx.casing(this.x + Math.cos(a + Math.PI / 2) * 8, this.y + Math.sin(a + Math.PI / 2) * 8);
+    game.audio.gunshot();
+    game.bullet(this.x, this.y, a, { from: 'player', dmgPed: CFG.PISTOL_DMG_PED, dmgCar: CFG.PISTOL_DMG_CAR, range: CFG.PISTOL_RANGE });
+    game.police.gunfireHeard(this.x, this.y);
+    game.peds.panicNear(this.x, this.y, 240, game);
+    game.traffic.panicNear(this.x, this.y, 240);
+    game.shake(1.2);
+  }
+
+  fireFromCar(game) {
+    if (this.ammo <= 0) return;
+    const worldMouse = game.renderer.screenToWorld(game.input.mouse.x, game.input.mouse.y);
+    const a = Math.atan2(worldMouse.y - this.y, worldMouse.x - this.x);
+    this.ammo--;
+    this.fireCd = CFG.PISTOL_CD * 1.4;
+    game.fx.muzzleFlash(this.x + Math.cos(a) * 24, this.y + Math.sin(a) * 24, a);
+    game.audio.gunshot();
+    game.bullet(this.x, this.y, a, { from: 'player', dmgPed: CFG.PISTOL_DMG_PED, dmgCar: CFG.PISTOL_DMG_CAR, range: CFG.PISTOL_RANGE });
+    game.police.gunfireHeard(this.x, this.y);
+    game.peds.panicNear(this.x, this.y, 240, game);
+    game.shake(1.0);
+  }
+
+  punch(game) {
+    const a = this.angle;
+    const px = this.x + Math.cos(a) * 18, py = this.y + Math.sin(a) * 18;
+    game.audio.punch();
+    // hit peds
+    for (const p of game.peds.list) {
+      if (p.state === 'dead') continue;
+      if (dist2(px, py, p.x, p.y) < 24 * 24) {
+        p.hurt(CFG.FIST_DMG, this.x, this.y, game);
+        game.fx.impactSparks(p.x, p.y, 80);
+        return;
+      }
+    }
+    // hit cars (dents)
+    for (const c of game.allCars()) {
+      if (c.wrecked) continue;
+      if (c.containsPoint(px, py)) {
+        c.damage(6);
+        game.fx.impactSparks(px, py, 60);
+        game.police.crime(px, py, 2, 'vandal');
+        return;
+      }
+    }
+  }
+
+  tryCarInteract(game) {
+    // nearest enterable car within reach
+    let best = null, bd = Infinity;
+    for (const c of game.allCars()) {
+      if (c.wrecked) continue;
+      const d = dist2(this.x, this.y, c.x, c.y);
+      if (d < 70 * 70 && d < bd) { bd = d; best = c; }
     }
     if (!best) return;
-
-    const wasCop = best.cop && best.driver === 'cop';
-    const hadDriver = best.driver === 'ai' || best.driver === 'cop';
-    // Yank the driver out.
-    if (hadDriver) {
-      const ep = new Ped(best.game, best.x + Math.cos(best.angle + Math.PI / 2) * 1.6, best.y + Math.sin(best.angle + Math.PI / 2) * 1.6);
-      ep.state = 'flee';
-      ep.fleeT = 8;
-      ep.threat = { x: best.x, y: best.y };
-      if (wasCop) {
-        // Replace with a hostile foot cop record; the driver is now on foot.
-        g.police.copEjected(best);
-      }
-      g.peds.list.push(ep);
+    this.jackCd = 0.4;
+    this.exitCd = 0.6;
+    if (best.jack(game)) {
+      this.inCar = best;
+      best.parked = false;
+      this.jackCd = 0;      // (drive handlers keep their own cooldowns)
+      game.stats.jacks++;
+      game.audio.engineStart();
+      game.police.crime(this.x, this.y, best.driver === 'player' ? 0 : 0, 'enter');
     }
-    if (best.aiKind === 'civ' && best.ai) {
-      // Traffic forgets this car.
-      best.ai = null;
-    }
-    best.driver = 'player';
-    best.aiKind = null;
-    best.sirenOn = false;
-    this.inCar = best;
-    g.onCarjack(best, hadDriver, wasCop);
-    g.audio.doorSlam();
   }
 
-  exitCar(forced) {
+  exitCar(game) {
     const car = this.inCar;
     if (!car) return;
+    // pop out on the left side, or right if blocked
+    const side = car.angle - Math.PI / 2;
+    let ex = car.x + Math.cos(side) * (car.spec.wid / 2 + 14);
+    let ey = car.y + Math.sin(side) * (car.spec.wid / 2 + 14);
+    if (game.world.solidHit(ex, ey, CFG.PLAYER_R)) {
+      ex = car.x - Math.cos(side) * (car.spec.wid / 2 + 14);
+      ey = car.y - Math.sin(side) * (car.spec.wid / 2 + 14);
+    }
+    const fixed = game.world.collide(ex, ey, CFG.PLAYER_R);
+    if (fixed) { ex = fixed.x; ey = fixed.y; }
+    this.x = ex; this.y = ey;
     this.inCar = null;
     car.driver = null;
-    car.throttle = 0;
-    car.brake = 1;
-    car.handbrake = false;
-    // Step out on the left side; fall back to right if blocked.
-    const lx = car.x - Math.sin(car.angle) * (car.w / 2 + 1.0);
-    const ly = car.y + Math.cos(car.angle) * (car.w / 2 + 1.0);
-    if (this.game.world.blockedAt(lx, ly)) {
-      this.x = car.x + Math.sin(car.angle) * (car.w / 2 + 1.0);
-      this.y = car.y - Math.cos(car.angle) * (car.w / 2 + 1.0);
-    } else {
-      this.x = lx; this.y = ly;
-    }
-    this.exitCd = 0.3;
-    if (forced) {
-      // Flung out of a burning car.
-      this.damage(12, 'fire');
-      this.game.fx.requestShake(5);
-    }
-    this.game.audio.doorSlam();
+    car.parked = true;
+    car.speed *= 0.2;
+    this.exitCd = 0.5;
+    game.audio.engineStop();
   }
 
-  melee() {
-    const g = this.game;
-    this.meleeCd = PLAYER.MELEE_CD;
-    g.audio.swing();
-    const c = Math.cos(this.angle), s = Math.sin(this.angle);
-    const hx = this.x + c * 1.2, hy = this.y + s * 1.2;
-    // Peds & cops in front.
-    for (const p of g.peds.list) {
-      if (p.dead) continue;
-      if (dist(hx, hy, p.x, p.y) < PLAYER.MELEE_RANGE) {
-        p.hurt(PLAYER.MELEE_DMG, 'punch');
-        g.fx.spark(p.x, p.y, 2);
-        g.onViolence(p.x, p.y, 0.4);
-        return;
-      }
-    }
-    for (const cop of g.police.foot) {
-      if (cop.dead) continue;
-      if (dist(hx, hy, cop.x, cop.y) < PLAYER.MELEE_RANGE) {
-        cop.hurt(PLAYER.MELEE_DMG, 'punch');
-        g.fx.spark(cop.x, cop.y, 2);
-        return;
-      }
-    }
-    for (const car of g.cars) {
-      if (car.remove || car.wrecked) continue;
-      if (dist(hx, hy, car.x, car.y) < car.radius) {
-        car.damage(4, 'punch');
-        g.fx.spark(car.x, car.y, 2);
-        g.audio.punchHit();
-        return;
-      }
-    }
+  /** H key while driving: horn (traffic scatters a touch) */
+  honk(game) {
+    if (!this.inCar) return false;
+    return this.inCar.tryHorn(game);
   }
 
-  fireBullet(x, y, fromPlayer) {
-    const g = this.game;
-    const target = this.aim;
-    const a = Math.atan2(target.y - y, target.x - x);
-    if (!this.inCar) this.angle = a;
-    g.bullets.push({
-      x, y,
-      vx: Math.cos(a) * PLAYER.BULLET_SPEED,
-      vy: Math.sin(a) * PLAYER.BULLET_SPEED,
-      life: PLAYER.BULLET_LIFE,
-      fromPlayer: true,
-      dmg: PLAYER.PISTOL_DMG_PED,
-    });
-    g.fx.muzzle(x, y);
-    g.fx.requestShake(0.7);
-    g.audio.shot();
-    g.events.gunshots.push({ x, y });
-    this.pistolAmmo--;
-    g.onViolence(x, y, 0.35);
+  enterCar(car, game) {
+    this.inCar = car;
+    car.driver = 'player';
+    car.parked = false;
+    game.audio.engineStart();
   }
 
-  updatePickups() {
-    const g = this.game;
-    for (let i = g.pickups.length - 1; i >= 0; i--) {
-      const pk = g.pickups[i];
-      if (dist(this.x, this.y, pk.x, pk.y) < 1.7) {
-        switch (pk.kind) {
-          case 'health':
-            this.hp = Math.min(PLAYER.HP_MAX, this.hp + ECON.PICKUP_HEALTH);
-            g.fx.text(pk.x, pk.y, '+HEALTH', '#7dffa8');
-            g.audio.pickup();
-            break;
-          case 'armor':
-            this.armor = Math.min(PLAYER.ARMOR_MAX, this.armor + ECON.PICKUP_ARMOR);
-            g.fx.text(pk.x, pk.y, '+ARMOR', '#7db8ff');
-            g.audio.pickup();
-            break;
-          case 'cash':
-            this.addMoney(ECON.PICKUP_CASH);
-            g.audio.pickup();
-            break;
-          case 'ammo':
-            this.pistolAmmo += ECON.PICKUP_AMMO;
-            g.fx.text(pk.x, pk.y, '+AMMO', '#ffd75e');
-            g.audio.pickup();
-            if (this.curWeapon === 0) this.curWeapon = 1;
-            break;
-          case 'package':
-            g.missions.onPackage(pk);
-            break;
-        }
-        g.pickups.splice(i, 1);
-      }
-    }
-  }
-
-  damage(n, kind) {
-    if (this.dead || this.hurtT > 0 || this.game.godMode) return;
+  damage(n, game, cause = 'hurt') {
+    if (this.dead) return;
+    // armor soaks first
     if (this.armor > 0) {
-      const absorbed = Math.min(this.armor, n * 0.65);
-      this.armor -= absorbed;
-      n -= absorbed;
+      const soak = Math.min(this.armor, n * 0.7);
+      this.armor -= soak;
+      n -= soak;
     }
-    this.hp -= n;
-    this.hurtT = PLAYER.HURT_INVULN;
-    this.regenT = 0;
-    this.hurtFlash = 1;
-    this.game.fx.bloodBurst(this.x, this.y, 3);
-    this.game.audio.hurt();
-    if (this.hp <= 0) {
-      this.hp = 0;
+    this.health -= n;
+    this.hurtT = 0.4;
+    game.audio.hurt();
+    game.shake(2.5);
+    game.fx.blood(this.x, this.y, 4);
+    if (this.health <= 0) {
+      this.health = 0;
       this.dead = true;
-      if (this.inCar) this.exitCar(false);
-      this.game.wasted();
+      game.onPlayerDeath(cause);
     }
   }
 
-  // ------------------------------------------------------------------ drawing
-  draw(ctx, t) {
-    if (this.inCar) return; // hidden inside the car
-    const bob = Math.sin(this.step) * 0.06;
-    shadowBlob(ctx, this.x + 0.25, this.y + 0.3, 0.6, 0.32);
+  heal(n) {
+    this.health = clamp(this.health + n, 0, CFG.HEALTH_MAX);
+  }
 
-    ctx.save();
-    ctx.translate(this.x, this.y);
-    ctx.rotate(this.angle);
+  addArmor(n) {
+    this.armor = clamp(this.armor + n, 0, CFG.ARMOR_MAX);
+  }
 
-    // Legs
-    ctx.fillStyle = '#1e1f28';
-    const ls = Math.sin(this.step) * 0.24;
-    ctx.fillRect(-0.2, -0.4 + ls, 0.6, 0.26);
-    ctx.fillRect(-0.2, 0.14 - ls, 0.6, 0.26);
+  addAmmo(n) {
+    this.ammo += n;
+  }
 
-    // Body
-    ctx.fillStyle = this.shirt;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, 0.5, 0.4 + bob * 0.5, 0, 0, TAU);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-    ctx.lineWidth = 0.08;
-    ctx.stroke();
-
-    // Arms + weapon
-    if (this.weapon().id === 'pistol') {
-      ctx.fillStyle = this.skin;
-      ctx.fillRect(0.25, -0.3, 0.55, 0.16);
-      ctx.fillRect(0.25, 0.14, 0.55, 0.16);
-      ctx.fillStyle = '#15161c';
-      ctx.fillRect(0.62, -0.09, 0.5, 0.18);
-    } else {
-      const punch = this.meleeCd > PLAYER.MELEE_CD - 0.18 ? 0.5 : 0;
-      ctx.fillStyle = this.skin;
-      ctx.fillRect(0.2 + punch, -0.34, 0.4, 0.18);
-      ctx.fillRect(0.2 + punch, 0.16, 0.4, 0.18);
-    }
-
-    // Head
-    ctx.fillStyle = this.skin;
-    ctx.beginPath();
-    ctx.arc(0.06, 0, 0.3, 0, TAU);
-    ctx.fill();
-    ctx.fillStyle = '#241a12';
-    ctx.beginPath();
-    ctx.arc(-0.06, 0, 0.24, Math.PI / 2, Math.PI * 1.5);
-    ctx.fill();
-
-    ctx.restore();
-
-    // Hurt flash
-    if (this.hurtFlash > 0) {
-      glow(ctx, this.x, this.y, 2.2, '#ff4040', this.hurtFlash * 0.5);
-    }
+  addMoney(n) {
+    const before = this.money;
+    this.money = Math.max(0, this.money + n);
+    return this.money - before; // actual delta (clamped at zero)
   }
 }

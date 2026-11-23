@@ -1,107 +1,72 @@
-// ============================================================================
-// VICE PALMS — rng.js
-// Deterministic seeded randomness. Same seed => same city, same spawns, same
-// staged screenshot scenes. mulberry32 core; tiny string hashing for names.
-// ============================================================================
+// ---------------------------------------------------------------------------
+// rng.js — deterministic seeded randomness. The whole world and every staged
+// screenshot scene derive from integer seeds so runs are reproducible.
+// ---------------------------------------------------------------------------
 
-// xmur3 string hash -> 32-bit seed material.
+/** xmurmur3-ish string hash: turns "play" or "7" into a 32-bit seed. */
 export function hashSeed(str) {
-  let h = 1779033703 ^ str.length;
-  for (let i = 0; i < str.length; i++) {
-    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
-    h = (h << 13) | (h >>> 19);
+  let h = 0x811c9dc5;
+  const s = String(str);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
   }
-  h = Math.imul(h ^ (h >>> 16), 2246822507);
-  h = Math.imul(h ^ (h >>> 13), 3266489909);
-  return (h ^= h >>> 16) >>> 0;
+  h ^= h >>> 16;
+  return h >>> 0;
 }
 
 export class RNG {
   constructor(seed) {
-    this.a = (typeof seed === 'string' ? hashSeed(seed) : seed >>> 0) || 0x9e3779b9;
-    this.cache = null;
+    if (typeof seed === 'string') seed = hashSeed(seed);
+    this.s = (seed >>> 0) || 0x9e3779b9;
   }
 
-  // raw float in [0,1)
+  /** mulberry32 — fast, tiny, good enough distribution for gameplay. */
   next() {
-    let t = (this.a += 0x6d2b79f5);
+    this.s = (this.s + 0x6d2b79f5) >>> 0;
+    let t = this.s;
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   }
 
-  // float in [lo, hi)
-  range(lo, hi) {
-    return lo + this.next() * (hi - lo);
+  /** float in [a, b) */
+  range(a, b) {
+    return a + this.next() * (b - a);
   }
 
-  // int in [lo, hi] inclusive
-  int(lo, hi) {
-    return lo + Math.floor(this.next() * (hi - lo + 1));
-  }
-
-  chance(p) {
-    return this.next() < p;
+  /** integer in [a, b) — b defaults to a+1 */
+  int(a, b) {
+    if (b === undefined) { b = a; a = 0; }
+    return Math.floor(this.range(a, b));
   }
 
   pick(arr) {
     return arr[Math.floor(this.next() * arr.length)];
   }
 
-  // pick with a lucky second roll: biased toward the start of the array
-  pickBias(arr, bias = 0.35) {
-    const i = Math.floor(Math.abs(this.next() - bias * this.next()) * arr.length);
-    return arr[Math.min(i, arr.length - 1)];
-  }
-
-  shuffle(arr) {
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(this.next() * (i + 1));
-      const t = arr[i];
-      arr[i] = arr[j];
-      arr[j] = t;
+  /** weighted pick: entries are [item, weight] */
+  weighted(entries) {
+    let total = 0;
+    for (const e of entries) total += e[1];
+    let r = this.next() * total;
+    for (const e of entries) {
+      r -= e[1];
+      if (r <= 0) return e[0];
     }
-    return arr;
+    return entries[entries.length - 1][0];
   }
 
-  angle() {
-    return this.next() * Math.PI * 2;
+  chance(p) {
+    return this.next() < p;
   }
 
-  // one of n near-equal lanes
-  lane(n) {
-    return Math.floor(this.next() * n);
+  sign() {
+    return this.next() < 0.5 ? -1 : 1;
   }
-}
 
-// Fixed neighborhood words used for building naming / neon signs.
-const NEON_WORDS = [
-  'MALIBU', 'CLUB', 'OCEAN VIEW', 'PALMS HOTEL', 'EL RANCHO', 'MOTEL', 'DINER',
-  '24H', 'LIQUOR', 'CASINO', 'VICE', 'TATTOO', 'NOODLE BAR', 'KARAOKE', 'GYM',
-  'PAWN', 'CINEMA', 'ROOFTOP', 'BEACH BAR', 'NEON', 'LAUNDRY', 'PIZZA', 'SUSHI',
-  'STRIP CLUB', 'RECORDS', 'ARCADE', 'BANK', 'HOTEL LUNA', 'CAB CO', 'MARKET',
-];
-
-const STREETS = [
-  'Ocean', 'Palm', 'Flamingo', 'Vice', 'Coral', 'Sunset', 'Marina', 'Collins',
-  'Washington', 'Lincoln', 'Pelican', 'Starfish', 'Neon', 'Steel', 'Harbor',
-];
-
-const AVE = ['Ave', 'St', 'Blvd', 'Drive', 'Way'];
-
-export function streetName(rng) {
-  return rng.pick(STREETS) + ' ' + rng.pick(AVE);
-}
-
-export function neonWord(rng) {
-  return rng.pick(NEON_WORDS);
-}
-
-// Deterministic per-entity id: collision-free counter + seed salt.
-let idCounter = 1;
-export function nextId() {
-  return idCounter++;
-}
-export function resetIds(seed) {
-  idCounter = (seed >>> 0) % 100000 + 1;
+  /** gaussian-ish jitter (sum of 3 uniforms), roughly [-1, 1] peaked at 0 */
+  jitter() {
+    return (this.next() + this.next() + this.next()) / 1.5 - 1;
+  }
 }
