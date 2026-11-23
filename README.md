@@ -60,6 +60,16 @@ can delete a save (press twice to confirm).
 
 ## New in this build
 
+- **The Long Way Down + stunts, vendors and the map screen**: a second story arc of six chained
+  jobs (the debt collectors, a betrayal, the airfield hangar job, the coast-road chase, a funeral,
+  the last run to the marina gate) that unlocks the moment the first six pay out, with intro/outro
+  beats, fail/retry and a $12,600 purse; fifteen marked stunt sites (12 jumps + 3 ramps) scored on
+  air-time with a combo multiplier, cash payouts, landing sparks and UNIQUE-jump tracking in
+  localStorage; a street economy — hot dog carts, taco stands, liquor stores and a pawn curb whose
+  prices drift with the night and every purchase, heal-over-time food buffs and vendor barks; and
+  a full-screen map (`M`) with zoom and pan, district labels, an icon legend, every marker in the
+  city and click-to-set waypoints.
+
 - **Palms Airfield** (north-west quarter of the grid): a working GA field laid over six
   claimed blocks — lit runway 09/27 with thresholds, touch-down zones and hold-short bars,
   a parallel taxiway with connectors, a three-stand apron with parked club aircraft and a

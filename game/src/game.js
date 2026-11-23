@@ -35,6 +35,10 @@ import { createFightClub } from './systems/fightClub.js';
 import { createCasino } from './systems/casino.js';
 import { createBoats } from './systems/boats.js';
 import { createTaxi } from './systems/taxi.js';
+import { createStory2 } from './systems/story2.js';
+import { createStunts } from './systems/stunts.js';
+import { createVendors } from './systems/vendors.js';
+import { createMapScreen } from './systems/mapScreen.js';
 
 export const HOSPITAL = { x: 15 * PITCH, y: 22 * PITCH };
 export const STATION = { x: 8 * PITCH, y: 11 * PITCH };
@@ -93,6 +97,12 @@ export class Game {
     this.casino = createCasino(this);
     this.boats = createBoats(this);
     this.taxi = createTaxi(this);
+    // This pass: the second story arc, the stunt ramps, the street vendors and
+    // the full-screen map. The arc unlocks once the first six jobs pay out.
+    this.stunts = createStunts(this);
+    this.vendors = createVendors(this);
+    this.mapScreen = createMapScreen(this);
+    this.story2 = createStory2(this);
     this.toastQueue = [];          // screen toasts queued for the HUD
     this.ferryPrompt = false;      // live boarding prompt
     this.heistInteract = false;    // E queued for the heist this step
@@ -214,6 +224,17 @@ export class Game {
       this.phone.toggle();
     }
 
+    // The map screen owns M and the mouse while it is up; the world steps on
+    // under it, but nobody walks, shoots or honks on their own.
+    if (!this.phone.state.open && this.mapScreen) {
+      if (this.mapScreen.open) {
+        this.mapScreen.update(input, dt);
+        effInput = PHONE_IDLE;
+      } else if (input.tap('KeyM')) {
+        this.mapScreen.toggle();
+      }
+    }
+
     // Interaction taps are resolved before the systems tick: heist prompts
     // claim E first, then the ferry, then the gangs' doors and fights.
     if (effInput !== PHONE_IDLE && input.tap('KeyE')) this.resolveInteract();
@@ -253,6 +274,10 @@ export class Game {
     this.casino.update(dt, effInput);
     this.boats.update(dt, p);
     this.taxi.update(dt, p);
+    // This pass: air-time over the ramps, the street economy and the arc.
+    this.stunts.update(dt, p);
+    this.vendors.update(dt, p);
+    this.story2.update(dt, p);
 
     // Broad-phase build: cars and people register into the grid each step.
     if (!this.grid) this.grid = new Grid();
@@ -293,6 +318,7 @@ export class Game {
     if (this.casino.tryInteract(p)) return;
     if (this.boats.tryInteract(p)) return;
     if (this.taxi.tryInteract(p)) return;
+    if (this.vendors?.tryInteract(p)) return;
     this.gangs.tryInteract(p);
   }
 
@@ -444,6 +470,7 @@ export class Game {
     this.audio.boom(0.4);
     // A heist in progress dies with the hero: no rewards from the morgue.
     this.heists.abort('You bled out before the drop.');
+    this.story2?.onHeroDown?.();
   }
 
   respawn() {
@@ -614,6 +641,10 @@ export class Game {
       fight: this.fightClub?.serialize(),
       taxi: this.taxi?.serialize(),
       boats: this.boats?.serialize(),
+      // This pass keeps its own ledgers: the arc, the market, the waypoint.
+      story2: this.story2?.serialize(),
+      vendors: this.vendors?.serialize(),
+      map: this.mapScreen?.serialize(),
     });
   }
 }

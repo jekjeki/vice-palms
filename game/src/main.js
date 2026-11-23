@@ -70,6 +70,10 @@ function newGame(fromSave) {
     if (fromSave.fight) game.fightClub.restore(fromSave.fight);
     if (fromSave.taxi) game.taxi.restore(fromSave.taxi);
     if (fromSave.boats) game.boats.restore(fromSave.boats);
+    // This pass's ledgers: the arc, the market prices, the waypoint.
+    if (fromSave.story2) game.story2.restore(fromSave.story2);
+    if (fromSave.vendors) game.vendors.restore(fromSave.vendors);
+    if (fromSave.map) game.mapScreen.restore(fromSave.map);
   }
   hud.attach(game);
   ui.cameraOverride = null;
@@ -223,7 +227,7 @@ function frame(now) {
       if (input.tap('Enter') || input.tap('Space')) { activatePause(ui.menuIndex); menuCooldown = 0.3; }
     }
   } else if (ui.uiState === 'play') {
-    if (input.tap('Escape') && game && game.state === 'play' && !game.photoMode.active) {
+    if (input.tap('Escape') && game && game.state === 'play' && !game.photoMode.active && !game.mapScreen?.open) {
       // The phone pockets before the pause menu opens: no accidental exits.
       if (game.phone?.state.open) game.phone.pocket();
       else openPause();
@@ -270,6 +274,8 @@ function frame(now) {
     if (game.photoMode.active) game.photoMode.maybeCapture(canvas);
     if (ui.uiState !== 'title') hud.draw(canvas.getContext('2d'), game, canvas.width, canvas.height);
     drawOverlays(ctx, game, canvas.width, canvas.height);
+    // The full-screen map takes the frame over the HUD, under the menus.
+    if (game.mapScreen?.open) game.mapScreen.render(ctx, canvas.width, canvas.height);
     if (game.photoMode.active) game.photoMode.draw(ctx, canvas.width, canvas.height);
     menus.draw(ctx, game, ui, canvas.width, canvas.height, dt);
   } else {

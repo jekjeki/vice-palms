@@ -85,9 +85,12 @@ export class Hud {
     this.endState(ctx, game, p, W, H);
     this.toasts(ctx, game, W);
     this.interactPrompt(ctx, game, W, H);
-    // This build's live panels: the race plate and the taxi meter.
+    // This build's live panels: the race plate, the taxi meter, the stunt
+    // combo ladder and the vendor buff readout.
     game.races?.drawHud(ctx, W, H);
     game.taxi?.drawHud(ctx, W, H);
+    game.stunts?.drawHud(ctx, W, H);
+    game.vendors?.drawHud(ctx, W, H);
     if (game.phone?.state.open) this.phonePanel(ctx, game, W, H);
     if (this.lastMoney !== null && p.money > this.lastMoney) this.moneyPulse = 1;
     this.lastMoney = p.money;
@@ -177,7 +180,8 @@ export class Hud {
     const toMini = (wx, wy) => [mx + ((wx * kx - sx) / viewPx) * r * 2 - r, my + (((wy + this.north) * ky - sy) / viewPy) * r * 2 - r];
 
     // Mission marker, clamped to the rim so off-screen goals still show direction.
-    const marker = game.missions.marker();
+    // The second arc's marker takes the slot while its jobs are live.
+    const marker = game.story2?.marker?.() ?? game.missions.marker();
     if (marker) {
       const [ax, ay] = toMini(marker.x, marker.y);
       const cx = clamp(ax, mx - r + 10, mx + r - 10);
@@ -187,6 +191,17 @@ export class Hud {
       ctx.strokeStyle = 'rgba(0,0,0,0.6)';
       ctx.lineWidth = 1.5;
       ctx.stroke();
+    }
+    // The map screen's waypoint rides the same rim treatment.
+    const wp = game.mapScreen?.waypointPoint?.();
+    if (wp) {
+      const [ax, ay] = toMini(wp.x, wp.y);
+      const cx = clamp(ax, mx - r + 10, mx + r - 10);
+      const cy = clamp(ay, my - r + 10, my + r - 10);
+      ctx.strokeStyle = wp.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(cx, cy, 5.5, 0, TAU); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx - 8, cy); ctx.lineTo(cx + 8, cy); ctx.moveTo(cx, cy - 8); ctx.lineTo(cx, cy + 8); ctx.stroke();
     }
     // District blips: the ferry, the heist marker, turf skirmishes, hideouts,
     // and the weather's fog-of-war shading.
@@ -199,6 +214,9 @@ export class Hud {
     if (game.fightClub) blips.push([game.fightClub.door.x, game.fightClub.door.y, '#ff5a6e']);
     if (game.boats) blips.push([game.boats.shop.x, game.boats.shop.y, '#33e7ff']);
     for (const rk of game.taxi?.ranks ?? []) blips.push([rk.x, rk.y, '#f2cf47']);
+    // This pass's blips: the fifteen stunt sites and the street vendors.
+    for (const [wx, wy, col] of game.stunts?.blips?.() ?? []) blips.push([wx, wy, col]);
+    for (const [wx, wy, col] of game.vendors?.blips?.() ?? []) blips.push([wx, wy, col]);
     for (const [wx, wy, col] of blips) {
       const [bx, by] = toMini(wx, wy);
       if (Math.hypot(bx - mx, by - my) < r - 5) {
@@ -344,9 +362,13 @@ export class Hud {
   }
 
   objective(ctx, game, W, H) {
-    // The heist owns the plate while it runs; missions otherwise.
-    let text = game.heists?.objectiveText() ?? game.missions.objectiveText();
-    const marker = game.heists?.marker() ?? game.missions.marker();
+    // The second arc owns the plate while it is live or offering; the heist
+    // owns it while it runs; missions otherwise.
+    const s2 = game.story2;
+    let text = s2?.hudOwns?.() ? s2.objectiveText()
+      : game.heists?.objectiveText() ?? game.missions.objectiveText();
+    const marker = s2?.hudOwns?.() ? s2.marker()
+      : game.heists?.marker() ?? game.missions.marker();
     if (marker) {
       const m = Math.round(dist(game.player.x, game.player.y, marker.x, marker.y) / 8);
       text += ` · ${m}m`;
