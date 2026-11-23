@@ -206,6 +206,28 @@ export class HUD {
       ctx.strokeRect(W - 178, H - 30, 150, 8);
     }
 
+    // ---- off-screen marker edge arrows ----
+    if (game.vis) {
+      const halfW = CFG.VIEW_W / 2 / game.cam.zoom, halfH = CFG.VIEW_H / 2 / game.cam.zoom;
+      for (const mk of game.missions.markers) {
+        const sx = mk.x - game.cam.x, sy = mk.y - game.cam.y;
+        if (Math.abs(sx) < halfW - 40 && Math.abs(sy) < halfH - 40) continue; // on screen
+        const a = Math.atan2(sy, sx);
+        const ex = clamp(CFG.VIEW_W / 2 + Math.cos(a) * (CFG.VIEW_W / 2 - 40), 40, CFG.VIEW_W - 40);
+        const ey = clamp(CFG.VIEW_H / 2 + Math.sin(a) * (CFG.VIEW_H / 2 - 40), 40, CFG.VIEW_H - 40);
+        ctx.save();
+        ctx.translate(ex, ey);
+        ctx.rotate(a);
+        ctx.fillStyle = mk.color;
+        ctx.globalAlpha = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(10, 0); ctx.lineTo(-6, -7); ctx.lineTo(-6, 7);
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+        ctx.globalAlpha = 1;
+      }
+    }
+
     // ---- subtitle (bottom-center) ----
     if (this.subT > 0) {
       const a = clamp(this.subT, 0, 1);

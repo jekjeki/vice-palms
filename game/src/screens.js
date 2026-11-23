@@ -24,13 +24,14 @@ export function updateScreens(game, dt) {
       break;
     }
     case 'pause': {
-      game.menuIndex = clamp(game.menuIndex ?? 0, 0, 3);
-      if (input.anyPressed('UP', 'W')) game.menuIndex = (game.menuIndex + 3) % 4;
-      if (input.anyPressed('DOWN', 'S')) game.menuIndex = (game.menuIndex + 1) % 4;
+      game.menuIndex = clamp(game.menuIndex ?? 0, 0, 4);
+      if (input.anyPressed('UP', 'W')) game.menuIndex = (game.menuIndex + 4) % 5;
+      if (input.anyPressed('DOWN', 'S')) game.menuIndex = (game.menuIndex + 1) % 5;
       if (input.pressed('ENTER') || input.pressed('SPACE')) {
         if (game.menuIndex === 0) game.state = 'play';
         else if (game.menuIndex === 1) { game.save(); game.hud.toast('Game saved'); game.state = 'play'; }
         else if (game.menuIndex === 2) { game.deleteSave(); game.hud.toast('Save deleted'); }
+        else if (game.menuIndex === 3) { game.hud.toast('Controls shown on the right'); }
         else { game.state = 'title'; game.resetToTitle(); }
       }
       if (input.pressed('ESC')) game.state = 'play';
@@ -134,7 +135,7 @@ function drawPalmSil(ctx, x, y, s) {
 }
 
 // ---------------------------------------------------------------- pause
-const MENU = ['RESUME', 'SAVE GAME', 'DELETE SAVE', 'QUIT TO TITLE'];
+const MENU = ['RESUME', 'SAVE GAME', 'DELETE SAVE', 'CONTROLS', 'QUIT TO TITLE'];
 function drawPause(game, ctx) {
   const W = CFG.VIEW_W, H = CFG.VIEW_H;
   ctx.fillStyle = 'rgba(4,4,10,0.72)';
@@ -147,36 +148,78 @@ function drawPause(game, ctx) {
   ctx.shadowBlur = 0;
   MENU.forEach((item, i) => {
     const sel = i === (game.menuIndex ?? 0);
-    ctx.font = sel ? '800 26px "Segoe UI", sans-serif' : '600 22px "Segoe UI", sans-serif';
+    ctx.font = sel ? '800 24px "Segoe UI", sans-serif' : '600 20px "Segoe UI", sans-serif';
     ctx.fillStyle = sel ? '#ffd166' : 'rgba(220,220,235,0.8)';
     if (sel) { ctx.shadowColor = '#ffd166'; ctx.shadowBlur = 10; }
-    ctx.fillText(item, W / 2, H * 0.44 + i * 44);
+    ctx.fillText(item, W / 2, H * 0.42 + i * 38);
     ctx.shadowBlur = 0;
   });
-  // ---- stats panel (right side) ----
-  const s = game.stats;
-  if (s) {
-    ctx.textAlign = 'left';
-    ctx.font = '700 16px "Segoe UI", sans-serif';
-    ctx.fillStyle = '#00e5ff';
-    ctx.fillText('STATS', W * 0.72, H * 0.36);
-    ctx.font = '600 13px "Segoe UI", sans-serif';
-    ctx.fillStyle = 'rgba(220,220,235,0.85)';
-    const lines = [
-      'Time played: ' + Math.floor(s.time / 60) + 'm ' + Math.floor(s.time % 60) + 's',
-      'Distance: ' + (s.dist / 500).toFixed(1) + ' km',
-      'Cars jacked: ' + s.carsJacked,
-      'Peds wasted: ' + s.pedsWasted,
-      'Max wanted: ' + '★'.repeat(s.maxWanted),
-      'Packages: ' + (s.packages ?? 0) + '/' + (game.world.hidden ? game.world.hidden.length : 12),
-      'Missions: ' + game.missions.storyIndex + '/6',
-    ];
-    lines.forEach((l, i) => ctx.fillText(l, W * 0.72, H * 0.36 + 24 + i * 20));
-  }
+  if ((game.menuIndex ?? 0) === 3) drawControlsCard(ctx);
+  drawStatsPanel(game, ctx);
   ctx.font = '600 14px "Segoe UI", sans-serif';
   ctx.fillStyle = 'rgba(200,200,215,0.6)';
-  ctx.fillText('UP/DOWN to choose · ENTER confirm · ESC resume · R next radio station in car', W / 2, H * 0.86);
+  ctx.fillText('UP/DOWN to choose · ENTER confirm · ESC resume · R next radio station in car · TAB city map', W / 2, H * 0.92);
   ctx.textAlign = 'left';
+}
+
+function drawControlsCard(ctx) {
+  const W = CFG.VIEW_W;
+  const lines = [
+    ['WALK / DRIVE', 'WASD or arrow keys'],
+    ['SPRINT / NITRO', 'SHIFT'],
+    ['HANDBRAKE', 'SPACE'],
+    ['ENTER / EXIT / CARJACK', 'F'],
+    ['RIDE THE BUS (at a stop)', 'F near the Palm Line bus'],
+    ['SHOOT', 'Mouse aim + click'],
+    ['PUNCH', 'E'],
+    ['SIREN (in a cruiser)', 'H'],
+    ['RADIO NEXT STATION', 'R'],
+    ['CITY MAP', 'TAB'],
+    ['MUTE', 'M'],
+    ['PAUSE', 'ESC or P'],
+  ];
+  const x0 = W * 0.56, y0 = CFG.VIEW_H * 0.20;
+  ctx.fillStyle = 'rgba(6,6,12,0.85)';
+  ctx.fillRect(x0 - 20, y0 - 26, 420, 330);
+  ctx.strokeStyle = 'rgba(0,229,255,0.4)';
+  ctx.strokeRect(x0 - 20, y0 - 26, 420, 330);
+  ctx.textAlign = 'left';
+  ctx.font = '800 15px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#00e5ff';
+  ctx.fillText('CONTROLS', x0, y0);
+  ctx.font = '600 13px "Segoe UI", sans-serif';
+  lines.forEach(([act, key], i) => {
+    ctx.fillStyle = 'rgba(220,220,235,0.85)';
+    ctx.fillText(act, x0, y0 + 26 + i * 24);
+    ctx.fillStyle = '#ffd166';
+    ctx.textAlign = 'right';
+    ctx.fillText(key, x0 + 396, y0 + 26 + i * 24);
+    ctx.textAlign = 'left';
+  });
+}
+
+function drawStatsPanel(game, ctx) {
+  const W = CFG.VIEW_W, H = CFG.VIEW_H;
+  const s = game.stats;
+  if (!s) return;
+  ctx.textAlign = 'left';
+  ctx.font = '700 16px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#00e5ff';
+  ctx.fillText('STATS', W * 0.72, H * 0.36);
+  ctx.font = '600 13px "Segoe UI", sans-serif';
+  ctx.fillStyle = 'rgba(220,220,235,0.85)';
+  const lines = [
+    'Time played: ' + Math.floor(s.time / 60) + 'm ' + Math.floor(s.time % 60) + 's',
+    'Distance: ' + (s.dist / 500).toFixed(1) + ' km',
+    'Cars jacked: ' + s.carsJacked,
+    'Peds wasted: ' + s.pedsWasted,
+    'Max wanted: ' + '★'.repeat(s.maxWanted),
+    'Packages: ' + (s.packages ?? 0) + '/' + (game.world.hidden ? game.world.hidden.length : 12),
+    'Missions: ' + game.missions.storyIndex + '/6',
+    'Stunt jumps: ' + (s.jumps ?? 0) + ' (best ' + (game.jumps ? game.jumps.best.toFixed(1) : '0.0') + 's)',
+    'Rain: ' + Math.round((game.weather ? game.weather.intensity : 0) * 100) + '%',
+  ];
+  lines.forEach((l, i) => ctx.fillText(l, W * 0.72, H * 0.36 + 24 + i * 20));
 }
 
 // ---------------------------------------------------------------- wasted/busted

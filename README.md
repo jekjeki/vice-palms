@@ -18,35 +18,47 @@ Then open http://localhost:8080 and press ENTER.
 
 ## Features
 
-- **Night city, deterministic** — seeded road grid with neon-signed blocks, a central palm
-  park, a beach strip, NORTH DOCKS (piers, container stacks, cranes, a cargo ship) and
-  PALM AIRFIELD (runway, hangars, control tower, fence).
-- **8 vehicles** with arcade drift physics: handbrake slides, skidmarks, damage smoke,
-  fire, and proper explosions with radius damage.
+- **Night city, deterministic** — seeded road grid with neon-signed blocks, an old-town
+  brick quarter, glass-tower downtown, a central palm park with fountain plaza, a beach
+  strip (boardwalk, volleyball court, lifeguard towers), NORTH DOCKS (piers, container
+  stacks, cranes, a cargo ship, fishing boats) and PALM AIRFIELD (runway, hangars,
+  control tower, windsock, fuel drums).
+- **8 vehicles** with arcade drift physics: handbrake slides, skidmarks, nitro boost
+  (SHIFT), engine misfire at low health, damage smoke, fire, and proper explosions
+  with radius damage.
 - **Carjack anything** with F — drivers bail and bolt.
 - **Wanted system 1–5**: cruiser pursuit with ramming, foot cops that shoot, roadblocks
-  at 3+ stars, out-of-sight decay, WASTED/BUSTED cards with respawn fees.
-- **6 chained story missions** (Rico returns to Vice Palms) plus 3 repeatable side
-  missions (Palm Delivery, Taxi Fare, Street Sweep), timers, payouts, subtitles.
-- **Traffic AI** with lane keeping, traffic lights, queueing and horn abuse; pedestrians
-  wander sidewalks and flee gunfire.
-- **Synthesized audio** — engine, gunshots, sirens, explosions and a synthwave loop
-  (WebAudio only, M to mute).
-- **Save/delete-save** via the pause menu (localStorage), plus a circular minimap,
-  speedometer, and full HUD.
+  at 3+ stars, spike strips and a searchlight helicopter at 4+, out-of-sight decay,
+  WASTED/BUSTED cards with respawn fees.
+- **6 chained story missions** (Rico returns to Vice Palms) plus 6 repeatable side
+  missions (Palm Delivery, Taxi Fare, Street Sweep, Heat Run, Pilot Run, Vice GP),
+  timers, speed bonuses, payouts, subtitles.
+- **Living city**: traffic AI with lane keeping, traffic lights, queueing, turn signals
+  and horn abuse; pedestrians (joggers, dog walkers, tourists, umbrellas in the rain)
+  that wander, cross at crosswalks and flee gunfire; dynamic city events (neon parade,
+  docks raid, night market, squalls, dragnets); a looping Palm Line bus you can ride.
+- **Services & secrets**: Pay 'n' Spray (clears wanted), Octane Fuel, Ammu-Nation,
+  Palm Dogs, 8 stunt ramps with airtime payouts, 12 hidden packages, ammo/health/armor
+  pickups.
+- **Synthesized audio** — engine, gunshots, sirens, explosions, thunder, rain loop and a
+  station-aware synthwave music engine (WebAudio only, M to mute).
+- **Full city map** on TAB, pause-menu stats panel, save/delete-save via localStorage.
 
 ## Controls
 
 | Key | Action |
 | --- | --- |
 | WASD / arrows | walk / drive |
-| SHIFT | sprint |
+| SHIFT | sprint / nitro boost |
 | SPACE | handbrake |
-| F | enter / exit / carjack |
-| Mouse | aim, click to shoot |
-| E | punch |
+| F | enter / exit / carjack (or ride the bus at a Palm Line stop) |
+| Mouse | aim, click to shoot (drive-bys work from cars) |
+| E | punch / buy at counters |
+| H | siren (in a cruiser) |
+| R | next radio station (in a car) |
+| TAB | city map |
 | M | mute audio |
-| ESC / P | pause (save / delete-save / quit) |
+| ESC / P | pause (save / controls / delete-save / quit) |
 
 ## Staged screenshots
 
@@ -55,7 +67,11 @@ The four entry shots are deterministic scenes: `?shot=start|play|end|chaos&seed=
 
 ## Layout
 
-- `game/` — the whole game (`index.html` + `src/*.js`, ES modules)
+- `game/` — the whole game (`index.html` + `src/*.js`, ES modules):
+  `world` (city gen) · `cars`/`traffic` (physics + AI) · `player`/`peds` · `police` ·
+  `missions` · `render`/`hud`/`screens`/`mapscreen` · `audio`/`radio` · `weather` ·
+  `shops` · `jumps` · `transit` · `events` · `dialogue` · `shots` (staged scenes) ·
+  `game` (state machine) · `main` (boot/loop)
 - `serve.ts` — stdlib static server for `game/`
 - `main.ts` — builds the make.fun dossier into `out/` via `vendor/makefun-game.ts`
 - `screenshots/` — the 4 staged shots; `shots.json` describes them

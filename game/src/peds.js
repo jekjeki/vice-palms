@@ -70,7 +70,15 @@ export class Ped {
     this.wanderT -= dt;
     if (this.wanderT <= 0) {
       this.wanderT = rand(2, 6);
-      this.homeDir += (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2);
+      // occasionally cross the street at a crosswalk instead of turning back
+      const R = CFG.ROAD_SPACING;
+      const ry = Math.round(this.y / R) * R;
+      const nearRoad = Math.abs(this.y - ry) < CFG.ROAD_W / 2 + CFG.SIDEWALK + 4;
+      if (nearRoad && Math.random() < 0.4) {
+        this.homeDir = this.y > ry ? -Math.PI / 2 : Math.PI / 2; // cross to the other sidewalk
+      } else {
+        this.homeDir += (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2);
+      }
     }
     this.dir += angDiff(this.dir, this.homeDir) * Math.min(1, dt * 2);
     // joggers pick long straight stretches; tourists wander tighter

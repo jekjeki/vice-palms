@@ -122,6 +122,12 @@ export class Car {
       }
     }
     this.nitroGlow = Math.max(0, (this.nitroGlow || 0) - dt * 3);
+    // engine misfire when badly damaged
+    if (this.hp < this.maxHp * 0.3 && this.state === 'drive' && Math.random() < dt * 1.6) {
+      fwd *= 0.55;
+      game.fxBurst(this.x - Math.cos(this.h) * this.len / 2, this.y - Math.sin(this.h) * this.len / 2, 'smoke', 1);
+      game.audio?.misfire?.();
+    }
     fwd = clamp(fwd, def.rev, def.max * (this.nitro ? 1.18 : 1));
     // blown tires from spike strips: hard speed cap while spikeT ticks down
     if (this.spikeT > 0) {
@@ -241,6 +247,12 @@ export class Car {
     this.driver = null;
     this.ai = null;
     game.onCarExplode?.(this);
+  }
+
+  // siren: player toggles it in a cruiser with H (traffic pull-over, style points)
+  toggleSiren() {
+    if (this.type !== 'police') return;
+    this.siren = !this.siren;
   }
 
   // eject driver as a ped-like entity (carjack target)

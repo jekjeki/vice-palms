@@ -31,7 +31,10 @@ export class Missions {
     // side mission pickups
     for (const def of SIDES) {
       if (this.active || this.storyIndex < def.after || this.sideCooldown[def.id] > game.t) continue;
-      if (dist(p.x, p.y, def.x, def.y) < 30) this.startSide(def);
+      if (dist(p.x, p.y, def.x, def.y) < 30) {
+        this.startSide(def);
+        if (game.dialogue) game.dialogue.play(def.id, true);
+      }
     }
 
     if (this.active) {
@@ -76,6 +79,7 @@ export class Missions {
     def.start(game, this.active);
     game.hud.banner(def.name, def.brief);
     game.audio?.missionStart?.();
+    game.dialogue?.play(def.id, true);
   }
 
   startSide(def) {
@@ -91,10 +95,19 @@ export class Missions {
     const game = this.game;
     const m = this.active;
     if (!m) return;
-    const reward = m.def.reward;
+    let reward = m.def.reward;
+    // timed missions pay a speed bonus
+    if (m.timer !== null && m.timer !== undefined && m.timer > 0 && m.def.timer) {
+      const bonus = Math.round(m.def.reward * 0.4 * clamp(m.timer / m.def.timer, 0, 1));
+      if (bonus > 0) {
+        reward += bonus;
+        game.hud.toast('Time bonus +' + '$' + bonus);
+      }
+    }
     game.player.money += reward;
     game.hud.banner('MISSION PASSED', 'Respect+  ' + fmtMoney(reward));
     game.audio?.missionDone?.();
+    if (m.story && game.dialogue) game.dialogue.play(m.def.id + '_done', true);
     m.def.cleanup?.(game, m);
     this.active = null;
     if (m.story) {
@@ -464,6 +477,37 @@ const SIDES = [
       if (distToPlayer(game, CFG.AIR_W + 420, 1500) < 70) {
         game.hud.subtitle('PILOT: "Damn, you fly low but you fly fast."', 4);
         return 'complete';
+      }
+      return 'active';
+    },
+  },
+  {
+    id: 'vicegp', name: 'VICE GP', brief: 'Unofficial street race: 8 checkpoints around downtown. $100 per lap.',
+    x: 2404, y: 1046, after: 6, reward: 800,
+    start(game, m) {
+      m.data.checkpoints = [
+        [2735, 1360], [2395, 1020], [1360, 1020], [695, 1360],
+        [695, 2040], [1360, 2395], [2040, 2395], [2400, 1060],
+      ];
+      m.data.idx = 0;
+      this.next(game, m);
+      game.hud.subtitle('RACE ORGANIZER: "Eight corners, no rules, no insurance. GO!"', 4);
+      game.police.addWanted(1, 'street-race');
+    },
+    next(game, m) {
+      clearObjMarkers(game);
+      const [x, y] = m.data.checkpoints[m.data.idx];
+      markerObj(game, x, y, { id: 'obj', color: '#8cff5d', label: 'CP ' + (m.data.idx + 1) + '/8' });
+    },
+    update(game, m, dt) {
+      const mk = game.missions.markers.find((k) => k.id === 'obj');
+      if (!mk) return 'active';
+      if (distToPlayer(game, mk.x, mk.y) < mk.r + 10) {
+        m.data.idx++;
+        game.audio?.missionTick?.();
+        game.player.money += 100;
+        if (m.data.idx >= m.data.checkpoints.length) return 'complete';
+        this.next(game, m);
       }
       return 'active';
     },

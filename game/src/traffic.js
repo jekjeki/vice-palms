@@ -102,6 +102,15 @@ export class TrafficAI {
     if (this.panic > 0) t = Math.max(t, 0.9);
     if (this.stun > 0) t = 0;
 
+    // pull over for sirens: slow to the curb when a wailing cruiser bears down
+    if (game.police && game.police.wanted > 0) {
+      for (const pc of game.cars) {
+        if (pc.type !== 'police' || !pc.siren || pc.driver !== 'ai') continue;
+        const d = dist(pc.x, pc.y, car.x, car.y);
+        if (d < 220) { t = Math.min(t, 0.1); this.panic = 2; break; }
+      }
+    }
+
     return { t, s };
   }
 
@@ -174,10 +183,12 @@ export function spawnTraffic(game, x, y, type) {
   const off = CFG.LANE_OFF;
   const px = horiz ? x : (dir === Math.PI / 2 ? rx - off : rx + off);
   const py = horiz ? (dir === 0 ? ry + off : ry - off) : y;
-  // never spawn overlapping another car or a solid
+  // never spawn overlapping another car, a solid, or the player
   for (const o of game.cars) {
     if (Math.abs(o.x - px) < 110 && Math.abs(o.y - py) < 70) return null;
   }
+  const pl = game.player;
+  if (pl && Math.hypot(pl.x - px, pl.y - py) < 120) return null;
   for (const r of game.world.nearSolids(px, py)) {
     if (px >= r.x0 - 40 && px <= r.x1 + 40 && py >= r.y0 - 30 && py <= r.y1 + 30) return null;
   }

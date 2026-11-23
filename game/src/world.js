@@ -73,9 +73,18 @@ export class World {
             for (let k = 0; k < n; k++) row.push(r.f() < 0.55 ? r.int(1, 3) : 0);
             b.lit.push(row);
           }
-          // neon signs on avenue-facing buildings
+          // murals on wide building faces (deterministic art picks)
+        if (bw > 120 && r.f() < 0.22) {
+          const arts = [
+            { kind: 'flamingo', color: '#ff5da2' },
+            { kind: 'sunset', color: '#ffd166' },
+            { kind: 'wave', color: '#00e5ff' },
+          ];
+          b.mural = arts[r.int(0, arts.length - 1)];
+        }
+        // neon signs on avenue-facing buildings
           if (r.f() < 0.3 && bw > 90) {
-            const names = ['PALMS', 'CLUB', 'MOTEL', '24H', 'DINER', 'BAR', 'VICE', 'HOTEL', 'GIRLZ', 'TATTOO', 'NEON', 'LIQUOR', 'ARCADE', 'SUSHI'];
+            const names = ['PALMS', 'CLUB', 'MOTEL', '24H', 'DINER', 'BAR', 'VICE', 'HOTEL', 'GIRLZ', 'TATTOO', 'NEON', 'LIQUOR', 'ARCADE', 'SUSHI', 'ROXY', 'PALM FIZZ', 'KARAOKE', 'CAFE', 'WAX', 'BINGO'];
             const text = names[r.int(0, names.length - 1)];
             const color = COLORS.neon[['pink', 'cyan', 'gold', 'lime', 'violet'][r.int(0, 4)]];
             const onLeft = r.chance(0.5);
@@ -341,6 +350,10 @@ export class World {
     for (const b of this.buildings) {
       if (b.container || b.floors < 5) continue;
       b.ac = this.rng.f() < 0.6;
+      // skyline extras: rooftop pools, entrance canopies, neon window bands
+      if (b.floors >= 7 && this.rng.f() < 0.35) b.pool = true;
+      if (b.floors >= 4 && this.rng.f() < 0.4) b.canopy = { side: this.rng.chance(0.5) ? 'n' : 's', color: COLORS.neon[['pink', 'cyan', 'gold'][this.rng.int(0, 2)]] };
+      if (b.floors >= 6 && this.rng.f() < 0.3) b.band = COLORS.neon[['violet', 'lime', 'red'][this.rng.int(0, 2)]];
     }
 
     // --- beach extras: volleyball court + boardwalk --------------------------
@@ -366,6 +379,11 @@ export class World {
       [560, 1420], [1790, 1745], [3060, 2078], [4150, 2350], [836, 3080],
       [2470, 3220], [3690, 2870],
     ].map(([hx, hy]) => { const s = snapSidewalk(hx, hy); return [s.x, s.y]; });
+
+    // --- landmark neon: VPD, hospital and hotel crown signs ------------------
+    this.neonSigns.push({ x: this.pois.police.x, y: this.pois.police.y + 40, text: 'VPD', color: '#4f8aff', vert: -1 });
+    this.neonSigns.push({ x: this.pois.hospital.x, y: this.pois.hospital.y + 40, text: 'MED', color: '#ff5d7d', vert: -1 });
+    this.neonSigns.push({ x: 2720 + 20, y: 1700, text: 'HOTEL', color: '#c77dff', vert: 1 });
 
     // --- spawn tables (deterministic) --------------------------------------
     const carTypes = ['sedan', 'sedan', 'taxi', 'van', 'pickup', 'coupe', 'sport', 'truck', 'bus', 'sedan', 'coupe', 'taxi'];

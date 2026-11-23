@@ -290,6 +290,7 @@ export class Police {
     const heli = this.heli;
     if (!heli) return;
     heli.update(game, dt);
+    if (dist(heli.x, heli.y, p.x, p.y) < 900) game.audio?.rotor(1 - dist(heli.x, heli.y, p.x, p.y) / 900);
     if (heli.gone || this.wanted < 3) { this.heli = null; this.heliCd = false; }
   }
 }

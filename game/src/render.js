@@ -2,6 +2,7 @@
 // camera shake, and the circular minimap renderer.
 import { CFG, COLORS } from './config.js';
 import { clamp, TAU } from './util.js';
+import { RAMP_SPOTS } from './jumps.js';
 
 export function render(game, ctx) {
   const cam = game.cam;
@@ -26,6 +27,7 @@ export function render(game, ctx) {
   drawZoneProps(game, ctx, vis);
   drawBuildings(game, ctx, vis);
   drawMarkers(game, ctx);
+  drawRamps(game, ctx);
   drawPickups(game, ctx);
   drawPeds(game, ctx);
   drawSkidmarks(game, ctx);
@@ -90,6 +92,15 @@ function drawGround(game, ctx, vis) {
       ctx.moveTo(x0 + 20, y + ph);
       ctx.lineTo(x1 - 20, y - ph);
       ctx.stroke();
+    }
+    // moon glint band down the middle of the south ocean
+    if (wtr.kind === 'ocean' && y0 < CFG.OCEAN_S + 120) {
+      const gx = (Math.sin(t * 0.11) * 0.5 + 0.5) * (CFG.W - 800) + 400;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = 'rgba(255,200,230,0.10)';
+      ctx.fillRect(gx - 90, y0, 180, y1 - y0);
+      ctx.restore();
     }
     // foam edge
     ctx.strokeStyle = 'rgba(190,220,255,0.35)';
@@ -707,13 +718,84 @@ function drawBuildings(game, ctx, vis) {
       ctx.strokeStyle = '#4a4a58';
       ctx.beginPath(); ctx.arc(cx2, cy2, 6, game.t * 6 % TAU, game.t * 6 % TAU + 2.2); ctx.stroke();
     }
+    // rooftop pool: glowing cyan rectangle with a ladder
+    if (b.pool) {
+      const cx2 = b.x0 + 18, cy2 = b.y0 + 16;
+      ctx.fillStyle = 'rgba(70,180,230,0.65)';
+      ctx.fillRect(cx2, cy2, 26, 18);
+      ctx.strokeStyle = 'rgba(200,240,255,0.5)';
+      ctx.lineWidth = 1.4;
+      ctx.strokeRect(cx2, cy2, 26, 18);
+      const ripple = Math.sin(game.t * 3 + b.x0) * 2;
+      ctx.beginPath();
+      ctx.moveTo(cx2 + 4, cy2 + 9 + ripple);
+      ctx.lineTo(cx2 + 22, cy2 + 9 - ripple);
+      ctx.stroke();
+    }
+    // neon window band around the roofline
+    if (b.band) {
+      ctx.save();
+      ctx.strokeStyle = b.band;
+      ctx.shadowColor = b.band; ctx.shadowBlur = 10;
+      ctx.lineWidth = 2.4;
+      const blink = Math.sin(game.t * 6 + b.y0) > -0.9;
+      if (blink) ctx.strokeRect(b.x0 + 5, b.y0 + 5, b.x1 - b.x0 - 10, 5);
+      ctx.restore();
+    }
+    // entrance canopy on the street-facing edge
+    if (b.canopy) {
+      const cx2 = (b.x0 + b.x1) / 2;
+      const cy2 = b.canopy.side === 'n' ? b.y0 : b.y1;
+      ctx.fillStyle = b.canopy.color;
+      ctx.fillRect(cx2 - 20, cy2 - (b.canopy.side === 'n' ? 8 : 0), 40, 8);
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.fillRect(cx2 - 20, cy2 - (b.canopy.side === 'n' ? 8 : 0), 40, 2);
+    }
+    // mural art on the face
+    if (b.mural) {
+      const mx = (b.x0 + b.x1) / 2, my = (b.y0 + b.y1) / 2;
+      ctx.save();
+      if (b.mural.kind === 'flamingo') {
+        ctx.fillStyle = b.mural.color;
+        ctx.beginPath();
+        ctx.ellipse(mx, my, 10, 16, 0.3, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = b.mural.color;
+        ctx.lineWidth = 2.4;
+        ctx.beginPath(); ctx.moveTo(mx + 8, my + 12); ctx.lineTo(mx + 8, my + 26); ctx.stroke();
+        ctx.fillStyle = '#111';
+        ctx.beginPath(); ctx.arc(mx - 6, my - 10, 2, 0, TAU); ctx.fill();
+      } else if (b.mural.kind === 'sunset') {
+        const gM = ctx.createLinearGradient(mx, my - 20, mx, my + 20);
+        gM.addColorStop(0, b.mural.color);
+        gM.addColorStop(1, '#c23434');
+        ctx.fillStyle = gM;
+        ctx.beginPath(); ctx.arc(mx, my, 14, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        for (let i = 0; i < 3; i++) ctx.fillRect(mx - 16, my - 6 + i * 8, 32, 3);
+      } else {
+        ctx.strokeStyle = b.mural.color;
+        ctx.lineWidth = 3;
+        for (let i = 0; i < 3; i++) {
+          ctx.beginPath();
+          ctx.moveTo(mx - 16, my - 8 + i * 9);
+          ctx.quadraticCurveTo(mx, my - 16 + i * 9, mx + 16, my - 8 + i * 9);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
     // windows
     const rows = b.lit.length, bw = b.x1 - b.x0;
     const n = Math.max(2, Math.floor(bw / 26));
     for (let f = 0; f < rows; f++) {
       const wy = b.y0 + 10 + f * ((b.y1 - b.y0 - 20) / Math.max(1, rows));
       for (let k = 0; k < n; k++) {
-        const litv = b.lit[f][k] ?? 0;
+        let litv = b.lit[f][k] ?? 0;
+        // late-night flicker: some windows toggle slowly
+        if (litv && ((b.x0 * 31 + f * 7 + k) % 7) === 0) {
+          litv = Math.sin(game_time() * 0.7 + b.x0 * 0.01 + f) > -0.2 ? litv : 0;
+        }
         if (!litv) continue;
         ctx.fillStyle = litv === 1 ? 'rgba(255,214,140,0.75)' : litv === 2 ? 'rgba(160,220,255,0.6)' : 'rgba(255,120,160,0.5)';
         ctx.fillRect(b.x0 + 8 + k * 26, wy, 12, 9);
@@ -804,6 +886,40 @@ function drawMarkers(game, ctx) {
   }
 }
 
+function drawRamps(game, ctx) {
+  for (const r of RAMP_SPOTS) {
+    if (r.x < game.vis.x0 - 80 || r.x > game.vis.x1 + 80 || r.y < game.vis.y0 - 80 || r.y > game.vis.y1 + 80) continue;
+    ctx.save();
+    ctx.translate(r.x, r.y);
+    ctx.rotate(r.h);
+    // striped launch wedge
+    ctx.fillStyle = '#20242e';
+    ctx.fillRect(-22, -16, 44, 32);
+    for (let i = 0; i < 4; i++) {
+      ctx.fillStyle = i % 2 ? '#ffd166' : '#20242e';
+      ctx.fillRect(-22 + i * 11, -16, 11, 32);
+    }
+    ctx.strokeStyle = 'rgba(255,209,102,0.5)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(-22, -16, 44, 32);
+    ctx.restore();
+  }
+  // airtime meter while airborne
+  if (game.jumps && game.jumps.airborne) {
+    const p = game.player;
+    if (p.inCar) {
+      ctx.save();
+      ctx.font = '800 20px "Segoe UI", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#8ac9ff';
+      ctx.shadowColor = '#8ac9ff'; ctx.shadowBlur = 10;
+      ctx.fillText('AIR ' + game.jumps.airT.toFixed(1) + 's', p.inCar.x, p.inCar.y - 44);
+      ctx.restore();
+      ctx.textAlign = 'left';
+    }
+  }
+}
+
 function drawPickups(game, ctx) {
   for (const p of game.pickups) {
     const bob = Math.sin(game.t * 4 + p.x) * 4;
@@ -883,6 +999,13 @@ function drawPeds(game, ctx) {
       ctx.lineWidth = 2.4;
       const gd = p.shootT !== undefined && p.shootT < 0.2 ? p.dir : p.dir;
       ctx.beginPath(); ctx.moveTo(0, -4); ctx.lineTo(Math.cos(gd) * 9, -4 + Math.sin(gd) * 9); ctx.stroke();
+    }
+    // raised arms while panicking
+    if (!down && p.state === 'flee' && p.kind === 'ped') {
+      ctx.fillStyle = p.skin;
+      const armUp = Math.sin(game.t * 12 + p.id) * 2;
+      ctx.fillRect(-8, -16 - armUp * 0.4, 3, 8);
+      ctx.fillRect(5, -16 + armUp * 0.4, 3, 8);
     }
     // rain umbrella for walkers
     if (!down && p.kind === 'ped' && game.weather && game.weather.intensity > 0.4 && p.job !== 'jogger') {
@@ -1232,6 +1355,23 @@ function drawWetSheen(game, ctx, vis) {
     ctx.fill();
   }
   ctx.restore();
+  // heavy rain: rippling puddles pooled along road centers
+  if (game.weather && game.weather.intensity > 0.35) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(170,200,240,' + (game.weather.intensity * 0.22) + ')';
+    ctx.lineWidth = 1.2;
+    const ph = game.t * 2.4;
+    for (const y of game.world.roadH) {
+      if (y < vis.y0 - 40 || y > vis.y1 + 40) continue;
+      for (let x = Math.floor(vis.x0 / 90) * 90; x < vis.x1; x += 90) {
+        const wob = Math.sin(ph + x * 0.02 + y * 0.05);
+        ctx.beginPath();
+        ctx.ellipse(x + 40, y + wob * 3, 12 + wob * 3, 5, 0, 0, TAU);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
   // neon reflections smeared on road below signs
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
@@ -1306,7 +1446,8 @@ function drawHeli(game, ctx) {
 }
 
 function drawShopPrompt(game, ctx) {
-  const pr = game.shops && game.shops.prompt();
+  let pr = game.shops && game.shops.prompt();
+  if (!pr && game.transit) pr = game.transit.prompt();
   if (!pr) return;
   ctx.save();
   ctx.font = '600 13px "Segoe UI", sans-serif';
@@ -1402,6 +1543,17 @@ export function renderMinimap(game, ctx, cx, cy, r) {
     ctx.beginPath();
     ctx.arc(dx, dy, 3.4, 0, TAU);
     ctx.fill();
+  }
+  // Palm Line bus + route hint
+  if (game.transit && game.transit.bus && game.transit.bus.state !== 'wreck') {
+    const bx = (game.transit.bus.x - px) * scale, by = (game.transit.bus.y - py) * scale;
+    if (Math.hypot(bx, by) < r - 4) {
+      ctx.fillStyle = '#ffd166';
+      ctx.fillRect(bx - 2.4, by - 2.4, 4.8, 4.8);
+      ctx.strokeStyle = 'rgba(255,209,102,0.55)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx - 3.4, by - 3.4, 6.8, 6.8);
+    }
   }
   // pickups
   for (const pk of game.pickups) {

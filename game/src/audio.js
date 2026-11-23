@@ -53,6 +53,27 @@ export class Audio {
     this.musicGain = this.ctx.createGain();
     this.musicGain.gain.value = 0.5;
     this.musicGain.connect(this.master);
+    // rain loop: filtered noise, gain follows the weather
+    const rainLen = this.ctx.sampleRate * 2;
+    const rainBuf = this.ctx.createBuffer(1, rainLen, this.ctx.sampleRate);
+    const rd = rainBuf.getChannelData(0);
+    for (let i = 0; i < rainLen; i++) rd[i] = Math.random() * 2 - 1;
+    this.rainSrc = this.ctx.createBufferSource();
+    this.rainSrc.buffer = rainBuf;
+    this.rainSrc.loop = true;
+    const rainFilter = this.ctx.createBiquadFilter();
+    rainFilter.type = 'lowpass';
+    rainFilter.frequency.value = 900;
+    this.rainGain = this.ctx.createGain();
+    this.rainGain.gain.value = 0;
+    this.rainSrc.connect(rainFilter); rainFilter.connect(this.rainGain); this.rainGain.connect(this.master);
+    this.rainSrc.start();
+  }
+
+  // call every frame with the current rain intensity (0..1)
+  setRain(intensity) {
+    if (!this.ctx || !this.rainGain) return;
+    this.rainGain.gain.setTargetAtTime(intensity * 0.14, this.ctx.currentTime, 0.4);
   }
 
   setMuted(m) {
@@ -113,6 +134,14 @@ export class Audio {
   }
 
   tirePop() { this.noiseBurst(0.12, 0.5, 1200, 'bandpass'); this.tone(180, 0.1, 0.3, 'square', -120); }
+  misfire() { this.noiseBurst(0.1, 0.25, 400); this.tone(110, 0.08, 0.2, 'sawtooth', -50); }
+  rotor(intensity) {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    if (t - (this._lastRotor || 0) < 0.2) return;
+    this._lastRotor = t;
+    this.noiseBurst(0.18, 0.12 * intensity, 260, 'lowpass');
+  }
 
   gunshot(v = 1) { this.noiseBurst(0.16, 0.5 * v, 2600, 'highpass'); this.tone(140, 0.09, 0.25 * v, 'square', -90); }
   explosion() { this.noiseBurst(1.1, 0.9, 320); this.tone(70, 0.7, 0.5, 'sawtooth', -40); }

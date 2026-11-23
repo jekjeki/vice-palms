@@ -52,9 +52,10 @@ export class Player {
       this.x = this.inCar.x; this.y = this.inCar.y; this.h = this.inCar.h;
       // exit / carjack-switch with F
       if (input.pressed('F') && this.exitCd <= 0) this.tryExit(game);
+      // siren toggle in a cruiser
+      if (input.pressed('H')) { this.inCar.toggleSiren(); game.hud.toast(this.inCar.siren ? 'Siren on' : 'Siren off'); }
       // drive-by: shoot left/right of car with mouse
       if ((input.mouse.down || input.mouse.clicked) && this.shootCd <= 0 && this.ammo > 0) this.shoot(game, mwx, mwy, true);
-      if (input.pressed('SPACE') === false && input.anyPressed('SPACE')) { /* handbrake handled by car */ }
       return;
     }
 

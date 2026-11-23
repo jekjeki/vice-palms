@@ -105,17 +105,23 @@ export function applyShot(game, shotInfo) {
         game.particles.push({ x: x + (rng() - 0.5) * 80, y: y - 20 - rng() * 40, vx: (rng() - 0.5) * 20, vy: -20 - rng() * 30, life: 2 + rng(), life0: 3, kind: 'smoke', size: 10 + rng() * 14 });
       }
     }
-    // pursuing cruisers
+    // pursuing cruisers (kept back so the staged player survives the shot)
     for (let i = 0; i < 4; i++) {
       const ang = (i / 4) * Math.PI * 2;
-      const cx = p.x + Math.cos(ang) * 420, cy = p.y + Math.sin(ang) * 420;
+      const cx = p.x + Math.cos(ang) * 760, cy = p.y + Math.sin(ang) * 760;
       const cop = game.addCar('police', cx, cy, Math.atan2(p.y - cy, p.x - cx));
       cop.driver = 'ai';
       cop.siren = true;
       game.addChaser(cop);
     }
-    // foot cops
-    for (let i = 0; i < 4; i++) game.spawnPed(p.x + 200 + i * 60, p.y + 160, { kind: 'cop' });
+    // foot cops (they hold fire for the staged shot)
+    for (let i = 0; i < 4; i++) {
+      const cop = game.spawnPed(p.x + 200 + i * 60, p.y + 160, { kind: 'cop' });
+      cop.shootT = 99;
+    }
+    // staged survivability: full armor so the five-star scene photographs alive
+    p.armor = 100;
+    p.hp = 100;
     // panicking peds
     for (let i = 0; i < 12; i++) {
       const ped = game.spawnPed(p.x - 300 + rng() * 700, p.y + (rng() < 0.5 ? -140 : 150));

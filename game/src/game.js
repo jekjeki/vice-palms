@@ -13,8 +13,13 @@ import { Missions } from './missions.js';
 import { HUD } from './hud.js';
 import { Audio } from './audio.js';
 import { updateScreens, drawScreens } from './screens.js';
+import { updateMap, drawMap } from './mapscreen.js';
 import { render } from './render.js';
 import { applyShot, parseShot } from './shots.js';
+import { Dialogue } from './dialogue.js';
+import { Jumps } from './jumps.js';
+import { Transit } from './transit.js';
+import { Events } from './events.js';
 import { clamp, dist, rand, angleTo, carCircle, carContains, TAU } from './util.js';
 
 export class Game {
@@ -49,7 +54,12 @@ export class Game {
     this.shops = new Shops(this);
     this.weather = new Weather(this, (this.seedFromShot() % 13) + 3);
     this.radio = new Radio(this);
-    this.stats = { time: 0, dist: 0, pedsWasted: 0, carsJacked: 0, maxWanted: 0, packages: 0 };
+    this.dialogue = new Dialogue(this);
+    this.jumps = new Jumps(this);
+    this.transit = new Transit(this);
+    this.events = new Events(this);
+    this.achievements = {};
+    this.stats = { time: 0, dist: 0, pedsWasted: 0, carsJacked: 0, maxWanted: 0, packages: 0, jumps: 0, earned: 0 };
 
     const shot = parseShot();
     this.startMuted = shot ? true : new URLSearchParams(location.search).get('mute') === '1';
@@ -123,8 +133,13 @@ export class Game {
       if (!s.parked) continue;
       this.addCar(s.type, s.x, s.y, s.h);
     }
+    // make sure the player never starts buried inside geometry
+    const fs = this.freeSpotNear(this.player.x, this.player.y);
+    this.player.x = fs.x; this.player.y = fs.y;
     // hidden packages
     for (const [x, y] of this.world.hidden) this.addPickup(x, y, 'hidden');
+    // the Palm Line bus
+    this.transit.spawnBus();
     // a few ambient cars and peds around the safehouse at boot
     for (let i = 0; i < 8; i++) {
       const x = 400 + rand(0, 1400), y = this.world.roadH[6] + (i % 2 ? CFG.LANE_OFF : -CFG.LANE_OFF);
@@ -145,6 +160,7 @@ export class Game {
       this.missions.refreshSideMarkers();
       const m = this.missions.storyMarker();
       if (m) this.hud.subtitle('Follow the pink marker to start ' + m.label + '.', 4);
+      if (this.missions.storyIndex === 0 && this.stats.time < 1) this.dialogue.play('intro', true);
     }
   }
 
@@ -163,6 +179,7 @@ export class Game {
     this.state = 'wasted';
     this.screenT = 0;
     this.audio?.explosion();
+    this.dialogue?.onWasted();
     if (this.player.inCar) { this.player.inCar.driver = null; this.player.inCar = null; }
   }
 
@@ -171,6 +188,23 @@ export class Game {
     this.state = 'busted';
     this.screenT = 0;
     this.audio?.star(5);
+    this.dialogue?.onBusted();
+  }
+
+  // one-time milestone toasts
+  checkAchievements() {
+    const a = (id, cond, text) => {
+      if (this.achievements[id] || !cond) return;
+      this.achievements[id] = true;
+      this.hud.toast('★ ' + text);
+      this.audio?.missionTick?.();
+    };
+    a('jack', this.stats.carsJacked >= 1, 'First carjacked');
+    a('jack10', this.stats.carsJacked >= 10, 'Ten cars, zero remorse');
+    a('star3', this.police.wanted >= 3, 'Three stars of fame');
+    a('rich', this.player.money >= 10000, 'Five figures in the bank');
+    a('jump', this.stats.jumps >= 1, 'First stunt jump landed');
+    a('wreck', this.stats.pedsWasted >= 5, 'The sidewalk belongs to you');
   }
 
   respawn() {
@@ -325,6 +359,9 @@ export class Game {
         missions: this.missions.serialize(),
         stats: this.stats,
         radio: this.radio.serialize(),
+        jumps: this.jumps.serialize(),
+        transit: this.transit.serialize(),
+        events: this.events.serialize(),
       };
       localStorage.setItem(CFG.SAVE_KEY, JSON.stringify(data));
       return true;
@@ -347,6 +384,9 @@ export class Game {
       this.missions.deserialize(d.missions);
       if (d.stats) Object.assign(this.stats, d.stats);
       this.radio.deserialize(d.radio);
+      this.jumps?.deserialize(d.jumps);
+      this.transit?.deserialize(d.transit);
+      this.events?.deserialize(d.events);
       // hidden packages already found stay gone
       if (d.stats && d.stats.packages) {
         const keep = Math.max(0, this.world.hidden.length - d.stats.packages);
@@ -366,6 +406,12 @@ export class Game {
 
   // ---------- main update ----------
   update(dt) {
+    // TAB toggles the city map from play/pause
+    if ((this.state === 'play' || this.state === 'map') && this.input.pressed('TAB')) {
+      this.state = this.state === 'map' ? 'play' : 'map';
+      this.audio?.missionTick?.();
+    }
+    if (this.state === 'map') updateMap(this, dt);
     updateScreens(this, dt);
     if (this.state === 'play' || this.state === 'end') {
       this.t += dt;
@@ -401,6 +447,11 @@ export class Game {
     this.shops.update(dt);
     this.weather.update(dt);
     this.radio.update(dt, !!p.inCar);
+    this.jumps.update(dt);
+    this.dialogue.update(dt);
+    this.transit.update(dt);
+    this.events.update(dt);
+    this.checkAchievements();
     for (const c of this.cars) c.update(this, dt, this.input);
     for (const ped of this.peds) ped.update(this, dt);
     this.updateBullets(dt);
@@ -589,6 +640,7 @@ export class Game {
       }
     }
     this.audio?.siren(prox);
+    this.audio?.setRain(this.weather ? this.weather.intensity : 0);
   }
 
   updateCamera(dt) {
@@ -609,6 +661,7 @@ export class Game {
     render(this, ctx);
     if (this.state !== 'title') this.hud.update(this, dt, ctx);
     drawScreens(this, ctx);
+    if (this.state === 'map') drawMap(this, ctx);
   }
 }
 
