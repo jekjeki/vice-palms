@@ -29,6 +29,7 @@ function resize() {
 window.addEventListener('resize', resize);
 
 const painter = new Painter(canvas);
+window.__painter = painter; // debug: the render pipeline is inspectable
 const input = new Input();
 const hud = new Hud();
 const ui = {
@@ -75,6 +76,7 @@ function newGame(fromSave) {
   ui.freeze = false;
   acc = 0;                    // no frame debt carried from the menu or a previous run
   window.__game = game; // debug and play-test handle
+  window.__painter = painter; // debug: the render pipeline is inspectable
 }
 
 function titleItems() {

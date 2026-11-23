@@ -106,7 +106,7 @@ can delete a save (press twice to confirm).
   gantry cranes, warehouses with ribbed roll-up doors, a mooring-bollard promenade, a fish
   market on Pier B, oil drums, security fences, sodium lamps and floodlight masts, rain
   puddles that shine when the weather soaks the apron, a rail spur with a loaded flatcar, the
-  anchored MV Coral Crown rolling on the swell, a rotating lighthouse on the breakwater and
+  moored MV Coral Crown rolling on the swell, a rotating lighthouse on the breakwater and
   the Bay Marina island across the water. The district is wired into collision (the seawall,
   pier rails and yard fences all stop you; the security gate lifts as you approach), into the
   minimap (stamped landmarks, turf tints, live blips) and into its own staged night scene.

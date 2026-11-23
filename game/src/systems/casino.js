@@ -1,718 +1,809 @@
-// THE GILDED CONCH — Vice Palms' casino, three tables deep. Blackjack with a six-deck
-// shoe and real dealer rules, a single-zero roulette wheel with a full outside board,
-// and a three-reel slot row. Chips buy in from Rico's pocket and cash back out; the
-// house keeps the limits posted and the dealer keeps the patter going.
+// ============================================================
+// THE GILDED CONCH — the casino on the city's east side.
 //
-// The room renders in screen space from main.js (like the interiors); while you are
-// at a table the street above stays pinned at the door.
+// Three games with real math behind a door marker on the street:
+//   * blackjack — a six-deck shoe (reshuffled at 60), dealer
+//     stands on all 17s, double down, naturals pay 3:2
+//   * roulette — the European single-zero wheel in its true
+//     order; straight-up pays 35:1, the outside rail pays even
+//     or 2:1 on the dozens/columns
+//   * slots — three weighted reels with a posted paytable
+// A chip cage converts cash to chips and back, table limits are
+// posted, the dealer talks, and the chips you leave with ride
+// the save.
+//
+// Public API (what main.js / game.js / hud.js expect):
+//   door {x,y}, inside, update(dt, input), tryInteract(p),
+//   render(ctx, W, H), exit(), serialize(), restore(data)
+// ============================================================
 
 import { PITCH } from '../config.js';
 import { clamp, TAU } from '../util.js';
-import { rand, randInt, chance } from '../rng.js';
+import { randInt } from '../rng.js';
 
-const DOOR = { x: 34.5 * PITCH, y: 9 * PITCH - 74 };
+// European wheel order (single zero).
+const WHEEL = [
+  0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10,
+  5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26,
+];
+const REDS = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
 
-// Blackjack limits and shoe.
-const BJ = { min: 10, max: 500, decks: 6 };
-// Roulette: European wheel order, clockwise from zero.
-const WHEEL = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10,
-  5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26];
-const RED = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
-// Slots: three weighted reels, one payline.
-const REEL = ['CHERRY', 'LEMON', 'STAR', 'BELL', 'BAR', 'SEVEN', 'LEMON', 'CHERRY', 'BAR', 'STAR',
-  'BELL', 'CHERRY', 'SEVEN', 'LEMON', 'BAR', 'CHERRY', 'STAR', 'BELL', 'LEMON', 'BAR'];
-const SLOT_PAYS = { SEVEN: 120, BAR: 40, BELL: 25, STAR: 18, CHERRY: 12, LEMON: 8 };
+const TABLE_MIN = 25;
+const TABLE_MAX = 2000;
 
-const DEALER_LINES = {
-  win: ['The house tips its hat. This time.', 'Luck is a tourist. It never stays.', 'Count it twice. We did.'],
-  lose: ['The Conch keeps what the Conch keeps.', 'The felt forgives. The ledger does not.', 'Another chip for the lagoon floor.'],
-  push: ['Nobody wins, nobody sulks.', 'A tie. The dealer calls it diplomacy.'],
-  bj: ['Blackjack. The pit boss felt that one.', 'Twenty-one on the nose. Beautiful and rude.'],
-  bust: ['Twenty-two is just twenty-one with ambition.', 'Busted. The shoe shrugs.'],
-};
+// Weighted slot strips: cherries crowd the reels, crowns are rare.
+const REEL = ['🍒', '🍋', '🔔', '🍋', '🍒', '⭐', '🔔', '🍒', '🍋', '💎', '🔔', '⭐', '🍒', '👑', '🍋', '🔔'];
+const SLOT_BET = 25;
+const SLOT_PAY = { '👑': 40, '💎': 20, '⭐': 10, '🔔': 6, '🍋': 3, '🍒': 2 };
 
+const DEALER_LINES = [
+  'The Conch is open all night, friend. House money is patient money.',
+  'Table limit is two thousand. The pit boss watches the movers.',
+  'Blackjack pays three to two. Dealer stands on every seventeen.',
+  'Single zero on the wheel. The European way — kinder odds.',
+  'Chips in, chips out. The cage never sleeps.',
+  'Luck is a tide. It always comes back to the water.',
+  'You win big, you tip big. The dealers remember.',
+];
+
+const MONO = 'Consolas, "Courier New", monospace';
+
+// ------------------------------------------------------------
 export function createCasino(game) {
+  const door = { x: 35 * PITCH + 62, y: 9 * PITCH - 62 };
+
   const C = {
-    game,
-    door: DOOR,
+    name: 'THE GILDED CONCH',
+    door,
     inside: false,
-    screen: 'lobby',         // lobby | cashier | blackjack | roulette | slots
-    chips: 100,
-    sel: 0,
-    notice: null,
-    noticeT: 0,
-    line: 'Welcome to the Conch. The air conditioning is real, so is the rake.',
-    // blackjack state
-    shoe: [], bet: 0, lastBet: 25, hand: [], dealer: [], phase: 'bet',
-    // roulette state
-    bets: {}, chipSize: 10, cell: -1, wheelAng: 0, spinT: 0, pocket: 0, spinResult: null,
-    // slots state
-    slotBet: 10, reels: [0, 7, 13], reelV: [0, 0, 0], spinning: 0, slotWin: 0, holdGlow: 0,
+    chips: 0,
+    page: 'floor',          // floor | bj | rl | slots | cage
+    cursor: 0,
+    lines: [],
+    handsWon: 0,
+    biggestWin: 0,
+    spins: 0,
+    dealerLine: DEALER_LINES[0],
+    dealerT: 0,
   };
-
-  // ---------------------------------------------------------------- persistence
-
-  C.serialize = () => ({ chips: Math.round(C.chips) });
-  C.restore = (d) => { if (d && Number.isFinite(d.chips)) C.chips = clamp(Math.round(d.chips), 0, 999999); };
-
-  // ---------------------------------------------------------------- room
-
-  C.updateDoor = function (dt, p) {
-    if (C.inside) return;
-    if (Math.hypot(p.x - DOOR.x, p.y - DOOR.y) < 90 && game.hud) {
-      game.hud.setPrompt('E — THE GILDED CONCH (casino)');
-    }
-  };
-
-  C.tryInteract = function (p) {
-    if (C.inside) return false;
-    if (Math.hypot(p.x - DOOR.x, p.y - DOOR.y) > 110 * 110) return false;
-    C.inside = true;
-    C.anchor = { x: p.x, y: p.y };
-    p.vx = 0; p.vy = 0;
-    C.screen = 'lobby';
-    C.sel = 0;
-    game.audio.ensure();
-    game.audio.blip(500);
-    return true;
-  };
-
-  C.exit = function () {
-    if (!C.inside) return;
-    C.inside = false;
-    const p = game.player;
-    if (C.anchor) { p.x = C.anchor.x; p.y = C.anchor.y; }
-    p.vx = 0; p.vy = 0;
-    game.save();
-  };
-
-  C.update = function (dt, input) {
-    const p = game.player;
-    if (!C.inside) { C.updateDoor(dt, p); return; }
-    p.x = C.anchor.x; p.y = C.anchor.y;
-    p.vx = 0; p.vy = 0;
-    C.noticeT -= dt;
-    C.wheelAng += dt * 0.5;
-    if (C.spinT > 0) {
-      C.spinT -= dt;
-      if (C.spinT <= 0) resolveSpin();
-    }
-    if (C.spinning > 0) { C.spinning -= dt; slotsTick(dt); }
-    if (input.tap('Backspace') || input.tap('KeyQ')) back();
-    else if (C.screen === 'lobby') lobbyKeys(input);
-    else if (C.screen === 'cashier') cashierKeys(input);
-    else if (C.screen === 'blackjack') blackjackKeys(input);
-    else if (C.screen === 'roulette') rouletteKeys(input);
-    else if (C.screen === 'slots') slotsKeys(input);
-  };
-
-  function back() {
-    if (C.screen === 'lobby') { C.exit(); return; }
-    if (C.screen === 'blackjack' && C.phase !== 'bet' && C.phase !== 'done') {
-      C.notice = 'Hand in progress. Finish it first.';
-      C.noticeT = 2;
-      return;
-    }
-    C.screen = 'lobby';
-    C.sel = 0;
-  }
-
-  function say(list) { C.line = list[randInt(list.length)]; }
-
-  function notice(text) { C.notice = text; C.noticeT = 2.4; }
-
-  // ---------------------------------------------------------------- lobby + cashier
-
-  const LOBBY = ['BLACKJACK', 'ROULETTE', 'SLOTS', 'CASHIER'];
-
-  function lobbyKeys(input) {
-    const n = LOBBY.length;
-    if (input.tap('ArrowUp') || input.tap('KeyW')) C.sel = (C.sel - 1 + n) % n;
-    if (input.tap('ArrowDown') || input.tap('KeyS')) C.sel = (C.sel + 1) % n;
-    if (input.tap('Enter') || input.tap('Space')) {
-      game.audio.blip(430);
-      const pick = LOBBY[C.sel];
-      if (pick === 'BLACKJACK') { C.screen = 'blackjack'; C.phase = 'bet'; C.sel = 0; }
-      else if (pick === 'ROULETTE') { C.screen = 'roulette'; C.cell = -1; }
-      else if (pick === 'SLOTS') { C.screen = 'slots'; }
-      else { C.screen = 'cashier'; C.sel = 0; }
-    }
-  }
-
-  const CASHIER = ['BUY CHIPS', 'CASH OUT', 'BACK TO FLOOR'];
-
-  function cashierKeys(input) {
-    const n = CASHIER.length;
-    if (input.tap('ArrowUp') || input.tap('KeyW')) C.sel = (C.sel - 1 + n) % n;
-    if (input.tap('ArrowDown') || input.tap('KeyS')) C.sel = (C.sel + 1) % n;
-    if (input.tap('Enter') || input.tap('Space')) {
-      const pick = CASHIER[C.sel];
-      if (pick === 'BUY CHIPS') {
-        // Buy in chips with whatever is in pocket, in $100 trays.
-        const afford = Math.min(1000, Math.floor(game.player.money / 100) * 100);
-        if (afford < 100) { notice('The cage wants $100 minimum to play.'); game.audio.blip(160); return; }
-        game.player.money -= afford;
-        C.chips += afford;
-        game.audio.blip(720);
-        notice(`$${afford} in chips. The cage stamps your hand.`);
-      } else if (pick === 'CASH OUT') {
-        const out = Math.floor(C.chips);
-        if (out <= 0) { notice('No chips to cash. The cage is polite about it.'); return; }
-        C.chips -= out;
-        game.player.money += out;
-        game.audio.blip(760);
-        notice(`$${out} back in your pocket.`);
-        game.save();
-      } else {
-        C.screen = 'lobby'; C.sel = 0;
-      }
-    }
-  }
 
   // ---------------------------------------------------------------- blackjack
+  const bj = {
+    shoe: [],
+    player: [],
+    dealer: [],
+    bet: 0,
+    phase: 'idle',        // idle | player | dealer | done
+    message: 'Place your bet — ENTER to deal.',
+    result: null,
+    doubled: false,
+  };
 
-  function buildShoe() {
-    C.shoe = [];
-    for (let d = 0; d < BJ.decks; d++) {
-      for (let s = 0; s < 4; s++) for (let r = 1; r <= 13; r++) C.shoe.push({ r, s });
+  function reshuffle() {
+    bj.shoe = [];
+    for (let d = 0; d < 6; d++) {
+      for (let s = 0; s < 4; s++) {
+        for (let r = 1; r <= 13; r++) bj.shoe.push({ r, s });
+      }
     }
-    for (let i = C.shoe.length - 1; i > 0; i--) {
+    // One pass of Fisher-Yates with the house's own dice.
+    for (let i = bj.shoe.length - 1; i > 0; i--) {
       const j = randInt(i + 1);
-      [C.shoe[i], C.shoe[j]] = [C.shoe[j], C.shoe[i]];
+      const t = bj.shoe[i]; bj.shoe[i] = bj.shoe[j]; bj.shoe[j] = t;
     }
   }
+  reshuffle();
 
-  const draw = () => C.shoe.pop();
-
-  function handValue(cards) {
+  function cardLabel(c) {
+    const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+    const suits = ['♠', '♥', '♦', '♣'];
+    return `${ranks[c.r - 1]}${suits[c.s]}`;
+  }
+  function cardValue(c) { return c.r > 10 ? 10 : c.r === 1 ? 11 : c.r; }
+  function handTotal(cards) {
     let total = 0, aces = 0;
-    for (const c of cards) {
-      if (c.r === 1) { total += 11; aces++; }
-      else total += Math.min(10, c.r);
-    }
-    let soft = false;
+    for (const c of cards) { total += cardValue(c); if (c.r === 1) aces++; }
     while (total > 21 && aces > 0) { total -= 10; aces--; }
-    soft = aces > 0;
-    return { total, soft };
+    return total;
+  }
+  function draw() {
+    if (bj.shoe.length < 60) reshuffle();
+    return bj.shoe.pop();
   }
 
-  function betKeys(input) {
-    if (input.tap('ArrowLeft') || input.tap('KeyA')) { C.bet = Math.max(0, C.bet - 25); }
-    if (input.tap('ArrowRight') || input.tap('KeyD')) { C.bet = Math.min(BJ.max, C.bet + 25); }
-    if (input.tap('ArrowUp') || input.tap('KeyW')) { C.bet = Math.min(BJ.max, C.bet + 100); }
-    if (input.tap('ArrowDown') || input.tap('KeyS')) { C.bet = Math.max(0, C.bet - 100); }
-    if (input.tap('Enter') || input.tap('Space')) deal();
-  }
-
-  function deal() {
-    if (C.bet < BJ.min) { notice(`Table minimum is $${BJ.min}.`); return; }
-    if (C.bet > C.chips) { notice('Not enough chips for that bet.'); C.bet = Math.floor(C.chips); return; }
-    if (C.shoe.length < 60) buildShoe();
-    C.chips -= C.bet;
-    C.hand = [draw(), draw()];
-    C.dealer = [draw(), draw()];
-    C.phase = 'play';
-    const hv = handValue(C.hand);
-    const dv = handValue(C.dealer);
-    if (hv.total === 21) { settle(true); return; }
-    if (dv.total === 21) { settle(false); return; }
-    game.audio.blip(340);
-  }
-
-  function blackjackKeys(input) {
-    if (C.phase === 'bet') { betKeys(input); return; }
-    if (C.phase !== 'play') {
-      if (input.tap('Enter') || input.tap('Space')) { C.phase = 'bet'; C.bet = 0; C.hand = []; C.dealer = []; }
-      return;
-    }
-    if (input.tap('KeyA') || input.tap('ArrowLeft')) hit();
-    else if (input.tap('KeyD') || input.tap('ArrowRight')) stand();
-    else if (input.tap('KeyW') || input.tap('ArrowUp')) double();
-  }
-
-  function hit() {
-    C.hand.push(draw());
-    const hv = handValue(C.hand);
-    game.audio.blip(300);
-    if (hv.total > 21) { C.dealer[1].up = true; settle('bust'); }
-    else if (hv.total === 21) stand();
-  }
-
-  function stand() {
-    // Dealer draws to 17, stands on all 17s.
-    while (handValue(C.dealer).total < 17) C.dealer.push(draw());
-    settle('showdown');
-  }
-
-  function double() {
-    if (C.hand.length !== 2) { notice('Double is first two cards only.'); return; }
-    if (C.bet > C.chips) { notice('Not enough chips to double.'); return; }
-    C.chips -= C.bet;
-    C.bet *= 2;
-    C.hand.push(draw());
-    game.audio.blip(520);
-    if (handValue(C.hand).total > 21) { C.dealer[1].up = true; settle('bust'); }
-    else stand();
-  }
-
-  function settle(outcome) {
-    C.phase = 'done';
-    const hv = handValue(C.hand);
-    const dv = handValue(C.dealer);
-    let delta = 0;
-    if (outcome === 'bust') {
-      say(DEALER_LINES.bust);
-      delta = 0;
-    } else if (outcome === true) {
-      // Natural blackjack pays 3:2.
-      delta = C.bet + Math.floor(C.bet * 1.5);
-      say(DEALER_LINES.bj);
-      game.audio.blip(900);
+  function bjDeal() {
+    const stake = clamp(bj.wager ?? TABLE_MIN, TABLE_MIN, Math.min(TABLE_MAX, C.chips));
+    if (stake > C.chips) { bj.message = 'Not enough chips at this table.'; return; }
+    C.chips -= stake;
+    bj.bet = stake;
+    bj.doubled = false;
+    bj.player = [draw(), draw()];
+    bj.dealer = [draw(), draw()];
+    bj.phase = 'player';
+    bj.result = null;
+    if (handTotal(bj.player) === 21) {
+      bj.phase = 'dealer';
+      bj.message = 'Natural!';
+      settle();
     } else {
-      const pBust = hv.total > 21;
-      const dBust = dv.total > 21;
-      if (pBust) delta = 0;
-      else if (dBust || hv.total > dv.total) { delta = C.bet * 2; say(DEALER_LINES.win); }
-      else if (hv.total < dv.total) { delta = 0; say(DEALER_LINES.lose); }
-      else { delta = C.bet; say(DEALER_LINES.push); }
+      bj.message = 'HIT ↑ · STAND ↓ · DOUBLE →';
     }
-    C.chips += delta;
-    C.lastBet = C.bet;
-    C.delta = delta - C.bet;
+  }
+
+  function bjHit() {
+    bj.player.push(draw());
+    const t = handTotal(bj.player);
+    if (t > 21) { bj.message = `Bust at ${t}.`; bj.phase = 'done'; bj.result = 'lose'; }
+    else if (t === 21) bjStand();
+    else bj.message = 'HIT ↑ · STAND ↓ · DOUBLE →';
+  }
+
+  function bjDouble() {
+    if (bj.player.length !== 2 || bj.doubled) return false;
+    if (C.chips < bj.bet) { bj.message = 'No chips behind the double.'; return true; }
+    C.chips -= bj.bet;
+    bj.bet *= 2;
+    bj.doubled = true;
+    bjHit();
+    if (bj.phase === 'player') bjStand();
+    return true;
+  }
+
+  function bjStand() {
+    bj.phase = 'dealer';
+    while (handTotal(bj.dealer) < 17) bj.dealer.push(draw());
+    settle();
+  }
+
+  function settle() {
+    const p = handTotal(bj.player);
+    const d = handTotal(bj.dealer);
+    const pBJ = bj.player.length === 2 && p === 21;
+    const dBJ = bj.dealer.length === 2 && d === 21;
+    let payout = 0;
+    if (p > 21) { bj.result = 'lose'; bj.message = `Bust at ${p}. House takes it.`; }
+    else if (pBJ && !dBJ) { payout = Math.round(bj.bet * 2.5); bj.result = 'bj'; bj.message = `Blackjack! Pays 3:2 — ${payout} chips.`; }
+    else if (dBJ && !pBJ) { bj.result = 'lose'; bj.message = 'Dealer blackjack. Cold night.'; }
+    else if (dBJ && pBJ) { payout = bj.bet; bj.result = 'push'; bj.message = 'Two naturals. Push — bet returned.'; }
+    else if (d > 21) { payout = bj.bet * 2; bj.result = 'win'; bj.message = `Dealer busts at ${d}. ${payout} chips.`; }
+    else if (p > d) { payout = bj.bet * 2; bj.result = 'win'; bj.message = `${p} beats ${d}. ${payout} chips.`; }
+    else if (p < d) { bj.result = 'lose'; bj.message = `${d} beats ${p}. House takes it.`; }
+    else { payout = bj.bet; bj.result = 'push'; bj.message = `Push at ${p}. Bet returned.`; }
+    if (payout > 0) {
+      C.chips += payout;
+      const won = payout - bj.bet;
+      if (won > 0) {
+        C.handsWon++;
+        C.biggestWin = Math.max(C.biggestWin, won);
+        game.fx.cash(game.player.x, game.player.y);
+        game.audio.blip(880);
+      }
+    } else {
+      game.audio.blip(160);
+    }
     game.save();
+    bj.phase = 'done';
+    bj.wager = clamp(bj.bet, TABLE_MIN, TABLE_MAX);
   }
 
   // ---------------------------------------------------------------- roulette
+  const rl = {
+    bets: {},             // key -> chips
+    spinT: 0,
+    spinning: false,
+    angle: 0,
+    ballAngle: 0,
+    lastNumber: null,
+    history: [],
+    straight: 17,
+    message: 'LEFT/RIGHT pick a spot · ENTER stacks 25 · SPIN when ready.',
+  };
 
-  function rouletteKeys(input) {
-    // Cell -1 = outside rail; 0..36 straight numbers.
-    if (C.spinT > 0) return;
-    if (input.tap('ArrowRight') || input.tap('KeyD')) C.cell = C.cell >= 36 ? -1 : C.cell + 1;
-    if (input.tap('ArrowLeft') || input.tap('KeyA')) C.cell = C.cell <= -1 ? 36 : C.cell - 1;
-    if (input.tap('ArrowUp') || input.tap('KeyW')) C.cell = C.cell >= 3 ? C.cell - 3 : 36;
-    if (input.tap('ArrowDown') || input.tap('KeyS')) C.cell = C.cell >= 0 && C.cell <= 33 ? C.cell + 3 : (C.cell === 36 ? -1 : 0);
-    C.cell = clamp(C.cell, -1, 36);
-    if (input.tap('ArrowUp') === false && input.tap('KeyE')) C.chipSize = C.chipSize === 10 ? 50 : C.chipSize === 50 ? 100 : 10;
-    if (input.tap('Enter') || input.tap('Space')) placeChip();
-    if (input.tap('KeyX') || input.tap('KeyC')) spin();
-  }
-
-  function placeChip() {
-    const at = C.cell;
-    if (at < 0) {
-      // Cycle the outside bets with Space when the rail is selected.
-      C.outsideSel = ((C.outsideSel ?? -1) + 1) % 6;
-      notice(`Rail bet: ${OUTSIDE[C.outsideSel][0]}`);
-      return;
-    }
-    if (C.chipSize > C.chips) { notice('Not enough chips.'); return; }
-    C.chips -= C.chipSize;
-    const key = `n${at}`;
-    C.bets[key] = (C.bets[key] ?? 0) + C.chipSize;
-    game.audio.blip(380);
-  }
-
-  const OUTSIDE = [
-    ['RED', (n) => n !== 0 && RED.has(n), 2],
-    ['BLACK', (n) => n !== 0 && !RED.has(n), 2],
-    ['EVEN', (n) => n !== 0 && n % 2 === 0, 2],
-    ['ODD', (n) => n % 2 === 1, 2],
-    ['LOW', (n) => n >= 1 && n <= 18, 2],
-    ['HIGH', (n) => n >= 19 && n <= 36, 2],
+  const RL_SPOTS = [
+    { key: 'straight', label: () => `STRAIGHT ${rl.straight}`, pays: '35:1' },
+    { key: 'red', label: () => 'RED', pays: '1:1' },
+    { key: 'black', label: () => 'BLACK', pays: '1:1' },
+    { key: 'odd', label: () => 'ODD', pays: '1:1' },
+    { key: 'even', label: () => 'EVEN', pays: '1:1' },
+    { key: 'low', label: () => 'LOW 1–18', pays: '1:1' },
+    { key: 'high', label: () => 'HIGH 19–36', pays: '1:1' },
+    { key: 'dozen1', label: () => '1st 12', pays: '2:1' },
+    { key: 'dozen2', label: () => '2nd 12', pays: '2:1' },
+    { key: 'dozen3', label: () => '3rd 12', pays: '2:1' },
+    { key: 'spin', label: () => 'SPIN THE WHEEL', pays: '' },
   ];
 
-  function spin() {
-    if (C.spinT > 0) return;
-    const totalBet = Object.values(C.bets).reduce((a, b) => a + b, 0);
-    if (totalBet <= 0 && C.outsideAmount > 0) totalBet = 0;
-    if (totalBet <= 0 && !(C.outsideAmount > 0)) { notice('Put a chip down first (arrows, Space).'); return; }
-    C.spinResult = randInt(37);
-    C.spinT = 2.6;
-    C.wheelAng = 0;
-    game.audio.blip(260);
+  function rlBetTotal() {
+    let sum = 0;
+    for (const k in rl.bets) sum += rl.bets[k];
+    return sum;
   }
 
-  function resolveSpin() {
-    const n = C.spinResult;
-    let back = 0;
-    for (const [key, amt] of Object.entries(C.bets)) {
-      if (Number(key.slice(1)) === n) back += amt * 36;   // 35:1 plus stake
+  function rlAdd(cursor) {
+    const spot = RL_SPOTS[cursor];
+    if (spot.key === 'spin') { rlSpin(); return; }
+    if (C.chips < TABLE_MIN) { rl.message = 'No chips to bet.'; return; }
+    if (rlBetTotal() + TABLE_MIN > TABLE_MAX) { rl.message = 'Table limit reached.'; return; }
+    C.chips -= TABLE_MIN;
+    rl.bets[spot.key] = (rl.bets[spot.key] ?? 0) + TABLE_MIN;
+    game.audio.blip(520);
+  }
+
+  function rlSpin() {
+    const total = rlBetTotal();
+    if (total <= 0) { rl.message = 'Put chips on the felt first.'; return; }
+    rl.spinning = true;
+    rl.spinT = 2.2;
+    rl.lastNumber = null;
+    rl.message = 'No more bets.';
+    game.audio.blip(300);
+  }
+
+  function rlSettle() {
+    const n = WHEEL[randInt(WHEEL.length)];
+    rl.lastNumber = n;
+    rl.history.unshift(n);
+    if (rl.history.length > 12) rl.history.pop();
+    let payout = 0;
+    const pay = (k, mult) => { payout += (rl.bets[k] ?? 0) * (1 + mult); };
+    if (n !== 0) {
+      const color = REDS.has(n) ? 'red' : 'black';
+      if (n === rl.straight) pay('straight', 35);
+      if (rl.bets.red && color === 'red') pay('red', 1);
+      if (rl.bets.black && color === 'black') pay('black', 1);
+      if (rl.bets.odd && n % 2 === 1) pay('odd', 1);
+      if (rl.bets.even && n % 2 === 0) pay('even', 1);
+      if (rl.bets.low && n <= 18) pay('low', 1);
+      if (rl.bets.high && n >= 19) pay('high', 1);
+      if (rl.bets.dozen1 && n <= 12) pay('dozen1', 2);
+      if (rl.bets.dozen2 && n > 12 && n <= 24) pay('dozen2', 2);
+      if (rl.bets.dozen3 && n > 24) pay('dozen3', 2);
     }
-    if (C.outsideAmount > 0 && C.outsideBetIdx != null) {
-      const [name, test, mult] = OUTSIDE[C.outsideBetIdx];
-      if (n !== 0 && test(n)) back += C.outsideAmount * mult;
+    const staked = rlBetTotal();
+    C.chips += payout;
+    const net = payout - staked;
+    if (net > 0) {
+      C.handsWon++;
+      C.biggestWin = Math.max(C.biggestWin, net);
+      game.fx.cash(game.player.x, game.player.y);
+      game.audio.blip(880);
+      rl.message = `${n} ${n === 0 ? '— house zero' : REDS.has(n) ? 'RED' : 'BLACK'} — you take ${payout} chips.`;
+    } else {
+      game.audio.blip(150);
+      rl.message = `${n} ${n === 0 ? '— house zero' : REDS.has(n) ? 'RED' : 'BLACK'} — the felt keeps ${staked}.`;
     }
-    C.chips += back;
-    C.bets = {};
-    C.outsideAmount = 0;
-    C.lastNumber = n;
-    if (back > 0) { say(DEALER_LINES.win); game.audio.blip(820); }
-    else { say(DEALER_LINES.lose); game.audio.blip(200); }
+    rl.bets = {};
     game.save();
   }
 
   // ---------------------------------------------------------------- slots
+  const sl = {
+    reels: [0, 0, 0],
+    spinT: 0,
+    spinning: false,
+    stopped: [true, true, true],
+    lastPay: 0,
+    message: 'ENTER pulls the lever. 25 a pull.',
+  };
 
-  function slotsKeys(input) {
-    if (C.spinning > 0) return;
-    if (input.tap('ArrowUp') || input.tap('KeyW')) C.slotBet = Math.min(100, C.slotBet * 2);
-    if (input.tap('ArrowDown') || input.tap('KeyS')) C.slotBet = Math.max(5, Math.floor(C.slotBet / 2));
-    if (input.tap('Enter') || input.tap('Space')) pullSlot();
+  function slotsSpin() {
+    if (C.chips < SLOT_BET) { sl.message = 'The machine wants 25 chips.'; return; }
+    C.chips -= SLOT_BET;
+    C.spins++;
+    sl.spinning = true;
+    sl.spinT = 1.4;
+    sl.stopped = [false, false, false];
+    for (let i = 0; i < 3; i++) sl.reels[i] = randInt(REEL.length);
+    sl.message = '...';
+    game.audio.blip(240);
   }
 
-  function pullSlot() {
-    if (C.slotBet > C.chips) { notice('Not enough chips.'); return; }
-    C.chips -= C.slotBet;
-    C.slotWin = 0;
-    C.spinning = 1.6;
-    C.reelV = [9 + rand() * 4, 11 + rand() * 4, 13 + rand() * 4];
-    C.reelStop = [0.9, 1.25, 1.6];
-    game.audio.blip(300);
+  function slotsSettle() {
+    const s = sl.reels.map((i) => REEL[i]);
+    let mult = 0;
+    if (s[0] === s[1] && s[1] === s[2]) mult = SLOT_PAY[s[0]] ?? 2;
+    else if (s[0] === s[1] || s[1] === s[2]) mult = 1;
+    else if (s.includes('🍒') && s.filter((x) => x === '🍒').length >= 2) mult = 1;
+    const payout = SLOT_BET * mult;
+    sl.lastPay = payout;
+    if (payout > 0) {
+      C.chips += payout;
+      C.handsWon++;
+      C.biggestWin = Math.max(C.biggestWin, payout - SLOT_BET);
+      game.fx.cash(game.player.x, game.player.y);
+      game.audio.blip(920);
+      sl.message = `${s.join(' ')} — pays ${payout}!`;
+    } else {
+      game.audio.blip(140);
+      sl.message = `${s.join(' ')} — the reels keep it.`;
+    }
+    game.save();
   }
 
-  function slotsTick(dt) {
-    for (let k = 0; k < 3; k++) {
-      if (C.spinning <= C.reelStop[k]) {
-        C.reelV[k] = Math.max(0, C.reelV[k] - dt * 22);
+  // ---------------------------------------------------------------- flow
+
+  function enter() {
+    C.inside = true;
+    C.page = 'floor';
+    C.cursor = 0;
+    C.dealerT = 0;
+    C.graceT = 0.25;      // the E that opened the door must not also press a button
+    game.audio.ensure();
+    game.audio.blip(660);
+    game.toast('THE GILDED CONCH — chips at the cage, tables to the left.', '#a86bff');
+  }
+
+  function exit() {
+    if (!C.inside) return;
+    C.inside = false;
+    game.audio.blip(330);
+    if (C.chips > 0) game.toast(`You walk out with ${C.chips} chips. Cash them at the cage.`, '#a86bff');
+  }
+
+  C.exit = exit;
+
+  C.tryInteract = function (p) {
+    if (C.inside) return false;
+    if (Math.hypot(p.x - door.x, p.y - door.y) > 66) return false;
+    if (p.car) { game.toast('Step out of the car first — the Conch has a dress code.', '#ffd977'); return true; }
+    enter();
+    return true;
+  };
+
+  function pinPlayer() {
+    const p = game.player;
+    p.x = door.x; p.y = door.y + 26;
+    p.vx = 0; p.vy = 0;
+  }
+
+  // ---------------------------------------------------------------- update
+
+  C.update = function (dt, input) {
+    if (!C.inside) {
+      // Door prompt while walking past.
+      if (!game.player.car) {
+        const d = Math.hypot(game.player.x - door.x, game.player.y - door.y);
+        if (d < 90) game.hud?.setPrompt?.('E — THE GILDED CONCH (casino)');
       }
-      C.reels[k] = (C.reels[k] + C.reelV[k] * dt * 12) % REEL.length;
+      return;
     }
-    if (C.spinning <= 0) {
-      C.reels = C.reels.map((v) => Math.round(v) % REEL.length);
-      const [a, b, c] = C.reels.map((i) => REEL[i]);
-      if (a === b && b === c) {
-        C.slotWin = C.slotBet * SLOT_PAYS[a];
-      } else {
-        // Cherries pay small from the left edge, classic one-arm math.
-        let cherries = 0;
-        for (const s of [a, b, c]) { if (s === 'CHERRY') cherries++; else break; }
-        C.slotWin = cherries === 2 ? C.slotBet * 3 : cherries === 1 ? C.slotBet : 0;
+    pinPlayer();
+    C.dealerT += dt;
+    C.graceT = Math.max(0, (C.graceT ?? 0) - dt);
+    if (C.dealerT > 9) {
+      C.dealerT = 0;
+      C.dealerLine = DEALER_LINES[randInt(DEALER_LINES.length)];
+    }
+
+    // Roulette and slots animation clocks run on real time.
+    if (rl.spinning) {
+      rl.spinT -= dt;
+      rl.angle += dt * 9;
+      rl.ballAngle -= dt * 13;
+      if (rl.spinT <= 0) { rl.spinning = false; rlSettle(); }
+    }
+    if (sl.spinning) {
+      sl.spinT -= dt;
+      for (let i = 0; i < 3; i++) {
+        if (sl.spinT < 1.4 - i * 0.4 && !sl.stopped[i]) sl.stopped[i] = true;
       }
-      C.chips += C.slotWin;
-      if (C.slotWin >= C.slotBet * 40) { say(DEALER_LINES.bj); game.audio.blip(940); }
-      else if (C.slotWin > 0) { game.audio.blip(700); }
-      else say(DEALER_LINES.lose);
-      game.save();
+      if (sl.spinT <= 0) { sl.spinning = false; slotsSettle(); }
     }
+
+    // ---- input (taps only; the pocket world holds still while inside)
+    if (!input) return;
+    if (C.graceT > 0) return;
+    if (input.tap('KeyQ')) {
+      if (C.page === 'floor') exit();
+      else { C.page = 'floor'; C.cursor = 0; }
+      return;
+    }
+    if (C.page === 'floor') {
+      const items = floorItems();
+      if (input.tap('ArrowUp') || input.tap('KeyW')) C.cursor = (C.cursor - 1 + items.length) % items.length;
+      if (input.tap('ArrowDown') || input.tap('KeyS')) C.cursor = (C.cursor + 1) % items.length;
+      if (input.tap('Enter') || input.tap('Space') || input.tap('KeyE')) {
+        const it = items[C.cursor];
+        if (it.action) it.action();
+      }
+      return;
+    }
+    if (C.page === 'bj') {
+      if (bj.phase === 'idle' || bj.phase === 'done') {
+        if (input.tap('Enter') || input.tap('Space')) bjDeal();
+        if (input.tap('ArrowUp')) bj.wager = clamp((bj.wager ?? TABLE_MIN) + 25, TABLE_MIN, Math.min(TABLE_MAX, C.chips));
+        if (input.tap('ArrowDown')) bj.wager = clamp((bj.wager ?? TABLE_MIN) - 25, TABLE_MIN, Math.min(TABLE_MAX, C.chips));
+      } else if (bj.phase === 'player') {
+        if (input.tap('ArrowUp') || input.tap('KeyW')) bjHit();
+        if (input.tap('ArrowDown') || input.tap('KeyS')) bjStand();
+        if (input.tap('ArrowRight') || input.tap('KeyD')) bjDouble();
+      }
+      return;
+    }
+    if (C.page === 'rl') {
+      if (input.tap('ArrowLeft') || input.tap('KeyA')) C.cursor = (C.cursor - 1 + RL_SPOTS.length) % RL_SPOTS.length;
+      if (input.tap('ArrowRight') || input.tap('KeyD')) C.cursor = (C.cursor + 1) % RL_SPOTS.length;
+      if (!rl.spinning) {
+        if (input.tap('ArrowUp')) rl.straight = (rl.straight % 36) + 1;
+        if (input.tap('ArrowDown')) rl.straight = ((rl.straight + 34) % 36) + 1;
+        if (input.tap('Enter') || input.tap('Space')) rlAdd(C.cursor);
+        if (input.tap('KeyC')) {
+          C.chips += rlBetTotal();
+          rl.bets = {};
+          rl.message = 'Bets cleared.';
+        }
+      }
+      return;
+    }
+    if (C.page === 'slots') {
+      if (!sl.spinning && (input.tap('Enter') || input.tap('Space'))) slotsSpin();
+      return;
+    }
+    if (C.page === 'cage') {
+      if (input.tap('Enter') || input.tap('Space')) {
+        if (C.cursor === 0) {
+          const amount = Math.min(1000, game.player.money);
+          if (amount < 100) { cageMessage = 'The cage wants at least $100.'; return; }
+          const buy = Math.min(1000, Math.floor(amount / 100) * 100);
+          game.player.money -= buy;
+          C.chips += buy;
+          cageMessage = `${buy} chips. Good luck in there.`;
+          game.audio.blip(700);
+        } else {
+          if (C.chips <= 0) { cageMessage = 'Nothing to cash.'; return; }
+          game.player.money += C.chips;
+          cageMessage = `${C.chips} chips cashed. Come back soon.`;
+          C.chips = 0;
+          game.audio.blip(700);
+          game.save();
+        }
+      }
+      if (input.tap('ArrowUp') || input.tap('ArrowDown')) C.cursor = C.cursor === 0 ? 1 : 0;
+      return;
+    }
+  };
+
+  let cageMessage = 'The cashier nods. Buy in, or cash out.';
+
+  function floorItems() {
+    return [
+      { label: `BLACKJACK — table limit $${TABLE_MAX}`, sub: `Wager ${bj.wager ?? TABLE_MIN} · shoe ${bj.shoe.length} cards`, action: () => { C.page = 'bj'; C.cursor = 0; } },
+      { label: 'ROULETTE — single zero', sub: 'Straight 35:1 · outside rail even', action: () => { C.page = 'rl'; C.cursor = 0; } },
+      { label: `SLOTS — ${SLOT_BET} a pull`, sub: 'Crowns pay 40×, follow the lights', action: () => { C.page = 'slots'; } },
+      { label: 'CHIP CAGE', sub: `You hold ${C.chips} chips`, action: () => { C.page = 'cage'; C.cursor = 0; } },
+      { label: 'LEAVE THE FLOOR', sub: 'Back to the street', action: () => exit() },
+    ];
   }
 
   // ---------------------------------------------------------------- render
 
   C.render = function (ctx, W, H) {
-    // Room: deep green felt walls, gold trim, one big conch on the far wall.
-    ctx.fillStyle = '#0b1410';
+    // Carpet: deep red with a repeating diamond.
+    ctx.fillStyle = '#3a1220';
     ctx.fillRect(0, 0, W, H);
-    const g = ctx.createRadialGradient(W / 2, H * 0.42, 60, W / 2, H * 0.42, Math.max(W, H) * 0.7);
-    g.addColorStop(0, 'rgba(46,92,66,0.5)');
-    g.addColorStop(0.55, 'rgba(20,44,32,0.4)');
-    g.addColorStop(1, 'rgba(4,10,8,0)');
-    ctx.fillStyle = g;
+    ctx.strokeStyle = 'rgba(255,214,150,0.06)';
+    ctx.lineWidth = 2;
+    const step = 56;
+    for (let y = -step; y < H + step; y += step) {
+      for (let x = -step; x < W + step; x += step) {
+        ctx.beginPath();
+        ctx.moveTo(x, y + step / 2);
+        ctx.lineTo(x + step / 2, y);
+        ctx.lineTo(x + step, y + step / 2);
+        ctx.lineTo(x + step / 2, y + step);
+        ctx.closePath();
+        ctx.stroke();
+      }
+    }
+    // Chandelier wash at the top of the room.
+    const wash = ctx.createRadialGradient(W / 2, -80, 40, W / 2, -80, H * 0.9);
+    wash.addColorStop(0, 'rgba(255,220,150,0.22)');
+    wash.addColorStop(1, 'rgba(255,220,150,0)');
+    ctx.fillStyle = wash;
     ctx.fillRect(0, 0, W, H);
 
+    // Header.
     ctx.textAlign = 'center';
-    ctx.fillStyle = '#ffc042';
-    ctx.font = `bold ${Math.max(20, 30)}px Consolas, monospace`;
-    ctx.fillText('✶ THE GILDED CONCH ✶', W / 2, 38);
-    ctx.fillStyle = 'rgba(232,228,212,0.7)';
-    ctx.font = '12px Consolas, monospace';
-    ctx.fillText('blackjack · roulette · slots — the house always keeps the lights on', W / 2, 56);
+    ctx.font = `bold 34px ${MONO}`;
+    ctx.fillStyle = '#ffd977';
+    ctx.fillText('THE GILDED CONCH', W / 2, 52);
+    ctx.font = `13px ${MONO}`;
+    ctx.fillStyle = '#c9a54e';
+    ctx.fillText('est. 1971 · members and lucky strangers welcome', W / 2, 74);
 
-    // Chips + purse readout, always visible.
+    // The page itself.
+    if (C.page === 'floor') renderFloor(ctx, W, H);
+    else if (C.page === 'bj') renderBlackjack(ctx, W, H);
+    else if (C.page === 'rl') renderRoulette(ctx, W, H);
+    else if (C.page === 'slots') renderSlots(ctx, W, H);
+    else if (C.page === 'cage') renderCage(ctx, W, H);
+
+    // Dealer patter line along the bottom.
+    ctx.font = `13px ${MONO}`;
+    ctx.fillStyle = 'rgba(200,210,230,0.6)';
+    ctx.fillText(`DEALER: “${C.dealerLine}”`, W / 2, H - 44);
+    // Chips readout + quit hint.
+    ctx.textAlign = 'left';
+    ctx.font = `bold 17px ${MONO}`;
+    ctx.fillStyle = '#7dffa4';
+    ctx.fillText(`CHIPS ${C.chips}`, 28, H - 20);
     ctx.textAlign = 'right';
-    ctx.fillStyle = '#7bffd4';
-    ctx.font = 'bold 17px Consolas, monospace';
-    ctx.fillText(`CHIPS $${Math.floor(C.chips)}`, W - 24, 34);
-    ctx.fillStyle = 'rgba(232,228,212,0.7)';
-    ctx.font = '13px Consolas, monospace';
-    ctx.fillText(`POCKET $${game.player.money}`, W - 24, 54);
-
-    if (C.screen === 'lobby') drawLobby(ctx, W, H);
-    else if (C.screen === 'cashier') drawCashier(ctx, W, H);
-    else if (C.screen === 'blackjack') drawBlackjack(ctx, W, H);
-    else if (C.screen === 'roulette') drawRoulette(ctx, W, H);
-    else if (C.screen === 'slots') drawSlots(ctx, W, H);
-
-    // Dealer line + notice.
-    ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(255,217,119,0.9)';
-    ctx.font = '14px Consolas, monospace';
-    if (C.screen !== 'lobby') ctx.fillText(`“${C.line}”`, W / 2, H - 58);
-    if (C.noticeT > 0 && C.notice) {
-      ctx.globalAlpha = clamp(C.noticeT / 0.4, 0, 1);
-      ctx.fillStyle = '#7bffd4';
-      ctx.font = 'bold 15px Consolas, monospace';
-      ctx.fillText(C.notice, W / 2, H - 30);
-      ctx.globalAlpha = 1;
-    }
+    ctx.font = `12px ${MONO}`;
+    ctx.fillStyle = 'rgba(200,210,230,0.55)';
+    ctx.fillText('Q back · ESC pauses', W - 28, H - 20);
   };
 
-  function panel(ctx, x, y, w, h) {
-    ctx.fillStyle = 'rgba(7,12,10,0.85)';
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = 'rgba(255,192,66,0.45)';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(x, y, w, h);
-  }
-
-  function drawLobby(ctx, W, H) {
-    const w = Math.min(430, W * 0.8), x = W / 2 - w / 2, y = H * 0.28;
-    panel(ctx, x, y, w, 62 + LOBBY.length * 34);
-    LOBBY.forEach((item, i) => {
-      const on = i === C.sel;
-      ctx.textAlign = 'left';
-      ctx.fillStyle = on ? '#ffd977' : 'rgba(232,228,212,0.8)';
-      ctx.font = `bold ${on ? 19 : 16}px Consolas, monospace`;
-      ctx.fillText(`${on ? '▶ ' : '  '}${item}`, x + 26, y + 40 + i * 34);
-      if (on) {
-        ctx.fillStyle = 'rgba(123,255,212,0.85)';
-        ctx.font = '12px Consolas, monospace';
-        ctx.fillText(['table $10–$500', 'single zero, 35:1 straight', 'three reels, one line', 'chips in, chips out'][i], x + w - 26 - 190, y + 40 + i * 34);
-      }
-    });
-    ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(232,228,212,0.6)';
-    ctx.font = '12px Consolas, monospace';
-    ctx.fillText('↑↓ choose · ENTER play · BACKSPACE leave', W / 2, y + 62 + LOBBY.length * 34 + 22);
-  }
-
-  function drawCashier(ctx, W, H) {
-    const w = Math.min(380, W * 0.8), x = W / 2 - w / 2, y = H * 0.3;
-    panel(ctx, x, y, w, 60 + CASHIER.length * 34);
-    CASHIER.forEach((item, i) => {
-      const on = i === C.sel;
-      ctx.textAlign = 'left';
-      ctx.fillStyle = on ? '#ffd977' : 'rgba(232,228,212,0.8)';
-      ctx.font = `bold ${on ? 19 : 16}px Consolas, monospace`;
-      ctx.fillText(`${on ? '▶ ' : '  '}${item}`, x + 26, y + 40 + i * 34);
-    });
-  }
-
-  function cardLabel(c) {
-    const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-    return ranks[c.r - 1];
-  }
-  const SUITS = [['♠', '#1a1e26'], ['♥', '#c23a3a'], ['♦', '#c23a3a'], ['♣', '#1a1e26']];
-
-  function drawCard(ctx, c, x, y, faceUp) {
-    const w = 46, h = 66;
-    ctx.fillStyle = faceUp === false ? '#27364e' : '#f4f1e6';
-    ctx.beginPath();
-    ctx.roundRect ? ctx.roundRect(x, y, w, h, 6) : ctx.rect(x, y, w, h);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(10,14,20,0.5)';
-    ctx.lineWidth = 1;
+  function renderFloor(ctx, W, H) {
+    const items = floorItems();
+    // Room stage: three tables and the cage drawn as scenery.
+    const cx = W / 2, cy = H * 0.42;
+    // Blackjack table.
+    ctx.fillStyle = '#1d5c38';
+    ctx.beginPath(); ctx.ellipse(cx - 240, cy, 120, 66, 0, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,214,150,0.5)';
+    ctx.lineWidth = 3;
     ctx.stroke();
-    if (faceUp === false) {
-      ctx.fillStyle = 'rgba(232,228,212,0.25)';
-      ctx.fillRect(x + 6, y + 6, w - 12, h - 12);
-      return;
-    }
-    const [glyph, col] = SUITS[c.s];
-    ctx.fillStyle = col;
-    ctx.font = 'bold 17px Consolas, monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText(cardLabel(c), x + 6, y + 20);
-    ctx.font = '15px Consolas, monospace';
-    ctx.fillText(glyph, x + 6, y + 38);
-    ctx.save();
-    ctx.translate(x + w - 8, y + h - 10);
-    ctx.rotate(Math.PI);
-    ctx.font = 'bold 13px Consolas, monospace';
-    ctx.fillText(cardLabel(c), 0, 4);
-    ctx.restore();
-  }
-
-  function drawBlackjack(ctx, W, H) {
-    const x = W / 2, y = H * 0.24;
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#ffc042';
-    ctx.font = 'bold 18px Consolas, monospace';
-    ctx.fillText('BLACKJACK — $10 min · $500 max · dealer stands on 17', x, y - 18);
-
-    if (C.phase === 'bet') {
-      panel(ctx, x - 180, y + 30, 360, 150);
-      ctx.fillStyle = '#e8e4d4';
-      ctx.font = 'bold 24px Consolas, monospace';
-      ctx.fillText(`BET $${C.bet}`, x, y + 70);
-      ctx.fillStyle = 'rgba(232,228,212,0.7)';
-      ctx.font = '13px Consolas, monospace';
-      ctx.fillText('←→ ±$25   ↑↓ ±$100   ENTER deal', x, y + 100);
-      ctx.fillStyle = '#7bffd4';
-      ctx.fillText(`last bet $${C.lastBet} · chips $${Math.floor(C.chips)}`, x, y + 124);
-      return;
-    }
-
-    // Dealer hand.
-    ctx.fillStyle = 'rgba(232,228,212,0.8)';
-    ctx.font = 'bold 14px Consolas, monospace';
-    const dv = handValue(C.dealer);
-    const reveal = C.phase === 'done';
-    ctx.fillText(`DEALER ${reveal ? dv.total : '?'}`, x - 80, y + 16);
-    C.dealer.forEach((c, i) => drawCard(ctx, c, x - 160 + i * 54, y + 24, reveal || i === 0));
-    // Player hand.
-    const hv = handValue(C.hand);
-    ctx.fillText(`RICO ${hv.total}${hv.soft ? ' (soft)' : ''}`, x - 80, y + 140);
-    C.hand.forEach((c, i) => drawCard(ctx, c, x - 160 + i * 54, y + 148, true));
-
-    if (C.phase === 'play') {
-      ctx.fillStyle = '#7bffd4';
-      ctx.font = 'bold 14px Consolas, monospace';
-      ctx.fillText('A/← HIT   D/→ STAND   W/↑ DOUBLE', x, y + 260);
-    } else if (C.phase === 'done') {
-      const net = C.delta ?? 0;
-      ctx.fillStyle = net > 0 ? '#7bffd4' : net === 0 ? '#e8e4d4' : '#ff7a3c';
-      ctx.font = 'bold 22px Consolas, monospace';
-      ctx.fillText(net > 0 ? `+$${net}` : net === 0 ? 'PUSH' : `-$${C.lastBet}`, x, y + 262);
-      ctx.fillStyle = 'rgba(232,228,212,0.6)';
-      ctx.font = '13px Consolas, monospace';
-      ctx.fillText('ENTER next hand', x, y + 286);
-    }
-  }
-
-  function drawRoulette(ctx, W, H) {
-    const x = W * 0.32, y = H * 0.52;
-    // Wheel.
-    const R = Math.min(W, H) * 0.21;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(C.spinT > 0 ? C.wheelAng * 9 : C.wheelAng * 0.4);
-    ctx.fillStyle = '#3a2f22';
-    ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fill();
-    ctx.fillStyle = '#181c22';
-    ctx.beginPath(); ctx.arc(0, 0, R * 0.86, 0, TAU); ctx.fill();
-    WHEEL.forEach((n, i) => {
-      const a0 = (i / 37) * TAU, a1 = ((i + 1) / 37) * TAU;
-      ctx.fillStyle = n === 0 ? '#1f7a3c' : RED.has(n) ? '#7a1f28' : '#101318';
+    ctx.fillStyle = '#c9a54e';
+    ctx.font = `bold 15px ${MONO}`;
+    ctx.fillText('BLACKJACK', cx - 240, cy + 4);
+    // Roulette wheel.
+    const wr = 70;
+    ctx.fillStyle = '#2b1a3e';
+    ctx.beginPath(); ctx.arc(cx + 200, cy, wr + 16, 0, TAU); ctx.fill();
+    for (let k = 0; k < WHEEL.length; k++) {
+      const a = (k / WHEEL.length) * TAU + rl.angle;
+      ctx.fillStyle = WHEEL[k] === 0 ? '#1d5c38' : REDS.has(WHEEL[k]) ? '#a02a2a' : '#181820';
       ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.arc(0, 0, R * 0.84, a0, a1);
-      ctx.closePath();
-      ctx.fill();
-      if (R > 60) {
-        ctx.save();
-        ctx.rotate((a0 + a1) / 2);
-        ctx.fillStyle = 'rgba(232,228,212,0.75)';
-        ctx.font = `${Math.max(6, R * 0.075)}px Consolas, monospace`;
-        ctx.textAlign = 'center';
-        ctx.fillText(String(n), R * 0.76, 4);
-        ctx.restore();
-      }
+      ctx.moveTo(cx + 200 + Math.cos(a) * (wr - 26), cy + Math.sin(a) * (wr - 26));
+      ctx.lineTo(cx + 200 + Math.cos(a + TAU / WHEEL.length) * (wr - 26), cy + Math.sin(a + TAU / WHEEL.length) * (wr - 26));
+      ctx.lineTo(cx + 200 + Math.cos(a + TAU / WHEEL.length) * wr, cy + Math.sin(a + TAU / WHEEL.length) * wr);
+      ctx.lineTo(cx + 200 + Math.cos(a) * wr, cy + Math.sin(a) * wr);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.fillStyle = '#c9a54e';
+    ctx.fillText('ROULETTE', cx + 200, cy + wr + 34);
+    // Slots cabinet.
+    ctx.fillStyle = '#20242c';
+    roundRectPath(ctx, cx + 420, cy - 70, 96, 130, 10); ctx.fill();
+    ctx.fillStyle = '#0d0f16';
+    roundRectPath(ctx, cx + 432, cy - 56, 72, 56, 6); ctx.fill();
+    ctx.fillStyle = '#7dffa4';
+    ctx.font = `bold 22px ${MONO}`;
+    ctx.fillText('7 7 7', cx + 468, cy - 20);
+    ctx.fillStyle = '#c9a54e';
+    ctx.font = `bold 13px ${MONO}`;
+    ctx.fillText('SLOTS', cx + 468, cy + 80);
+    // Menu rows.
+    ctx.font = `bold 20px ${MONO}`;
+    items.forEach((it, i) => {
+      const y = H * 0.68 + i * 40;
+      const on = i === C.cursor;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = on ? '#ffd977' : 'rgba(220,225,240,0.6)';
+      ctx.fillText((on ? '▸ ' : '  ') + it.label, W / 2 - 250, y);
+      ctx.font = `12px ${MONO}`;
+      ctx.fillStyle = 'rgba(180,190,210,0.5)';
+      ctx.fillText(it.sub, W / 2 - 250 + 20, y + 17);
+      ctx.font = `bold 20px ${MONO}`;
     });
-    // Ball: rides opposite the wheel, settles into the result pocket.
-    const settle = C.spinT <= 0;
-    const idx = settle && C.lastNumber != null ? WHEEL.indexOf(C.lastNumber) : (C.wheelAng * -14) % 37;
-    const bi = ((idx % 37) + 37) % 37;
-    const ba = (bi / 37) * TAU + (settle ? 0 : C.wheelAng * 9);
-    ctx.fillStyle = '#f4f1e6';
-    ctx.beginPath();
-    ctx.arc(Math.cos(ba) * R * 0.6, Math.sin(ba) * R * 0.6, Math.max(3, R * 0.05), 0, TAU);
-    ctx.fill();
-    ctx.restore();
-
-    // Board: zero + 3x12 grid + outside rail.
-    const bw = 34, bh = 26;
-    const bx = W * 0.56, by = H * 0.28;
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 14px Consolas, monospace';
-    for (let n = 0; n <= 36; n++) {
-      const col = n === 0 ? 0 : Math.floor((n - 1) / 3);
-      const row = n === 0 ? -1 : (n - 1) % 3;
-      const cx = bx + (n === 0 ? -bw : col * bw);
-      const cy = by + (row + 1) * bh;
-      const on = C.cell === n;
-      ctx.fillStyle = on ? '#ffd977' : n === 0 ? '#1f7a3c' : RED.has(n) ? '#7a1f28' : '#101318';
-      ctx.fillRect(cx, cy, bw - 2, bh - 2);
-      ctx.fillStyle = on ? '#101318' : 'rgba(232,228,212,0.9)';
-      ctx.fillText(String(n), cx + bw / 2 - 1, cy + bh / 2 + 4);
-      const amt = C.bets[`n${n}`];
-      if (amt) chipDot(ctx, cx + bw / 2 - 1, cy + bh / 2 + 4, amt);
-    }
-    // Outside rail on the left of the grid.
-    const names = ['RED', 'BLK', 'EVE', 'ODD', 'LOW', 'HIGH'];
-    OUTSIDE.forEach(([name, test, mult], i) => {
-      const cy = by + i * bh;
-      const on = C.outsideSel === i && C.cell === -1;
-      ctx.fillStyle = on ? '#ffd977' : 'rgba(30,36,30,0.9)';
-      ctx.fillRect(bx - bw * 1.4, cy, bw * 1.3, bh - 2);
-      ctx.fillStyle = on ? '#101318' : 'rgba(232,228,212,0.85)';
-      ctx.fillText(name, bx - bw * 1.4 + bw * 0.62, cy + bh / 2 + 4);
-    });
-    if (C.cell === -1) {
-      ctx.fillStyle = '#7bffd4';
-      ctx.font = '12px Consolas, monospace';
-      ctx.fillText('SPACE cycles the rail · ENTER bets rail', bx, by + 6 * bh + 18);
-    }
-
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#ffc042';
-    ctx.font = 'bold 15px Consolas, monospace';
-    ctx.fillText(`CHIP $${C.chipSize} — E cycles chip · arrows move · ENTER place · X spin`, W / 2, H - 86);
-    if (C.spinT > 0) {
-      ctx.fillStyle = '#e8e4d4';
-      ctx.font = 'bold 22px Consolas, monospace';
-      ctx.fillText('NO MORE BETS…', W / 2, H * 0.2);
-    } else if (C.lastNumber != null) {
-      ctx.fillStyle = 'rgba(232,228,212,0.9)';
-      ctx.font = 'bold 18px Consolas, monospace';
-      ctx.fillText(`LAST: ${C.lastNumber} ${C.lastNumber === 0 ? 'ZERO' : RED.has(C.lastNumber) ? 'RED' : 'BLACK'}`, W / 2, H * 0.2);
-    }
   }
 
-  function chipDot(ctx, x, y, amt) {
-    ctx.fillStyle = '#ffc042';
-    ctx.beginPath(); ctx.arc(x, y, 7, 0, TAU); ctx.fill();
-    ctx.strokeStyle = 'rgba(16,19,24,0.8)';
-    ctx.lineWidth = 1.5;
+  function renderBlackjack(ctx, W, H) {
+    const cx = W / 2;
+    // Table.
+    ctx.fillStyle = '#1d5c38';
+    ctx.beginPath(); ctx.ellipse(cx, H * 0.4, 300, 150, 0, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,214,150,0.55)';
+    ctx.lineWidth = 4;
     ctx.stroke();
-    ctx.fillStyle = '#101318';
-    ctx.font = 'bold 7px Consolas, monospace';
+    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, H * 0.4 + 40, 210, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+    ctx.fillStyle = 'rgba(232,228,204,0.55)';
+    ctx.font = `bold 15px ${MONO}`;
+    ctx.fillText('BLACKJACK PAYS 3 TO 2 · DEALER STANDS ON 17', cx, H * 0.4 - 70);
+
+    // Dealer hand up top, player hand below.
     ctx.textAlign = 'center';
-    ctx.fillText(String(amt), x, y + 2.5);
+    ctx.font = `12px ${MONO}`;
+    ctx.fillStyle = 'rgba(200,210,230,0.6)';
+    ctx.fillText('DEALER', cx, H * 0.19);
+    drawHand(ctx, bj.dealer, cx, H * 0.25, bj.phase === 'player');
+    ctx.fillStyle = 'rgba(200,210,230,0.6)';
+    ctx.fillText(`YOU — ${handTotal(bj.player) || ''}`, cx, H * 0.5);
+    drawHand(ctx, bj.player, cx, H * 0.56);
+
+    // Bet and message.
+    ctx.font = `bold 18px ${MONO}`;
+    ctx.fillStyle = '#ffd977';
+    ctx.fillText(`BET ${bj.bet || (bj.wager ?? TABLE_MIN)} · SHOE ${bj.shoe.length}`, cx, H * 0.7);
+    ctx.font = `15px ${MONO}`;
+    ctx.fillStyle = bj.result === 'lose' ? '#ff7a6e' : '#7dffa4';
+    ctx.fillText(bj.message, cx, H * 0.75);
+    ctx.font = `12px ${MONO}`;
+    ctx.fillStyle = 'rgba(200,210,230,0.55)';
+    ctx.fillText(bj.phase === 'player' ? '↑ HIT · ↓ STAND · → DOUBLE' : 'ENTER deals · ↑↓ wager', cx, H * 0.79);
   }
 
-  const SLOT_GLYPHS = {
-    CHERRY: '#ff4a55', LEMON: '#ffe14a', STAR: '#7bffd4', BELL: '#ffc042', BAR: '#e8e4d4', SEVEN: '#ff7a3c',
+  function drawHand(ctx, cards, cx, y, hideHole) {
+    const cw = 46, ch = 62;
+    cards.forEach((c, i) => {
+      const x = cx - ((cards.length - 1) * cw) / 2 + i * cw;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate((i - (cards.length - 1) / 2) * 0.05);
+      ctx.fillStyle = '#f2f2ea';
+      roundRectPath(ctx, -cw / 2, -ch / 2, cw, ch, 6);
+      ctx.fill();
+      if (hideHole && i === 1) {
+        ctx.fillStyle = '#7a1d2e';
+        roundRectPath(ctx, -cw / 2 + 3, -ch / 2 + 3, cw - 6, ch - 6, 5);
+        ctx.fill();
+      } else {
+        const red = c.s === 1 || c.s === 2;
+        ctx.fillStyle = red ? '#b02a2a' : '#20242c';
+        ctx.font = `bold 15px ${MONO}`;
+        ctx.textAlign = 'center';
+        ctx.fillText(cardLabel(c), 0, 5);
+      }
+      ctx.restore();
+    });
+  }
+
+  function renderRoulette(ctx, W, H) {
+    const cx = W / 2, cy = H * 0.34, wr = Math.min(W, H) * 0.19;
+    // Wheel.
+    ctx.fillStyle = '#2b1a3e';
+    ctx.beginPath(); ctx.arc(cx, cy, wr + 22, 0, TAU); ctx.fill();
+    for (let k = 0; k < WHEEL.length; k++) {
+      const a = (k / WHEEL.length) * TAU + rl.angle;
+      const n = WHEEL[k];
+      ctx.fillStyle = n === 0 ? '#1d5c38' : REDS.has(n) ? '#a02a2a' : '#181820';
+      const a1 = a, a2 = a + TAU / WHEEL.length;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a1) * (wr - 34), cy + Math.sin(a1) * (wr - 34));
+      ctx.lineTo(cx + Math.cos(a2) * (wr - 34), cy + Math.sin(a2) * (wr - 34));
+      ctx.lineTo(cx + Math.cos(a2) * wr, cy + Math.sin(a2) * wr);
+      ctx.lineTo(cx + Math.cos(a1) * wr, cy + Math.sin(a1) * wr);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#e8e4d4';
+      ctx.font = `bold 11px ${MONO}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(String(n), cx + Math.cos(a1 + TAU / WHEEL.length / 2) * (wr - 22), cy + Math.sin(a1 + TAU / WHEEL.length / 2) * (wr - 22) + 4);
+    }
+    // Ball.
+    const br = rl.spinning ? wr - 14 : wr - 22;
+    const ba = rl.spinning ? rl.ballAngle : (rl.lastNumber != null ? WHEEL.indexOf(rl.lastNumber) * TAU / WHEEL.length + rl.angle : 0);
+    ctx.fillStyle = '#f2f2ea';
+    ctx.beginPath(); ctx.arc(cx + Math.cos(ba) * br, cy + Math.sin(ba) * br, 5, 0, TAU); ctx.fill();
+    // Result readout.
+    ctx.font = `bold 22px ${MONO}`;
+    ctx.fillStyle = '#ffd977';
+    ctx.fillText(rl.spinning ? 'NO MORE BETS' : rl.lastNumber != null ? `LAST: ${rl.lastNumber}` : 'PLACE YOUR BETS', cx, cy + wr + 52);
+    // Betting rail.
+    ctx.font = `bold 17px ${MONO}`;
+    RL_SPOTS.forEach((spot, i) => {
+      const col = i % 4, row = Math.floor(i / 4);
+      const x = W / 2 - 240 + col * 130;
+      const y = H * 0.62 + row * 44;
+      const on = i === C.cursor;
+      const chips = rl.bets[spot.key] ?? 0;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = on ? '#ffd977' : 'rgba(220,225,240,0.6)';
+      ctx.fillText((on ? '▸ ' : '  ') + spot.label(), x, y);
+      ctx.font = `11px ${MONO}`;
+      ctx.fillStyle = chips > 0 ? '#7dffa4' : 'rgba(180,190,210,0.45)';
+      ctx.fillText(chips > 0 ? `${chips} on the felt` : spot.pays, x + 16, y + 15);
+      ctx.font = `bold 17px ${MONO}`;
+    });
+    ctx.textAlign = 'center';
+    ctx.font = `13px ${MONO}`;
+    ctx.fillStyle = 'rgba(200,210,230,0.6)';
+    ctx.fillText(rl.message, cx, H - 78);
+  }
+
+  function renderSlots(ctx, W, H) {
+    const cx = W / 2, cy = H * 0.36;
+    // Cabinet.
+    ctx.fillStyle = '#20242c';
+    roundRectPath(ctx, cx - 210, cy - 130, 420, 300, 16); ctx.fill();
+    ctx.strokeStyle = '#c9a54e';
+    ctx.lineWidth = 3;
+    roundRectPath(ctx, cx - 210, cy - 130, 420, 300, 16); ctx.stroke();
+    // Three windows.
+    for (let i = 0; i < 3; i++) {
+      const wx = cx - 140 + i * 120;
+      ctx.fillStyle = '#0d0f16';
+      roundRectPath(ctx, wx - 46, cy - 70, 92, 110, 8); ctx.fill();
+      const spinBlur = sl.spinning && !sl.stopped[i];
+      const sym = REEL[sl.reels[i]];
+      ctx.font = `${spinBlur ? '46' : '52'}px ${MONO}`;
+      ctx.textAlign = 'center';
+      if (spinBlur) {
+        ctx.fillStyle = 'rgba(200,210,230,0.35)';
+        ctx.fillText(REEL[(sl.reels[i] + 1) % REEL.length], wx, cy + 26);
+        ctx.fillText(REEL[(sl.reels[i] + REEL.length - 1) % REEL.length], wx, cy - 26);
+      }
+      ctx.fillStyle = '#f2f2ea';
+      ctx.fillText(sym, wx, cy + 18);
+    }
+    // Lever hint + paytable.
+    ctx.font = `bold 18px ${MONO}`;
+    ctx.fillStyle = '#ffd977';
+    ctx.fillText(sl.message, cx, cy + 210);
+    ctx.font = `12px ${MONO}`;
+    ctx.fillStyle = 'rgba(200,210,230,0.55)';
+    ctx.fillText(`PAYTABLE — 👑 40× · 💎 20× · ⭐ 10× · 🔔 6× · 🍋 3× · 🍒 pair 2×, any two 1×`, cx, cy + 236);
+    ctx.fillText(`${SLOT_BET} a pull · last pay ${sl.lastPay}`, cx, cy + 256);
+  }
+
+  function renderCage(ctx, W, H) {
+    const cx = W / 2, cy = H * 0.4;
+    // Counter.
+    ctx.fillStyle = '#3a3126';
+    ctx.fillRect(cx - 260, cy + 40, 520, 26);
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillRect(cx - 260, cy + 40, 520, 6);
+    // Cashier silhouette.
+    ctx.fillStyle = '#2b2e35';
+    ctx.beginPath(); ctx.arc(cx, cy - 10, 26, 0, TAU); ctx.fill();
+    ctx.fillRect(cx - 30, cy + 6, 60, 40);
+    ctx.fillStyle = '#7dffa4';
+    ctx.font = `bold 22px ${MONO}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(cageMessage, cx, cy - 70);
+    // Options.
+    const opts = [
+      { label: 'BUY IN — $100 of cash → 100 chips', sub: `you carry $${game.player.money.toLocaleString()}` },
+      { label: 'CASH OUT — all chips → cash', sub: `you hold ${C.chips} chips` },
+    ];
+    ctx.font = `bold 20px ${MONO}`;
+    opts.forEach((o, i) => {
+      const y = cy + 130 + i * 52;
+      const on = i === C.cursor;
+      ctx.fillStyle = on ? '#ffd977' : 'rgba(220,225,240,0.6)';
+      ctx.fillText((on ? '▸ ' : '  ') + o.label, cx, y);
+      ctx.font = `12px ${MONO}`;
+      ctx.fillStyle = 'rgba(180,190,210,0.5)';
+      ctx.fillText(o.sub, cx, y + 18);
+      ctx.font = `bold 20px ${MONO}`;
+    });
+    ctx.font = `12px ${MONO}`;
+    ctx.fillStyle = 'rgba(200,210,230,0.55)';
+    ctx.fillText('ENTER · ↑↓ pick', cx, cy + 250);
+  }
+
+  function roundRectPath(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  // ---------------------------------------------------------------- save
+
+  C.serialize = function () {
+    return {
+      chips: C.chips,
+      handsWon: C.handsWon,
+      biggestWin: C.biggestWin,
+      spins: C.spins,
+      wager: bj.wager ?? TABLE_MIN,
+    };
   };
 
-  function drawSlots(ctx, W, H) {
-    const x = W / 2, y = H * 0.34;
-    const w = Math.min(420, W * 0.7);
-    panel(ctx, x - w / 2, y, w, 210);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#ffc042';
-    ctx.font = 'bold 16px Consolas, monospace';
-    ctx.fillText('CONCH SLOTS — one line', x, y + 26);
-    // Three reel windows.
-    const rw = 86, gap = 22;
-    const startX = x - (rw * 3 + gap * 2) / 2;
-    for (let k = 0; k < 3; k++) {
-      const rx = startX + k * (rw + gap);
-      ctx.fillStyle = '#05070b';
-      ctx.fillRect(rx, y + 44, rw, 74);
-      ctx.strokeStyle = C.spinning > 0 && C.spinning <= (C.reelStop?.[k] ?? 0) ? 'rgba(123,255,212,0.6)' : 'rgba(255,192,66,0.4)';
-      ctx.strokeRect(rx, y + 44, rw, 74);
-      const sym = REEL[Math.floor(C.reels[k]) % REEL.length];
-      ctx.fillStyle = SLOT_GLYPHS[sym] ?? '#e8e4d4';
-      ctx.font = 'bold 17px Consolas, monospace';
-      ctx.fillText(sym, rx + rw / 2, y + 86);
-    }
-    ctx.fillStyle = '#e8e4d4';
-    ctx.font = 'bold 18px Consolas, monospace';
-    if (C.slotWin > 0) ctx.fillText(`WIN $${C.slotWin}`, x, y + 150);
-    else if (C.spinning <= 0 && C.slotWin === 0 && C.slotBet > 0) ctx.fillStyle = 'rgba(232,228,212,0.4)';
-    ctx.fillStyle = '#7bffd4';
-    ctx.font = '13px Consolas, monospace';
-    ctx.fillText(`bet $${C.slotBet} · ↑↓ change · ENTER spin`, x, y + 178);
-    // Paytable strip.
-    ctx.textAlign = 'left';
-    ctx.fillStyle = 'rgba(232,228,212,0.55)';
-    ctx.font = '11px Consolas, monospace';
-    const pays = Object.entries(SLOT_PAYS);
-    pays.forEach(([sym, mult], i) => {
-      ctx.fillStyle = SLOT_GLYPHS[sym];
-      ctx.fillText(`${sym} ×3 = ${mult}×`, x - w / 2 + 16 + (i % 3) * 130, y + 226 + Math.floor(i / 3) * 18);
-    });
-  }
+  C.restore = function (d) {
+    if (!d) return;
+    C.chips = Math.max(0, Math.floor(d.chips) || 0);
+    C.handsWon = Math.max(0, Math.floor(d.handsWon) || 0);
+    C.biggestWin = Math.max(0, Math.floor(d.biggestWin) || 0);
+    C.spins = Math.max(0, Math.floor(d.spins) || 0);
+    bj.wager = clamp(d.wager ?? TABLE_MIN, TABLE_MIN, TABLE_MAX);
+  };
 
   return C;
 }

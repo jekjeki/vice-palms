@@ -171,7 +171,7 @@ function docksScene(game, ui) {
   game.missions.banner('NORTH DOCKS', 'Five piers, two gangs, one boat that should not be there.', 30, '#7bffd4');
   // Let the cranes swing, the gulls settle and the rain build.
   for (let n = 0; n < 150; n++) game.update(1 / 60, SCRIPT);
-  ui.cameraOverride = { x: 3560, y: -1180, zoom: 0.55 };
+  ui.cameraOverride = { x: 3900, y: -1500, zoom: 0.52 };
   ui.freeze = true;
 }
 

@@ -1,634 +1,575 @@
-// THE PIT BELOW — Vice Palms' underground fight club. A door on a south-side block
-// leads down to a basement ring where five fighters wait on a ladder. The brawl is a
-// self-contained timed minigame: move inside the ropes, punch on the beat, guard or
-// give ground, and read each opponent's telegraph. Entry fee, purse per win, and the
-// Coral Belt for anyone who clears the whole ladder.
+// ============================================================
+// THE PIT BELOW — the fight club on the city's south side.
 //
-// While Rico is downstairs the street keeps breathing above him: the venue renders in
-// screen space (like the interiors do) and pins him at the door until he leaves.
+// A door on the street, a hundred-dollar fee, and a ladder of
+// five opponents from Tiny Bruno to Cinder Kalifa. The fight is
+// a timed brawl in a basement ring: punch with the beat, step
+// out of the telegraphed flare, guard to soak, and mind the
+// stamina economy. The crowd of fifty-two roars on big shots,
+// the corner-man gives advice after every fight, each win pays
+// a purse, and clearing the card takes the Coral Belt home.
+//
+// Public API (what main.js / game.js / hud.js expect):
+//   door {x,y}, inside, update(dt, input), tryInteract(p),
+//   render(ctx, W, H), exit(), serialize(), restore(data)
+// ============================================================
 
 import { PITCH } from '../config.js';
-import { clamp, TAU, turnDelta, dist2 } from '../util.js';
-import { rand, randInt } from '../rng.js';
+import { clamp } from '../util.js';
+import { rand } from '../rng.js';
 
-const DOOR = { x: 24.5 * PITCH, y: 31 * PITCH - 74 };
+const DOOR_FEE = 100;
+const FIGHT_TIME = 45;
 
+// The card: five names, five paydays. Telegraph is the seconds
+// the fighter winds up before the strike lands.
 const LADDER = [
-  { name: 'TINY BRUNO', hp: 55, dmg: 7, spd: 88, reach: 40, guard: 0.18, purse: 180, tint: '#c8874a', quip: 'Bruno does not talk. Bruno hits.' },
-  { name: 'RAZOR NADIA', hp: 75, dmg: 9, spd: 116, reach: 42, guard: 0.28, purse: 320, tint: '#d4577a', quip: 'She files her knuckles. Both sets.' },
-  { name: 'TWO-TOOTH TOM', hp: 100, dmg: 11, spd: 132, reach: 46, guard: 0.34, purse: 520, tint: '#7a9a58', quip: 'Lost a tooth per decade in this pit.' },
-  { name: 'THE MARLIN', hp: 135, dmg: 14, spd: 152, reach: 50, guard: 0.4, purse: 840, tint: '#4a7dff', quip: 'Ex-marina enforcer. Swims with receipts.' },
-  { name: 'CINDER KALIFA', hp: 180, dmg: 18, spd: 176, reach: 54, guard: 0.46, purse: 1400, tint: '#ff7a3c', quip: 'The pit is named after her temper.' },
+  { name: 'TINY BRUNO', color: '#d98a5f', hp: 70, dmg: 9, speed: 66, telegraph: 0.8, purse: 250, bark: 'You punch like my niece. She is six.' },
+  { name: 'SISTER DÍAZ', color: '#c46fd9', hp: 95, dmg: 11, speed: 88, telegraph: 0.62, purse: 400, bark: 'The Lord forgives. The round house does not.' },
+  { name: 'MARLOWE THE HAMMER', color: '#5fa8d9', hp: 125, dmg: 15, speed: 76, telegraph: 0.55, purse: 650, bark: 'Hammer time was four fights ago. Still waiting.' },
+  { name: 'REX "THE VAULT"', color: '#9aa3b8', hp: 150, dmg: 13, speed: 104, telegraph: 0.45, purse: 900, bark: 'Everything bounces off, Rico. Even regret.' },
+  { name: 'CINDER KALIFA', color: '#ff5a4a', hp: 185, dmg: 18, speed: 118, telegraph: 0.36, purse: 1500, bark: 'The Cinders hold the east yards. Now they hold you.' },
 ];
 
-const FEE = 60;
-const RING_R = 168;
+const BELT_BONUS = 5000;
+const MONO = 'Consolas, "Courier New", monospace';
 
+// ------------------------------------------------------------
 export function createFightClub(game) {
+  const door = { x: 19 * PITCH + 62, y: 34 * PITCH + 62 };
+
   const F = {
-    game,
-    door: DOOR,
+    name: 'THE PIT BELOW',
+    door,
     inside: false,
-    mode: 'lobby',           // lobby | fight | down | win | ko
-    ladder: 0,               // next opponent index
-    wins: 0,
+    mode: 'idle',        // idle | intro | fight | result
+    card: 0,             // opponents defeated
     belt: false,
-    foe: null,
-    hero: null,
-    crowd: [],
+    wins: 0,
+    losses: 0,
+    earned: 0,
+    best: null,          // fastest win, seconds
+  };
+
+  // Fight-local state.
+  const s = {
+    t: 0,
+    timeLeft: FIGHT_TIME,
+    beat: 0,
+    opponent: null,
+    px: -90, pvx: 0,
+    ox: 90, ovx: 0,
+    php: 100, omax: 100, ohp: 100,
+    stamina: 100,
+    punchT: 0,
+    guard: false,
+    dodgeT: 0,
+    oTelegraph: -1,     // seconds remaining on the wind-up flare
+    oStrikeT: 0,
+    oRecover: 0,
+    freeze: 0,
     roar: 0,
-    hitstop: 0,
-    stateT: 0,
-    hintT: 0,
-    cx: 0, cy: 0,            // ring centre in canvas space
-    scale: 1,
+    sparks: [],
+    advice: null,
+    resultText: null,
+    purse: 0,
   };
 
-  // ---------------------------------------------------------------- persistence
-
-  F.serialize = () => ({ wins: F.wins, belt: F.belt });
-  F.restore = (d) => {
-    if (!d) return;
-    F.wins = d.wins ?? 0;
-    F.belt = d.belt ?? false;
-    F.ladder = Math.min(LADDER.length, F.wins);
-  };
-
-  // ---------------------------------------------------------------- door
-
-  F.updateDoor = function (dt, p) {
-    if (F.inside) return;
-    const d = Math.hypot(p.x - DOOR.x, p.y - DOOR.y);
-    if (d < 90 && game.hud) game.hud.setPrompt('E — THE PIT BELOW (fight club)');
-  };
-
-  F.tryInteract = function (p) {
-    if (F.inside) return false;
-    if (dist2(p.x, p.y, DOOR.x, DOOR.y) > 110 * 110) return false;
-    enter(p);
-    return true;
-  };
-
-  function enter(p) {
-    F.inside = true;
-    F.mode = 'lobby';
-    F.anchor = { x: p.x, y: p.y };
-    p.vx = 0; p.vy = 0;
-    F.hintT = 0;
-    game.audio.ensure();
+  function startFight() {
+    const def = LADDER[F.card];
+    s.t = 0;
+    s.timeLeft = FIGHT_TIME;
+    s.beat = 0;
+    s.opponent = def;
+    s.px = -100; s.pvx = 0;
+    s.ox = 110; s.ovx = 0;
+    s.php = 100;
+    s.omax = def.hp; s.ohp = def.hp;
+    s.stamina = 100;
+    s.punchT = 0;
+    s.guard = false;
+    s.dodgeT = 0;
+    s.oTelegraph = -1;
+    s.oStrikeT = 0;
+    s.oRecover = 0;
+    s.freeze = 0;
+    s.roar = 0.3;
+    s.sparks.length = 0;
+    s.advice = null;
+    s.resultText = null;
+    s.purse = 0;
+    F.mode = 'intro';
+    F.introT = 2.4;
     game.audio.blip(220);
   }
 
-  F.exit = function () {
-    if (!F.inside) return;
-    F.inside = false;
-    const p = game.player;
-    if (F.anchor) { p.x = F.anchor.x; p.y = F.anchor.y; }
-    p.vx = 0; p.vy = 0;
-  };
-
-  // ---------------------------------------------------------------- fight setup
-
-  function startFight() {
-    const p = game.player;
-    if (p.money < FEE) {
-      F.notice = `The door man shakes his head. Fights cost $${FEE} in.`;
-      F.noticeT = 3;
+  function enter() {
+    F.inside = true;
+    game.audio.ensure();
+    if (F.card >= LADDER.length) {
+      game.toast('You hold the Coral Belt. The Pit bows and keeps the lights low.', '#ffd977');
+      F.mode = 'idle';
       return;
     }
-    p.money -= FEE;
-    const def = LADDER[Math.min(F.ladder, LADDER.length - 1)];
-    F.foe = {
-      def,
-      x: 0.55, y: -0.5,          // arena coords in ring radii
-      vx: 0, vy: 0,
-      hp: def.hp, maxHp: def.hp,
-      face: Math.PI,
-      tele: 0, swing: 0, recover: 0,
-      cd: 1.1,
-      stagger: 0,
-      down: 0,
-      blockFlash: 0,
-    };
-    F.hero = {
-      x: -0.55, y: 0.5,
-      vx: 0, vy: 0,
-      hp: 100, maxHp: 100,
-      stam: 100,
-      face: 0,
-      tele: 0, swing: 0, recover: 0,
-      guard: false,
-      down: 0,
-      blockFlash: 0,
-    };
-    F.mode = 'fight';
-    F.stateT = 0;
-    F.roar = 0.35;
-    F.notice = null;
-    buildCrowd();
-    game.audio.blip(440);
+    if (game.player.money < DOOR_FEE) {
+      game.toast(`The door man wants $${DOOR_FEE}. Come back heavier.`, '#ff7a3c');
+      F.inside = false;
+      return;
+    }
+    game.player.money -= DOOR_FEE;
+    game.toast(`The Pit takes $${DOOR_FEE} at the door. First bell soon.`, '#ff5a6e');
+    startFight();
   }
 
-  function buildCrowd() {
-    F.crowd = [];
-    for (let k = 0; k < 52; k++) {
-      const a = (k / 52) * TAU + rand() * 0.1;
-      const r = 1.3 + rand() * 0.34;
-      F.crowd.push({ a, r, ph: rand() * TAU, spd: 2.4 + rand() * 2.2, tint: ['#4b4f60', '#5a4848', '#46516b', '#6a5c3f'][randInt(4)] });
+  function exit() {
+    if (!F.inside) return;
+    F.inside = false;
+    F.mode = 'idle';
+    game.audio.blip(300);
+  }
+
+  F.exit = exit;
+
+  F.tryInteract = function (p) {
+    if (F.inside) return false;
+    if (Math.hypot(p.x - door.x, p.y - door.y) > 66) return false;
+    if (p.car) { game.toast('The ladder down does not fit a car.', '#ffd977'); return true; }
+    enter();
+    return true;
+  };
+
+  function pinPlayer() {
+    const p = game.player;
+    p.x = door.x; p.y = door.y + 26;
+    p.vx = 0; p.vy = 0;
+  }
+
+  // ---------------------------------------------------------------- fight
+
+  function crowdRoar(amount) {
+    s.roar = clamp(s.roar + amount, 0, 1.6);
+  }
+
+  function spark(x, n, color) {
+    for (let k = 0; k < n; k++) {
+      s.sparks.push({ x, y: -26 + rand() * 40, vx: (rand() - 0.5) * 260, vy: -rand() * 160, life: 0.4 + rand() * 0.2 });
+    }
+  }
+
+  function playerPunch() {
+    if (s.punchT > 0 || s.stamina < 12) return;
+    s.punchT = 0.42;
+    s.stamina = Math.max(0, s.stamina - 12);
+    // Punching on the beat hits harder: within a twelfth of the pulse.
+    const onBeat = Math.abs(((s.beat % 1.2) + 1.2) % 1.2 - 0.0) < 0.12
+      || Math.abs(((s.beat % 1.2) + 1.2) % 1.2 - 1.2) < 0.12;
+    const dmg = onBeat ? 22 : 12;
+    const reach = 52;
+    if (Math.abs(s.ox - s.px) < reach) {
+      s.ohp -= dmg;
+      s.ox += Math.sign(s.ox - s.px) * (onBeat ? 26 : 12);
+      s.freeze = onBeat ? 0.12 : 0.05;
+      spark((s.px + s.ox) / 2, onBeat ? 6 : 3, '#ffd977');
+      crowdRoar(onBeat ? 0.22 : 0.08);
+      game.audio.punch();
+      if (onBeat) game.audio.tone(520, 0.09, 0.1);
+    } else {
+      game.audio.punch();
+    }
+  }
+
+  function opponentAI(dt) {
+    const def = s.opponent;
+    const dir = Math.sign(s.px - s.ox) || 1;
+    const gap = Math.abs(s.px - s.ox);
+    // Wind-up → strike → recover, otherwise close the distance.
+    if (s.oTelegraph >= 0) {
+      s.oTelegraph -= dt;
+      s.ovx *= 0.8;
+      if (s.oTelegraph <= 0) {
+        // The strike lands if the player stood in range and did not step out.
+        const dodged = s.dodgeT > 0 || gap > 64;
+        if (!dodged) {
+          const soak = s.guard ? 0.28 : 1;
+          s.php -= def.dmg * soak;
+          s.pvx += dir * (s.guard ? 120 : 300);
+          s.freeze = 0.09;
+          spark(s.px, s.guard ? 2 : 5, s.guard ? '#8ab4ff' : '#ff5a4a');
+          crowdRoar(s.guard ? 0.1 : 0.25);
+          game.audio.punch();
+        } else {
+          s.ovx = -dir * 60;
+          crowdRoar(0.14);
+          game.audio.tone(740, 0.07, 0.07);
+        }
+        s.oStrikeT = 0.14;
+        s.oTelegraph = -1;
+        s.oRecover = 0.5 + rand() * 0.4;
+      }
+      return;
+    }
+    if (s.oRecover > 0) {
+      s.oRecover -= dt;
+      s.ovx *= 0.86;
+      return;
+    }
+    // Close in; higher cards feint more.
+    const want = 58 - def.speed * 0.08;
+    if (gap > want) s.ovx += dir * def.speed * dt * 6;
+    else s.ovx *= 0.8;
+    if (s.oStrikeT <= 0 && gap < 86 && rand() < dt * (1.6 + F.card * 0.35)) {
+      s.oTelegraph = def.telegraph;
+      game.audio.tone(180, 0.12, 0.06);
+    }
+  }
+
+  function endFight(win, reason) {
+    F.mode = 'result';
+    s.resultGrace = 0.35;   // the punch that ended it must not also confirm the board
+    s.resultText = reason;
+    if (win) {
+      s.purse = s.opponent.purse;
+      const fast = FIGHT_TIME - s.timeLeft;
+      if (s.best == null || fast < s.best) s.best = fast;
+      game.player.money += s.purse;
+      F.earned += s.purse;
+      F.wins++;
+      F.card++;
+      game.fx.cash(game.player.x, game.player.y);
+      game.audio.blip(880);
+      if (F.card >= LADDER.length && !F.belt) {
+        F.belt = true;
+        game.player.money += BELT_BONUS;
+        F.earned += BELT_BONUS;
+        s.advice = 'Corners: "That is the whole card. The Coral Belt is yours — wear it loud."';
+      } else {
+        const next = LADDER[F.card];
+        s.advice = next
+          ? `Corners: "${next.name} is next — ${next.bark}"`
+          : 'Corners: "Whole card, clean work."';
+      }
+      game.save();
+    } else {
+      F.losses++;
+      game.audio.blip(140);
+      s.advice = 'Corners: "Breathe. Guard earlier. Step out of the red flare — the rest is paperwork."';
+      game.save();
     }
   }
 
   // ---------------------------------------------------------------- update
 
   F.update = function (dt, input) {
-    const p = game.player;
-
-    if (!F.inside) { F.updateDoor(dt, p); return; }
-
-    // Pin Rico at the door: the street above must not drift without him.
-    p.x = F.anchor.x; p.y = F.anchor.y;
-    p.vx = 0; p.vy = 0;
-    F.roar = Math.max(0, F.roar - dt * 0.5);
-    F.noticeT = (F.noticeT ?? 0) - dt;
-    F.hintT += dt;
-
-    if (input.tap('Backspace') || input.tap('KeyQ')) { F.exit(); return; }
-
-    if (F.mode === 'lobby') {
-      if (input.tap('Space') || input.tap('Enter')) startFight();
-      return;
-    }
-
-    if (F.mode === 'down' || F.mode === 'ko' || F.mode === 'win') {
-      F.stateT -= dt;
-      // Idle drift back to corners after the verdict.
-      if (F.stateT <= 0) {
-        if (F.mode === 'win') {
-          F.wins++;
-          if (F.wins >= LADDER.length && !F.belt) {
-            F.belt = true;
-            game.toast('THE CORAL BELT IS YOURS. The pit chants your name.', '#ffc042');
-            game.audio.blip(880);
-          }
-          F.ladder = Math.min(LADDER.length, F.wins);
-          game.save();
+    if (!F.inside) {
+      if (!game.player.car) {
+        const d = Math.hypot(game.player.x - door.x, game.player.y - door.y);
+        if (d < 90) {
+          game.hud?.setPrompt?.(F.card >= LADDER.length
+            ? 'E — THE PIT (champion entrance)'
+            : `E — THE PIT (fight card, $${DOOR_FEE} door)`);
         }
-        F.mode = 'lobby';
-        F.foe = null;
-        F.hero = null;
       }
       return;
     }
+    pinPlayer();
 
-    if (F.mode === 'fight') fightStep(dt, input);
+    if (F.mode === 'intro') {
+      F.introT -= dt;
+      if (F.introT <= 0) F.mode = 'fight';
+      return;
+    }
+    if (F.mode === 'result') {
+      s.t += dt;
+      if (s.resultGrace > 0) s.resultGrace -= dt;
+      if (s.resultGrace <= 0 && (input?.tap('Enter') || input?.tap('Space'))) {
+        F.mode = 'idle';
+        if (F.card < LADDER.length) startFight();
+        else exit();
+      }
+      return;
+    }
+    if (F.mode !== 'fight') return;
+
+    // Clocks.
+    s.t += dt;
+    s.timeLeft -= dt;
+    s.beat += dt;
+    s.punchT -= dt;
+    s.dodgeT -= dt;
+    s.oStrikeT -= dt;
+    s.roar = Math.max(0.2, s.roar - dt * 0.12);
+    s.stamina = clamp(s.stamina + (s.guard ? -14 : 9) * dt, 0, 100);
+    if (s.freeze > 0) {
+      s.freeze -= dt;
+      return;   // hit-stop: the whole ring holds its breath
+    }
+
+    // ---- player input
+    const ax = (input.held('KeyD') || input.held('ArrowRight') ? 1 : 0) - (input.held('KeyA') || input.held('ArrowLeft') ? 1 : 0);
+    s.guard = input.held('KeyS') || input.held('ArrowDown');
+    const mv = s.guard ? 40 : 130;
+    if (ax !== 0) {
+      s.pvx += ax * mv * dt * 8;
+      if (s.punchT <= -0.05) s.dodgeT = 0.24;   // a fresh step reads as a dodge
+    }
+    if (input.tap('Space') || input.tap('KeyE')) playerPunch();
+
+    // ---- physics of two bodies in a ring
+    s.pvx *= Math.pow(0.02, dt);
+    s.ovx *= Math.pow(0.02, dt);
+    s.px += s.pvx * dt;
+    s.ox += s.ovx * dt;
+    s.px = clamp(s.px, -170, 170);
+    s.ox = clamp(s.ox, -170, 170);
+    // Bodies do not overlap: push apart.
+    const gap = s.ox - s.px;
+    if (Math.abs(gap) < 44) {
+      const push = (44 - Math.abs(gap)) * 0.5 * Math.sign(gap || 1);
+      s.px -= push; s.ox += push;
+    }
+
+    opponentAI(dt);
+
+    // Sparks fall and die.
+    for (let i = s.sparks.length - 1; i >= 0; i--) {
+      const p = s.sparks[i];
+      p.life -= dt;
+      p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 460 * dt;
+      if (p.life <= 0) s.sparks.splice(i, 1);
+    }
+
+    // ---- ends
+    if (s.ohp <= 0) {
+      s.ohp = 0;
+      endFight(true, `WIN — ${s.opponent.name} is down.`);
+    } else if (s.php <= 0) {
+      s.php = 0;
+      endFight(false, `DOWN — ${s.opponent.name} stands over you.`);
+    } else if (s.timeLeft <= 0) {
+      endFight(false, 'THE BELL — the crowd wanted more than a stalemate.');
+    }
   };
-
-  function fightStep(dt, input) {
-    if (F.hitstop > 0) { F.hitstop -= dt; return; }
-    const h = F.hero, f = F.foe;
-    F.stateT += dt;
-
-    // ---- hero intents
-    const ax = input.axis();
-    const guard = input.held('ShiftLeft') || input.held('ShiftRight');
-    h.guard = guard && h.stam > 6;
-    const spd = (h.guard ? 0.42 : 1) * 1.5;
-
-    h.vx = ax.x * spd; h.vy = ax.y * spd;
-    h.x += h.vx * dt; h.y += h.vy * dt;
-    if (Math.hypot(h.vx, h.vy) > 0.05) h.face = Math.atan2(h.vy, h.vx);
-    else {
-      // Face assist: standing still, Rico squares up to his opponent — punches
-      // are aimed at the man, not at wherever the last step pointed.
-      const toFoe = Math.atan2(F.foe.y - h.y, F.foe.x - h.x);
-      h.face += clamp(turnDelta(h.face, toFoe), -dt * 7, dt * 7);
-    }
-
-    // Rope constraint: the ring pushes back with a little bounce.
-    const hr = Math.hypot(h.x, h.y);
-    if (hr > 1) {
-      const k = 1 / hr;
-      h.x *= k; h.y *= k;
-      h.vx *= -0.25; h.vy *= -0.25;
-    }
-
-    h.stam = clamp(h.stam + (h.guard ? 9 : 16) * dt, 0, 100);
-    h.tele = Math.max(0, h.tele - dt);
-    h.swing = Math.max(0, h.swing - dt);
-    h.recover = Math.max(0, h.recover - dt);
-    h.blockFlash = Math.max(0, h.blockFlash - dt * 3);
-
-    if (input.tap('Space') && h.swing <= 0 && h.recover <= 0 && h.stam >= 20) {
-      h.swing = 0.26;
-      h.tele = 0.11;                 // windup beat before the glove lands
-      h.stam -= 20;
-      game.audio.blip(300);
-    }
-    // The glove lands partway through the swing.
-    if (h.swing > 0 && h.tele === 0 && !h.landed) {
-      h.landed = true;
-      const reach = 0.52;
-      const d = Math.hypot(f.x - h.x, f.y - h.y);
-      const angTo = Math.atan2(f.y - h.y, f.x - h.x);
-      const faced = Math.abs(((angTo - h.face + Math.PI * 3) % TAU) - Math.PI) < 1.1;
-      if (d < reach && faced && f.down <= 0) {
-        const blocked = rand() < f.def.guard;
-        const dmg = blocked ? 4 : 9 + rand() * 5;
-        f.hp -= dmg;
-        f.stagger = blocked ? 0.08 : 0.26;
-        if (!blocked) {
-          const kx = Math.cos(angTo) * 0.09, ky = Math.sin(angTo) * 0.09;
-          f.x += kx; f.y += ky;
-          F.roar = Math.min(1, F.roar + 0.22);
-          game.audio.punch?.();
-          game.fx.sparks(F.cx + f.x * F.scale, F.cy + f.y * F.scale, 2);
-        } else {
-          f.blockFlash = 1;
-          game.audio.blip(180);
-        }
-        F.hitstop = blocked ? 0.04 : 0.07;
-      }
-    }
-    if (h.swing <= 0) h.landed = false;
-
-    // ---- foe brain
-    const def = f.def;
-    f.tele = Math.max(0, f.tele - dt);
-    f.swing = Math.max(0, f.swing - dt);
-    f.recover = Math.max(0, f.recover - dt);
-    f.cd -= dt;
-    f.stagger = Math.max(0, f.stagger - dt);
-    f.blockFlash = Math.max(0, f.blockFlash - dt * 3);
-
-    if (f.down > 0 || h.down > 0) return;
-
-    const toH = Math.atan2(h.y - f.y, h.x - f.x);
-    const d = Math.hypot(h.x - f.x, h.y - f.y);
-    f.face = toH;
-
-    if (f.stagger > 0) {
-      // Reeling: drift backwards a touch.
-      f.x -= Math.cos(toH) * 0.16 * dt;
-      f.y -= Math.sin(toH) * 0.16 * dt;
-    } else if (f.swing > 0) {
-      // Committed to the swing; keeps stepping in.
-      f.x += Math.cos(toH) * def.spd * 0.0018 * dt * 60;
-      f.y += Math.sin(toH) * def.spd * 0.0018 * dt * 60;
-    } else if (f.tele > 0) {
-      // Telegraphed: holds the windup, no movement — the beat to dodge on.
-    } else {
-      const want = d > 0.62 ? 1 : d < 0.42 ? -0.32 : 0.1;   // in, out, or circle
-      const strafe = Math.sin(F.stateT * 1.7 + 2) * 0.45;
-      const mvx = (Math.cos(toH) * want + Math.cos(toH + Math.PI / 2) * strafe);
-      const mvy = (Math.sin(toH) * want + Math.sin(toH + Math.PI / 2) * strafe);
-      f.x += mvx * (def.spd / 150) * dt * 0.9;
-      f.y += mvy * (def.spd / 150) * dt * 0.9;
-      // Attack decision: close enough and the timer says so.
-      if (d < 0.8 && f.cd <= 0) {
-        f.tele = 0.24 + rand() * 0.22;
-        f.swing = 0;
-        f.cd = 1.5 + rand() * 1.6 - Math.min(0.7, F.ladder * 0.14);
-      }
-    }
-    // Swing resolution.
-    if (f.tele === 0 && f.swing === 0 && f.recover === 0 && f.pendingSwing) {
-      f.pendingSwing = false;
-      f.swing = 0.3;
-      f.struck = false;
-    }
-    if (f.swing > 0 && !f.struck && f.swing < 0.18) {
-      f.struck = true;
-      const reach = def.reach / 150;
-      if (d < reach) {
-        const dodge = Math.hypot(h.vx, h.vy) > 0.5 && !h.guard;
-        if (dodge) {
-          F.notice = 'Dodged!';
-          F.noticeT = 0.7;
-          F.roar = Math.min(1, F.roar + 0.1);
-        } else {
-          const dmg = (h.guard ? def.dmg * 0.35 : def.dmg) * (0.85 + rand() * 0.3);
-          h.hp -= dmg;
-          h.blockFlash = 1;
-          const kx = Math.cos(toH) * (h.guard ? 0.03 : 0.08), ky = Math.sin(toH) * (h.guard ? 0.03 : 0.08);
-          h.x -= kx; h.y -= ky;
-          F.roar = Math.min(1, F.roar + (h.guard ? 0.08 : 0.28));
-          game.audio.punch?.();
-          game.fx.sparks(F.cx + h.x * F.scale, F.cy + h.y * F.scale, 2);
-          F.hitstop = 0.05;
-          if (!h.guard) game.shake = Math.min(6, game.shake + 2);
-        }
-      }
-    }
-    if (f.tele === 0 && f.swing === 0) f.pendingSwing = f.pendingSwing;
-    if (f.tele > 0 && f.tele - dt <= 0) f.pendingSwing = true;
-
-    // Ring keeps both fighters inside.
-    for (const fig of [h, f]) {
-      const r = Math.hypot(fig.x, fig.y);
-      if (r > 1) { const k = 1 / r; fig.x *= k; fig.y *= k; }
-    }
-
-    // ---- verdicts
-    if (f.hp <= 0) {
-      f.hp = 0;
-      f.down = 1;
-      F.mode = 'win';
-      F.stateT = 3;
-      F.roar = 1;
-      game.audio.boom(0.25);
-      game.player.money += def.purse;
-      game.toast(`${def.name} is DOWN — $${def.purse} purse.`, '#7bffd4');
-    } else if (h.hp <= 0) {
-      h.hp = 0;
-      h.down = 1;
-      F.mode = 'ko';
-      F.stateT = 3;
-      F.roar = 0.8;
-      game.audio.boom(0.3);
-      game.toast('You are DOWN. The pit laughs, the medic does not.', '#ff7a3c');
-    }
-  }
 
   // ---------------------------------------------------------------- render
 
-  /** Screen-space venue, called from main.js instead of the world painter. */
   F.render = function (ctx, W, H) {
-    const scale = Math.min(W / 900, H / 620);
-    F.scale = RING_R * scale;
-    F.cx = W / 2;
-    F.cy = H * 0.47;
-
-    // Basement: near-black with a warm pool of light over the ring.
-    ctx.fillStyle = '#08080d';
+    // Basement: black walls, a single cage light over the ring.
+    ctx.fillStyle = '#07080c';
     ctx.fillRect(0, 0, W, H);
-    const g = ctx.createRadialGradient(F.cx, F.cy, 40, F.cx, F.cy, Math.max(W, H) * 0.6);
-    g.addColorStop(0, 'rgba(62,46,34,0.55)');
-    g.addColorStop(0.5, 'rgba(30,24,26,0.35)');
-    g.addColorStop(1, 'rgba(4,4,8,0)');
-    ctx.fillStyle = g;
+    const cx = W / 2, cy = H * 0.46;
+
+    // Cage light cone.
+    const cone = ctx.createRadialGradient(cx, cy - 210, 20, cx, cy - 210, 420);
+    cone.addColorStop(0, 'rgba(255,236,200,0.16)');
+    cone.addColorStop(1, 'rgba(255,236,200,0)');
+    ctx.fillStyle = cone;
     ctx.fillRect(0, 0, W, H);
 
-    // Spot cones from two rig corners.
-    for (const sx of [W * 0.2, W * 0.8]) {
-      const sg = ctx.createLinearGradient(sx, -20, F.cx, F.cy);
-      sg.addColorStop(0, 'rgba(255,230,180,0.20)');
-      sg.addColorStop(1, 'rgba(255,230,180,0)');
-      ctx.fillStyle = sg;
-      ctx.beginPath();
-      ctx.moveTo(sx - 26, -20);
-      ctx.lineTo(sx + 26, -20);
-      ctx.lineTo(F.cx + F.scale * 1.25, F.cy + F.scale * 0.6);
-      ctx.lineTo(F.cx - F.scale * 1.25, F.cy + F.scale * 0.6);
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    drawCrowd(ctx, scale);
-    drawRing(ctx, scale);
-
-    if (F.hero && F.foe) {
-      drawFighter(ctx, F.foe, F.foe.def.tint, scale, false);
-      drawFighter(ctx, F.hero, '#e9ecf4', scale, true);
-      drawBars(ctx, W);
-    }
-
-    drawChrome(ctx, W, H);
-  };
-
-  function drawCrowd(ctx, scale) {
-    const rr = F.scale;
-    for (const c of F.crowd) {
-      const bob = Math.sin(c.ph + F.stateT * c.spd) * 3 + (F.roar * Math.sin(c.ph * 3 + F.stateT * 12) * 4);
-      const x = F.cx + Math.cos(c.a) * (rr + 46 * scale);
-      const y = F.cy + Math.sin(c.a) * (rr + 40 * scale) + bob;
-      ctx.fillStyle = c.tint;
-      ctx.beginPath();
-      ctx.arc(x, y, 6.5 * scale, 0, TAU);
-      ctx.fill();
-      // Raised arms on a roar.
-      if (F.roar > 0.5) {
-        ctx.strokeStyle = c.tint;
-        ctx.lineWidth = 2.5 * scale;
-        ctx.beginPath();
-        ctx.moveTo(x - 5 * scale, y - 4 * scale); ctx.lineTo(x - 9 * scale, y - 13 * scale);
-        ctx.moveTo(x + 5 * scale, y - 4 * scale); ctx.lineTo(x + 9 * scale, y - 13 * scale);
-        ctx.stroke();
-      }
-    }
-  }
-
-  function drawRing(ctx, scale) {
-    const rr = F.scale;
-    // Mat.
-    const mg = ctx.createRadialGradient(F.cx, F.cy - rr * 0.2, 10, F.cx, F.cy, rr * 1.2);
-    mg.addColorStop(0, '#2e4a6e');
-    mg.addColorStop(1, '#1d2c44');
-    ctx.fillStyle = mg;
-    ctx.beginPath(); ctx.arc(F.cx, F.cy, rr, 0, TAU); ctx.fill();
-    // Mat wear: scuff arcs.
-    ctx.strokeStyle = 'rgba(10,14,22,0.35)';
+    // The ring: mat, ropes, posts.
+    ctx.fillStyle = '#26313a';
+    ctx.fillRect(cx - 260, cy - 90, 520, 190);
+    ctx.fillStyle = 'rgba(255,255,255,0.04)';
+    ctx.fillRect(cx - 260, cy - 90, 520, 12);
+    ctx.strokeStyle = '#c9c39a';
     ctx.lineWidth = 3;
-    for (let k = 0; k < 5; k++) {
-      const a0 = (k * 2.3) % TAU;
+    for (const ry of [-70, -18, 40, 88]) {
       ctx.beginPath();
-      ctx.arc(F.cx, F.cy, rr * (0.3 + k * 0.14), a0, a0 + 1.2 + (k % 3) * 0.4);
+      ctx.moveTo(cx - 268, cy + ry);
+      ctx.lineTo(cx + 268, cy + ry);
       ctx.stroke();
     }
-    // Sponsor ring painted on the canvas edge.
-    ctx.fillStyle = 'rgba(232,228,212,0.4)';
-    ctx.font = `bold ${Math.max(9, 12 * scale)}px Consolas, monospace`;
-    ctx.textAlign = 'center';
-    ctx.fillText('CONCH WATER', F.cx, F.cy - rr * 0.72);
-    ctx.fillText('PALM AIR', F.cx, F.cy + rr * 0.78);
-    ctx.fillText('GATOR GIN', F.cx - rr * 0.78, F.cy);
-    ctx.fillText('ROXY ARCADE', F.cx + rr * 0.8, F.cy);
-    // Ropes: three concentric rings in the classic colours.
-    const ropes = [['#c94b3c', 1.08], ['#e8e4d4', 1.13], ['#4a7dff', 1.18]];
-    for (const [col, f] of ropes) {
-      ctx.strokeStyle = col;
-      ctx.lineWidth = 3.4 * scale;
-      ctx.beginPath(); ctx.arc(F.cx, F.cy, rr * f, 0, TAU); ctx.stroke();
+    ctx.fillStyle = '#54443a';
+    for (const px of [cx - 274, cx + 262]) {
+      ctx.fillRect(px, cy - 96, 12, 190);
     }
-    // Corner posts.
-    for (let k = 0; k < 4; k++) {
-      const a = (k / 4) * TAU + Math.PI / 4;
-      const px = F.cx + Math.cos(a) * rr * 1.2;
-      const py = F.cy + Math.sin(a) * rr * 1.2;
-      ctx.fillStyle = k % 2 ? '#c94b3c' : '#4a7dff';
-      ctx.beginPath(); ctx.arc(px, py, 7 * scale, 0, TAU); ctx.fill();
-    }
-  }
 
-  function drawFighter(ctx, fig, tint, scale, isHero) {
-    const x = F.cx + fig.x * F.scale;
-    const y = F.cy + fig.y * F.scale;
-    const r = 15 * scale;
-    // Shadow.
-    ctx.fillStyle = 'rgba(4,6,12,0.4)';
-    ctx.beginPath(); ctx.ellipse(x, y + r * 0.9, r * 1.1, r * 0.4, 0, 0, TAU); ctx.fill();
-    // Telegraph flare: the windup you can read and dodge.
-    if (fig.tele > 0) {
-      ctx.strokeStyle = `rgba(255,180,80,${0.4 + 0.5 * Math.sin(F.stateT * 40)})`;
-      ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(x, y, r * 1.7, 0, TAU); ctx.stroke();
-    }
-    // Body.
-    ctx.fillStyle = fig.down > 0 ? '#3a3f4c' : tint;
-    ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.16)';
-    ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.55, 0, TAU); ctx.fill();
-    // Facing nub.
-    ctx.fillStyle = '#1d2230';
-    ctx.beginPath();
-    ctx.arc(x + Math.cos(fig.face) * r * 0.7, y + Math.sin(fig.face) * r * 0.7, r * 0.34, 0, TAU);
-    ctx.fill();
-    // Gloves: lead glove stretches out mid-swing.
-    const swingF = fig.swing > 0 ? 1 - Math.abs(fig.swing - 0.15) / 0.15 : 0;
-    const gl = r * (0.9 + swingF * 1.5);
-    for (const side of [-1, 1]) {
-      const ga = fig.face + side * 0.55;
-      ctx.fillStyle = fig.blockFlash > 0.2 && side === 1 ? '#ffe9b0' : '#c94b3c';
-      ctx.beginPath();
-      ctx.arc(x + Math.cos(ga) * gl, y + Math.sin(ga) * gl, r * 0.36, 0, TAU);
-      ctx.fill();
-    }
-    if (isHero) {
-      ctx.strokeStyle = 'rgba(123,255,212,0.8)';
+    // Beat pulse: a ring that breathes on the count.
+    const beatPhase = (s.beat % 1.2) / 1.2;
+    if (F.mode === 'fight') {
+      ctx.strokeStyle = `rgba(255,217,119,${(0.5 * (1 - beatPhase)).toFixed(3)})`;
       ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(x, y, r + 4, 0, TAU); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, 30 + beatPhase * 46, 0, Math.PI * 2); ctx.stroke();
     }
-    if (fig.down > 0) {
-      ctx.fillStyle = 'rgba(232,228,212,0.8)';
-      ctx.font = `bold ${Math.max(10, 13 * scale)}px Consolas, monospace`;
+
+    // The crowd: 52 heads around the ring, bobbing with the roar.
+    const crowdN = 52;
+    for (let k = 0; k < crowdN; k++) {
+      const a = (k / crowdN) * Math.PI * 2 + 0.35;
+      const r = 330 + ((k * 37) % 3) * 26;
+      const x = cx + Math.cos(a) * r * 1.25;
+      const y = cy + Math.sin(a) * r * 0.44 - 20;
+      if (y > H - 60) continue;
+      const bob = Math.sin(s.t * (2.4 + s.roar * 5) + k) * (2 + s.roar * 5);
+      ctx.fillStyle = k % 5 === 0 ? '#3a4254' : k % 3 === 0 ? '#4a3b50' : '#2e3440';
+      ctx.beginPath(); ctx.arc(x, y + bob, 6.4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,240,210,0.12)';
+      ctx.fillRect(x - 5, y + bob + 6, 10, 8);
+    }
+
+    if (F.mode === 'intro') {
       ctx.textAlign = 'center';
-      ctx.fillText('DOWN', x, y - r - 10);
+      ctx.font = `bold 42px ${MONO}`;
+      ctx.fillStyle = '#ff5a6e';
+      ctx.fillText('THE PIT', cx, cy - 140);
+      ctx.font = `bold 24px ${MONO}`;
+      ctx.fillStyle = '#e8ecf4';
+      ctx.fillText(s.opponent ? `FIGHT ${F.card + 1}/5 — ${s.opponent.name}` : '', cx, cy - 100);
+      return;
     }
+
+    if (F.mode === 'result') {
+      ctx.textAlign = 'center';
+      ctx.font = `bold 40px ${MONO}`;
+      ctx.fillStyle = s.purse > 0 ? '#7dffa4' : '#ff7a6e';
+      ctx.fillText(s.resultText ?? '', cx, cy - 150);
+      if (s.purse > 0) {
+        ctx.font = `bold 24px ${MONO}`;
+        ctx.fillStyle = '#ffd977';
+        ctx.fillText(`PURSE $${s.purse}`, cx, cy - 110);
+      }
+      ctx.font = `15px ${MONO}`;
+      ctx.fillStyle = 'rgba(220,225,240,0.85)';
+      ctx.fillText(s.advice ?? '', cx, cy + 140);
+      ctx.font = `13px ${MONO}`;
+      ctx.fillStyle = 'rgba(200,210,230,0.6)';
+      ctx.fillText(F.card < LADDER.length ? 'ENTER — next fight' : 'ENTER — climb out', cx, cy + 176);
+      drawFighters(ctx, cx, cy, true);
+      return;
+    }
+
+    if (F.mode === 'fight') drawFight(ctx, cx, cy, W, H);
+    if (F.mode === 'idle') {
+      ctx.textAlign = 'center';
+      ctx.font = `bold 30px ${MONO}`;
+      ctx.fillStyle = '#e8ecf4';
+      ctx.fillText('THE PIT', cx, cy - 140);
+      ctx.font = `15px ${MONO}`;
+      ctx.fillStyle = 'rgba(220,225,240,0.8)';
+      ctx.fillText(F.belt ? 'You hold the Coral Belt.' : `The card waits. Enter to climb back down.`, cx, cy - 100);
+    }
+
+    // Fight HUD: health, stamina, timer, fight card.
+    ctx.textAlign = 'left';
+    ctx.font = `bold 14px ${MONO}`;
+    ctx.fillStyle = '#e8ecf4';
+    ctx.fillText('RICO', 40, 44);
+    bar(ctx, 40, 52, 240, 14, s.php / 100, '#3dff7a');
+    bar(ctx, 40, 70, 240, 8, s.stamina / 100, '#ffd24a');
+    if (s.opponent) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = s.opponent.color;
+      ctx.fillText(s.opponent.name, W - 40, 44);
+      bar(ctx, W - 280, 52, 240, 14, s.ohp / s.omax, '#ff5a4a');
+    }
+    ctx.textAlign = 'center';
+    ctx.font = `bold 26px ${MONO}`;
+    ctx.fillStyle = s.timeLeft < 10 ? '#ff5a4a' : '#e8ecf4';
+    ctx.fillText(`${Math.max(0, Math.ceil(s.timeLeft))}`, cx, 52);
+    ctx.font = `12px ${MONO}`;
+    ctx.fillStyle = 'rgba(200,210,230,0.6)';
+    ctx.fillText(`CARD ${Math.min(F.card + 1, LADDER.length)}/5 · punch on the BEAT · step out of the RED · guard with ↓`, cx, H - 24);
+  };
+
+  function drawFight(ctx, cx, cy, W, H) {
+    // Telegraph flare: the whole ring flashes red on the wind-up.
+    if (s.oTelegraph >= 0) {
+      const urgency = 1 - s.oTelegraph / Math.max(0.01, s.opponent.telegraph);
+      ctx.fillStyle = `rgba(255,60,50,${(0.10 + urgency * 0.16).toFixed(3)})`;
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = `rgba(255,60,50,${(0.5 + urgency * 0.4).toFixed(3)})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(cx + s.ox, cy, 34 - urgency * 10, 0, Math.PI * 2); ctx.stroke();
+    }
+    drawFighters(ctx, cx, cy, false);
+    // Sparks.
+    ctx.fillStyle = '#ffd977';
+    for (const p of s.sparks) {
+      ctx.globalAlpha = clamp(p.life * 2.4, 0, 1);
+      ctx.fillRect(p.x, p.y, 3, 3);
+    }
+    ctx.globalAlpha = 1;
   }
 
-  function drawBars(ctx, W) {
-    const h = F.hero, f = F.foe;
-    const bw = 250;
-    const y = 64;
-    // Hero left.
-    bar(ctx, 40, y, bw, 16, h.hp / h.maxHp, '#3dff7a');
-    bar(ctx, 40, y + 20, bw * 0.66, 8, h.stam / 100, '#ffd977');
-    ctx.fillStyle = '#e9ecf4';
-    ctx.font = 'bold 13px Consolas, monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText('RICO', 40, y - 6);
-    // Foe right.
-    bar(ctx, W - 40 - bw, y, bw, 16, f.hp / f.maxHp, '#ff5a4a');
-    ctx.fillStyle = F.foe.def.tint;
-    ctx.textAlign = 'right';
-    ctx.fillText(F.foe.def.name, W - 40, y - 6);
+  function drawFighters(ctx, cx, cy, frozen) {
+    // Rico, fists up.
+    drawBoxer(ctx, cx + s.px, cy, '#e8ecf4', s.guard, s.punchT > 0.14, 1);
+    // The opponent, wound up while the flare burns.
+    const def = s.opponent;
+    if (def) {
+      const winding = s.oTelegraph >= 0;
+      drawBoxer(ctx, cx + s.ox, cy, def.color, false, winding, -1, def.name);
+    }
+    void frozen;
+  }
+
+  function drawBoxer(ctx, x, y, color, guard, punching, face, name) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.beginPath(); ctx.ellipse(0, 52, 16, 5, 0, 0, Math.PI * 2); ctx.fill();
+    // Legs in a boxer's stance.
+    ctx.fillStyle = '#23262e';
+    ctx.fillRect(-9, 26, 6, 28);
+    ctx.fillRect(4, 30, 6, 24);
+    // Torso.
+    ctx.fillStyle = color;
+    roundRectPath(ctx, -11, -10, 22, 40, 8); ctx.fill();
+    // Guarded gloves up high, or the punch extended.
+    ctx.fillStyle = '#c0392b';
+    const reach = punching ? 34 : guard ? 12 : 16;
+    const lift = guard || punching ? -6 : 2;
+    ctx.beginPath(); ctx.arc(face * (12 + reach), lift + 4, 6.4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(face * 10, -2, 6, 0, Math.PI * 2); ctx.fill();
+    // Head.
+    ctx.fillStyle = '#d9b091';
+    ctx.beginPath(); ctx.arc(0, -18, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#241a10';
+    ctx.beginPath(); ctx.arc(0, -20, 7, Math.PI, 0); ctx.fill();
+    if (name) {
+      ctx.fillStyle = 'rgba(220,225,240,0.65)';
+      ctx.font = `bold 11px ${MONO}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(name, 0, -34);
+    }
+    ctx.restore();
   }
 
   function bar(ctx, x, y, w, h, f, color) {
-    ctx.fillStyle = 'rgba(8,10,18,0.8)';
-    ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
-    ctx.fillStyle = '#1c2029';
+    ctx.fillStyle = 'rgba(8,10,16,0.8)';
     ctx.fillRect(x, y, w, h);
     ctx.fillStyle = color;
-    ctx.fillRect(x, y, w * clamp(f, 0, 1), h);
+    ctx.fillRect(x + 2, y + 2, Math.max(0, (w - 4) * clamp(f, 0, 1)), h - 4);
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x, y, w, h);
   }
 
-  function drawChrome(ctx, W, H) {
-    ctx.textAlign = 'center';
-    // Banner.
-    ctx.fillStyle = '#ffc042';
-    ctx.font = `bold ${Math.max(18, 26)}px Consolas, monospace`;
-    ctx.fillText('THE PIT BELOW', W / 2, 36);
-    ctx.fillStyle = 'rgba(232,228,212,0.7)';
-    ctx.font = '12px Consolas, monospace';
-    ctx.fillText('fight club — no cops, no refunds', W / 2, 50);
-
-    if (F.mode === 'lobby') {
-      const W2 = Math.min(520, W * 0.86);
-      const x0 = W / 2 - W2 / 2, y0 = H * 0.24;
-      ctx.fillStyle = 'rgba(8,10,18,0.82)';
-      ctx.fillRect(x0, y0, W2, 300);
-      ctx.strokeStyle = 'rgba(255,192,66,0.5)';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(x0, y0, W2, 300);
-      ctx.fillStyle = '#ffc042';
-      ctx.font = 'bold 17px Consolas, monospace';
-      ctx.textAlign = 'left';
-      ctx.fillText('TONIGHT’S CARD', x0 + 18, y0 + 28);
-      ctx.font = '13px Consolas, monospace';
-      LADDER.forEach((def, i) => {
-        const done = i < F.wins;
-        const next = i === F.ladder;
-        ctx.fillStyle = done ? 'rgba(123,255,212,0.75)' : next ? '#ffd977' : 'rgba(232,228,212,0.55)';
-        const y = y0 + 58 + i * 30;
-        ctx.fillText(`${done ? '✔' : next ? '▶' : '·'} ${def.name}`, x0 + 18, y);
-        ctx.textAlign = 'right';
-        ctx.fillText(`$${def.purse}`, x0 + W2 - 18, y);
-        ctx.textAlign = 'left';
-      });
-      ctx.fillStyle = 'rgba(232,228,212,0.75)';
-      ctx.textAlign = 'center';
-      const def = LADDER[Math.min(F.ladder, LADDER.length - 1)];
-      ctx.fillText(def.quip, W / 2, y0 + 236);
-      ctx.fillStyle = '#7bffd4';
-      ctx.font = 'bold 15px Consolas, monospace';
-      ctx.fillText(`SPACE — step in  ($${FEE} door fee)      BACKSPACE — leave`, W / 2, y0 + 270);
-    }
-
-    if (F.mode === 'fight' && F.stateT < 2.2) {
-      ctx.fillStyle = `rgba(255,217,119,${1 - F.stateT / 2.2})`;
-      ctx.font = 'bold 30px Consolas, monospace';
-      ctx.fillText(`${F.foe.def.name}`, W / 2, H * 0.2);
-      ctx.font = '15px Consolas, monospace';
-      ctx.fillText('SPACE punch   SHIFT guard   WASD move   dodge the flare', W / 2, H * 0.2 + 26);
-    }
-
-    if (F.mode === 'win') {
-      ctx.fillStyle = 'rgba(123,255,212,0.95)';
-      ctx.font = 'bold 42px Consolas, monospace';
-      ctx.fillText('KNOCKOUT', W / 2, H * 0.22);
-      ctx.font = 'bold 18px Consolas, monospace';
-      ctx.fillStyle = '#ffd977';
-      ctx.fillText(`+$${F.foe.def.purse} purse`, W / 2, H * 0.22 + 32);
-    }
-    if (F.mode === 'ko') {
-      ctx.fillStyle = 'rgba(255,90,74,0.95)';
-      ctx.font = 'bold 42px Consolas, monospace';
-      ctx.fillText('YOU ARE DOWN', W / 2, H * 0.22);
-      ctx.font = '15px Consolas, monospace';
-      ctx.fillStyle = 'rgba(232,228,212,0.8)';
-      ctx.fillText('The pit remembers. Come back heavier.', W / 2, H * 0.22 + 30);
-    }
-
-    // Corner coach: after a verdict the crowd gives one piece of advice for the
-    // next card, chosen off how the fight actually went.
-    if ((F.mode === 'win' || F.mode === 'ko') && F.hero) {
-      const tips = F.mode === 'win'
-        ? ['Corner man: “Good. Next one hits twice as hard.”',
-           'Corner man: “You telegraph the lead hand. Fix it upstairs.”',
-           'Crowd: “AGAIN! AGAIN!”']
-        : ['Corner man: “Guard earlier. You eat the first shot every time.”',
-           'Corner man: “Move your feet, the ropes are not a friend.”',
-           'Doc: “Hydrate. Come back with a plan.”'];
-      ctx.fillStyle = 'rgba(232,228,212,0.8)';
-      ctx.font = '13px Consolas, monospace';
-      ctx.fillText(tips[F.wins % tips.length], W / 2, H * 0.72);
-    }
-
-    if (F.noticeT > 0 && F.notice) {
-      ctx.globalAlpha = clamp(F.noticeT / 0.4, 0, 1);
-      ctx.fillStyle = '#ffd977';
-      ctx.font = 'bold 15px Consolas, monospace';
-      ctx.fillText(F.notice, W / 2, H - 64);
-      ctx.globalAlpha = 1;
-    }
-    // Belt bling for the champion.
-    if (F.belt) {
-      ctx.fillStyle = '#ffc042';
-      ctx.font = 'bold 12px Consolas, monospace';
-      ctx.textAlign = 'left';
-      ctx.fillText('★ CORAL BELT HOLDER', 16, H - 16);
-    }
+  function roundRectPath(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
   }
+
+  // ---------------------------------------------------------------- save
+
+  F.serialize = function () {
+    return { card: F.card, belt: F.belt, wins: F.wins, losses: F.losses, earned: Math.round(F.earned), best: s.best };
+  };
+
+  F.restore = function (d) {
+    if (!d) return;
+    F.card = clamp(Math.floor(d.card) || 0, 0, LADDER.length);
+    F.belt = !!d.belt;
+    F.wins = Math.max(0, Math.floor(d.wins) || 0);
+    F.losses = Math.max(0, Math.floor(d.losses) || 0);
+    F.earned = Math.max(0, Math.floor(d.earned) || 0);
+    s.best = typeof d.best === 'number' ? d.best : null;
+  };
 
   return F;
 }
