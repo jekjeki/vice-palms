@@ -1,529 +1,334 @@
-// missions.js — 6 chained story missions (Rico returns to Vice Palms) + 3 repeatable side missions
-import { CFG } from './config.js';
-import { dist, angleTo, clamp, rand, fmtMoney } from './util.js';
+// missions.js — 6 chained story missions (Rico returns to Vice Palms) + 3 repeatable
+// side gigs. Markers, stage machine, timers, fail/retry, payouts, subtitles.
+import { S, hooks, addMoney, say, toast, clamp, dist, Rng } from './core.js';
+import { world } from './world.js';
+import { makeCar, carSpeed } from './cars.js';
+import { addWanted, setWanted } from './police.js';
 
-export class Missions {
-  constructor(game) {
-    this.game = game;
-    this.storyIndex = 0;          // next story mission to offer
-    this.active = null;           // {def, data, timer, phase}
-    this.markers = [];            // mission pickup/target markers
-    this.sideCooldown = {};
-    this.endings = 0;
-  }
+const SIDES = {
+  taxi: {
+    name: 'Fare Rush', giver: { x: 4300, y: 2700 }, blip: '#39c8ff', repeat: true,
+    intro: 'FARE RUSH — pick up 3 fares around town before the meters run out.',
+    stages: [
+      { k: 'goto', x: 3900, y: 1150, r: 55, secs: 70, text: 'Pick up the fare at the docks gate.', drop: { x: 3060, y: 3350, r: 55, secs: 80, text: 'Drop the fare downtown.' } },
+      { k: 'goto', x: 5300, y: 1000, r: 55, secs: 95, text: 'Fare to Palm Airfield, and step on it.', drop: { x: 2450, y: 2750, r: 55, secs: 100, text: 'Drop the fare at Palm Park.' } },
+      { k: 'goto', x: 1100, y: 3550, r: 55, secs: 110, text: 'Last fare: the westside motels.', drop: { x: 2050, y: 4072, r: 55, secs: 110, text: 'Drop them at the Palms Hotel.' } },
+    ],
+    payout: 420,
+  },
+  post: {
+    name: 'Express Post', giver: { x: 900, y: 1050 }, blip: '#39c8ff', repeat: true,
+    intro: 'EXPRESS POST — grab 3 parcels and run them to the airfield hangar.',
+    stages: [
+      { k: 'collect', items: [{ x: 620, y: 470 }, { x: 1500, y: 950 }, { x: 350, y: 980 }], secs: 210, text: 'Collect the parcels in the docklands.' },
+      { k: 'goto', x: 4900, y: 1150, r: 60, secs: 150, needCar: true, text: 'Deliver the parcels to Hangar 1 at Palm Airfield.' },
+    ],
+    payout: 600,
+  },
+  rampage: {
+    name: 'Beach Rampage', giver: { x: 3500, y: 4240 }, blip: '#ff7a2a', repeat: true,
+    intro: 'BEACH RAMPAGE — wreck 6 vehicles in 90 seconds. The heat is ON.',
+    stages: [{ k: 'rampage', secs: 90, kills: 6, wanted: 2, text: 'Wreck 6 vehicles!' }],
+    payout: 800,
+  },
+};
 
-  // ---------- marker helpers ----------
-  addMarker(x, y, opts = {}) {
-    const m = { x, y, r: opts.r ?? CFG.MISSION_MARKER_R, color: opts.color ?? '#ffd166', label: opts.label ?? '', kind: opts.kind ?? 'pickup', id: opts.id ?? ('m' + Math.random().toString(36).slice(2, 7)) };
-    this.markers.push(m);
-    return m;
-  }
-  clearMarkers() { this.markers.length = 0; }
-
-  // called every frame
-  update(dt) {
-    const game = this.game, p = game.player;
-    // standing in the story pickup marker starts the next mission
-    if (!this.active && this.storyIndex < STORY.length) {
-      const m = this.storyMarker();
-      if (m && dist(p.x, p.y, m.x, m.y) < m.r && (!p.inCar || m.allowCar)) this.startStory(this.storyIndex);
-    }
-    // side mission pickups
-    for (const def of SIDES) {
-      if (this.active || this.storyIndex < def.after || this.sideCooldown[def.id] > game.t) continue;
-      if (dist(p.x, p.y, def.x, def.y) < 30) {
-        this.startSide(def);
-        if (game.dialogue) game.dialogue.play(def.id, true);
-      }
-    }
-
-    if (this.active) {
-      const m = this.active;
-      if (m.timer !== null && m.timer !== undefined) {
-        m.timer -= dt;
-        if (m.timer <= 0) { this.fail('Out of time'); return; }
-      }
-      const res = m.def.update(game, m, dt);
-      if (res === 'complete') this.complete();
-      else if (res === 'fail') this.fail(m.def.failHint || 'Mission failed');
-    }
-  }
-
-  storyMarker() {
-    const def = STORY[this.storyIndex];
-    if (!def) return null;
-    let m = this.markers.find((k) => k.id === 'story');
-    if (!m || m.x !== def.x || m.y !== def.y) {
-      this.markers = this.markers.filter((k) => k.id !== 'story');
-      m = this.addMarker(def.x, def.y, { id: 'story', color: '#ff5da2', label: def.name, allowCar: def.allowCar });
-    }
-    return m;
-  }
-
-  refreshSideMarkers() {
-    const game = this.game;
-    this.markers = this.markers.filter((m) => m.id === 'story' || m.id.startsWith('obj'));
-    for (const def of SIDES) {
-      if (this.storyIndex >= def.after && !this.active) {
-        this.markers.push({ x: def.x, y: def.y, r: 30, color: '#00e5ff', label: def.name, kind: 'side', id: 'side:' + def.id });
-      }
-    }
-  }
-
-  // ---------- lifecycle ----------
-  startStory(idx) {
-    const game = this.game;
-    const def = STORY[idx];
-    this.clearMarkers();
-    this.active = { def, data: {}, timer: def.timer ?? null, idx, story: true };
-    def.start(game, this.active);
-    game.hud.banner(def.name, def.brief);
-    game.audio?.missionStart?.();
-    game.dialogue?.play(def.id, true);
-  }
-
-  startSide(def) {
-    const game = this.game;
-    this.clearMarkers();
-    this.active = { def: { ...def, story: false }, data: {}, timer: def.timer ?? null, idx: -1, story: false };
-    def.start(game, this.active);
-    game.hud.banner(def.name, def.brief);
-    game.audio?.missionStart?.();
-  }
-
-  complete() {
-    const game = this.game;
-    const m = this.active;
-    if (!m) return;
-    if (!m.story && game.dialogue) {
-      const lines = {
-        delivery: 'DISPATCH: "All five. The boxes were, uh, decorative. Don\'t ask."',
-        taxi: 'DISPATCH: "Three fares, zero complaints. You are the city now."',
-        sweep: 'DISPATCH: "Gang\'s on foot. Walking is healthier anyway."',
-        heatrun: 'DISPATCH: "Forty-five seconds of pure legend. Well done."',
-        pilotrun: 'DISPATCH: "The pilot saluted. He was drunk, but still."',
-        vicegp: 'ORGANIZER: "Eight corners. Even the cops clapped. From a distance."',
-      }[m.def.id];
-      if (lines) game.hud.subtitle(lines, 4);
-    }
-    let reward = m.def.reward;
-    // timed missions pay a speed bonus
-    if (m.timer !== null && m.timer !== undefined && m.timer > 0 && m.def.timer) {
-      const bonus = Math.round(m.def.reward * 0.4 * clamp(m.timer / m.def.timer, 0, 1));
-      if (bonus > 0) {
-        reward += bonus;
-        game.hud.toast('Time bonus +' + '$' + bonus);
-      }
-    }
-    game.player.money += reward;
-    game.hud.banner('MISSION PASSED', 'Respect+  ' + fmtMoney(reward));
-    game.audio?.missionDone?.();
-    if (m.story && game.dialogue) game.dialogue.play(m.def.id + '_done', true);
-    m.def.cleanup?.(game, m);
-    this.active = null;
-    if (m.story) {
-      this.storyIndex = m.idx + 1;
-      if (this.storyIndex >= STORY.length) { this.endings++; game.onGameFinished?.(); }
-    }
-    this.clearMarkers();
-    this.refreshSideMarkers();
-    game.save?.();
-  }
-
-  fail(reason) {
-    const game = this.game;
-    const m = this.active;
-    if (!m) return;
-    game.hud.banner('MISSION FAILED', reason);
-    game.audio?.missionFail?.();
-    m.def.cleanup?.(game, m);
-    this.active = null;
-    this.clearMarkers();
-    this.refreshSideMarkers();
-  }
-
-  // hooks from player/game
-  onEnterCar(game, car) {
-    const m = this.active;
-    if (m && m.def.onEnterCar) m.def.onEnterCar(game, m, car);
-  }
-  onExitCar(game, car) {
-    const m = this.active;
-    if (m && m.def.onExitCar) m.def.onExitCar(game, m, car);
-  }
-  onCarExploded(game, car) {
-    const m = this.active;
-    if (m && m.def.onCarExploded) m.def.onCarExploded(game, m, car);
-  }
-  onPickupTouched(game, m2) {
-    const m = this.active;
-    if (m && m.def.onPickupTouched) m.def.onPickupTouched(game, m, m2);
-  }
-
-  serialize() { return { storyIndex: this.storyIndex, endings: this.endings }; }
-  deserialize(d) { if (d) { this.storyIndex = d.storyIndex ?? 0; this.endings = d.endings ?? 0; } this.refreshSideMarkers(); }
-}
-
-// ---------- helpers shared by mission defs ----------
-function markerObj(game, x, y, opts) { return game.missions.addMarker(x, y, opts); }
-function clearObjMarkers(game) { game.missions.markers = game.missions.markers.filter((m) => m.id === 'story' || m.kind === 'side'); }
-
-function distToPlayer(game, x, y) {
-  const p = game.player;
-  return dist(p.x, p.y, x, y);
-}
-
-// spawn an NPC-driven car driving somewhere
-function npcCar(game, type, x, y, dest, speed = 0.9) {
-  const car = game.addCar(type, x, y, 0);
-  car.driver = 'ai';
-  car.ai = { drive(c, g, dt) {
-    const aim = angleTo(c.x, c.y, dest.x, dest.y);
-    const err = Math.atan2(Math.sin(aim - c.h), Math.cos(aim - c.h));
-    return { t: dist(c.x, c.y, dest.x, dest.y) > 40 ? speed : 0, s: clamp(err * 1.4, -1, 1) };
-  } };
-  return car;
-}
-
-// =====================================================================
-// STORY — Rico returns to Vice Palms
-// =====================================================================
 const STORY = [
   {
-    id: 'm1', name: "RICO'S CALL", brief: 'Rico is back in town. Meet him at the marina.',
-    x: 1020, y: CFG.SAND_S - 26, reward: 150, allowCar: false,
-    start(game, m) {
-      m.step = 0;
-      markerObj(game, game.world.pois.marina.x, game.world.pois.marina.y, { id: 'obj', color: '#ffd166', label: 'Rico' });
-      game.hud.subtitle('RICO: "Baby! I kept the keys warm. Marina, north end — and hurry, the tide waits for nobody."', 5);
-    },
-    update(game, m, dt) {
-      if (distToPlayer(game, game.world.pois.marina.x, game.world.pois.marina.y) < 40) {
-        game.hud.subtitle('RICO: "Still the fastest thing on sand, kid. Now earn it."', 4);
-        return 'complete';
-      }
-      return 'active';
-    },
+    id: 'm1', name: 'Welcome Back to Vice Palms', giver: { x: 2050, y: 4072 }, payout: 500,
+    stages: [
+      { k: 'goto', x: 2050, y: 4072, r: 48, text: 'Meet Rico at the Palms Hotel on Ocean Drive.' },
+      { k: 'wait', secs: 4.5, text: 'RICO: Little brother! Vice Palms got rich and ugly while you were away.' },
+      { k: 'wait', secs: 4.5, text: 'RICO: The docks crew jacked my shipment. Drive us to the pier office — and no wrong turns.' },
+      { k: 'goto', x: 1620, y: 800, r: 62, needCar: true, text: 'Drive Rico to the pier office in the North Docks.' },
+    ],
+    outro: 'RICO: Good to have you back. First cut — spend it loud.',
   },
   {
-    id: 'm2', name: 'HOT WHEELS', brief: 'Boost the marked cab at the docks, deliver it to Palm Garage. 90s.',
-    x: 680, y: 2210, reward: 300, timer: 90,
-    start(game, m) {
-      const car = game.addCar('taxi', 900, 560, 0);
-      car.marker = 'target';
-      m.data.car = car;
-      markerObj(game, 900, 560, { id: 'obj', color: '#ffd166', label: 'Cab' });
-      game.hud.subtitle('RICO: "One cab, freshly borrowed. Garage on 8th. Scratch it and I dock your cut."', 5);
-    },
-    onEnterCar(game, m, car) {
-      if (car === m.data.car) { m.data.has = true; clearObjMarkers(game); markerObj(game, game.world.pois.garage.x, game.world.pois.garage.y, { id: 'obj', color: '#ffd166', label: 'Garage' }); }
-    },
-    onCarExploded(game, m, car) { if (car === m.data.car) m.def.failHint = 'You totalled the cab'; },
-    update(game, m, dt) {
-      if (m.data.has && m.data.car.state !== 'wreck' && distToPlayer(game, game.world.pois.garage.x, game.world.pois.garage.y) < 46 && game.player.inCar === m.data.car) {
-        game.hud.subtitle('RICO: "Beautiful. It still has both bumpers."', 4);
-        return 'complete';
-      }
-      if (!m.data.has && m.data.car.state === 'wreck') { m.def.failHint = 'The cab is scrap'; return 'fail'; }
-      return 'active';
-    },
-    cleanup(game, m) { if (m.data.car && m.data.car.state !== 'wreck' && game.player.inCar !== m.data.car) m.data.car.despawn = true; },
+    id: 'm2', name: 'Pier Pressure', giver: { x: 1620, y: 800 }, payout: 750,
+    stages: [
+      { k: 'goto', x: 1000, y: 640, r: 60, text: "Rico's Cheetah GT is stashed in the container yard. Find it." },
+      { k: 'enterTag', tag: 'cheetah', text: 'Steal the Cheetah GT.', onEnter: 'wanted1' },
+      { k: 'goto', x: 2280, y: 1350, r: 60, needCar: true, secs: 150, text: 'Deliver it to the garage downtown. The dock crew tipped off the cops!', carTag: 'cheetah' },
+    ],
+    outro: 'RICO: Shiny. The crew will be furious — perfect.',
   },
   {
-    id: 'm3', name: 'COURIER RUN', brief: 'Grab 4 packages on the docks. Heat rises with every pickup.',
-    x: 2380, y: 2896, reward: 450,
-    start(game, m) {
-      m.data.got = 0;
-      m.data.spots = [[600, 340], [1520, 320], [2450, 400], [3300, 360]];
-      m.data.idx = 0;
-      this.nextSpot(game, m);
-      game.hud.subtitle('RICO: "Four crates on the piers. Grab and go — dock security hates fun."', 5);
-    },
-    nextSpot(game, m) {
-      clearObjMarkers(game);
-      const [x, y] = m.data.spots[m.data.idx];
-      markerObj(game, x, y, { id: 'obj', color: '#8cff5d', label: 'Package' });
-      game.addPickup(x, y, 'package');
-    },
-    onPickupTouched(game, m, pk) {
-      if (pk.kind !== 'package') return;
-      m.data.got++;
-      m.data.idx++;
-      game.police.addWanted(1, 'trespass');
-      game.hud.toast(`Package ${m.data.got}/4`);
-      if (m.data.got >= 4) {
-        clearObjMarkers(game);
-        markerObj(game, game.world.pois.beachhut.x, game.world.pois.beachhut.y, { id: 'obj', color: '#ffd166', label: 'Rico' });
-      } else this.nextSpot(game, m);
-    },
-    update(game, m, dt) {
-      if (m.data.got >= 4 && distToPlayer(game, game.world.pois.beachhut.x, game.world.pois.beachhut.y) < 44) {
-        game.hud.subtitle('RICO: "You smell like diesel and destiny."', 4);
-        return 'complete';
-      }
-      return 'active';
-    },
+    id: 'm3', name: 'Neon Run', giver: { x: 3060, y: 2700 }, payout: 1000,
+    stages: [
+      { k: 'goto', x: 3060, y: 2700, r: 70, needCar: true, text: 'Bring any car to the starting line downtown.' },
+      { k: 'checkpoints', pts: [
+        { x: 1900, y: 700 }, { x: 4700, y: 700 }, { x: 5900, y: 2300 },
+        { x: 5100, y: 3900 }, { x: 3500, y: 4150 }, { x: 2700, y: 2700 },
+      ], r: 58, secs: 260, text: 'Hit every neon checkpoint. Clock is running!' },
+    ],
+    outro: 'RICO: Fastest thing on Ocean Drive, little brother!',
   },
   {
-    id: 'm4', name: 'CONVOY BUSTER', brief: 'Two trucks leave the docks for the airfield. Stop BOTH. 100s.',
-    x: 460, y: 430, reward: 600, timer: 100,
-    start(game, m) {
-      game.police.addWanted(2, 'contract');
-      m.data.trucks = [];
-      const spots = [[700, 320, 'E'], [2800, 320, 'E']];
-      for (const [x, y] of spots) {
-        const car = game.addCar('truck', x, y, 0);
-        car.driver = 'ai';
-        car.marker = 'target';
-        car.ai = { drive(c, g, dt) {
-          const aim = angleTo(c.x, c.y, CFG.AIR_W + 200, 1980);
-          const err = Math.atan2(Math.sin(aim - c.h), Math.cos(aim - c.h));
-          return { t: 1, s: clamp(err * 1.1, -1, 1) };
-        } };
-        m.data.trucks.push(car);
-      }
-      game.hud.subtitle('RICO: "Two trucks of laundered plates rolling east. Wreck them before they reach the strip."', 5);
-    },
-    onCarExploded(game, m, car) {
-      const i = m.data.trucks.indexOf(car);
-      if (i >= 0) { m.data.trucks.splice(i, 1); game.hud.toast('Truck down! 1 to go'); }
-    },
-    update(game, m, dt) {
-      for (const t of m.data.trucks) if (t.x > CFG.AIR_W - 60) { m.def.failHint = 'A truck made it through'; return 'fail'; }
-      if (m.data.trucks.length === 0) { game.hud.subtitle('RICO: "Crispy. I love crispy."', 4); return 'complete'; }
-      return 'active';
-    },
-    cleanup(game, m) { for (const t of m.data.trucks) if (t.state !== 'wreck') t.despawn = true; },
+    id: 'm4', name: 'Package Deal', giver: { x: 2050, y: 4072 }, payout: 1500,
+    stages: [
+      { k: 'collect', items: [
+        { x: 800, y: 700, tag: 'dock' }, { x: 2690, y: 2700, tag: 'park' },
+        { x: 5100, y: 560, tag: 'air' }, { x: 4200, y: 4260, tag: 'beach' },
+      ], secs: 300, text: 'Collect all 4 packages. After the second one the cops get curious.' },
+      { k: 'goto', x: 5340, y: 4072, r: 62, text: 'Deliver the packages to the beach house.' },
+    ],
+    outro: 'RICO: Clean. This city is starting to bend for us.',
   },
   {
-    id: 'm5', name: 'THE HEIST', brief: 'Lift the briefcase from Airfield Hangar 2, then vanish to the safehouse.',
-    x: 680, y: 2210, reward: 800,
-    start(game, m) {
-      m.data.step = 0;
-      markerObj(game, CFG.AIR_W + 420, 1500, { id: 'obj', color: '#c77dff', label: 'Hangar 2' });
-      game.hud.subtitle('RICO: "Hangar 2. Grab the case, do NOT open it, and disappear."', 5);
-    },
-    update(game, m, dt) {
-      if (m.data.step === 0 && distToPlayer(game, CFG.AIR_W + 420, 1500) < 60) {
-        m.data.step = 1;
-        game.police.addWanted(3, 'heist');
-        game.player.carryCase = true;
-        clearObjMarkers(game);
-        markerObj(game, game.world.pois.safehouse.x, game.world.pois.safehouse.y, { id: 'obj', color: '#ffd166', label: 'Safehouse' });
-        game.hud.subtitle('RICO: "That alarm was loud, baby. LOUD. Drive"', 4);
-        game.audio?.alarm?.();
-      }
-      if (m.data.step === 1 && game.player.carryCase && distToPlayer(game, game.world.pois.safehouse.x, game.world.pois.safehouse.y) < 44) {
-        game.player.carryCase = false;
-        game.hud.subtitle('RICO: "Perfect. You are officially a Vice Palms problem."', 4);
-        return 'complete';
-      }
-      return 'active';
-    },
+    id: 'm5', name: 'Airfield Bust', giver: { x: 2280, y: 1350 }, payout: 2000,
+    stages: [
+      { k: 'goto', x: 5300, y: 1000, r: 90, needCar: true, text: "Rival crew is squatting on Palm Airfield. Drive out and bust it up." },
+      { k: 'destroy', spawn: [
+        { type: 'muscle', x: 4900, y: 900 }, { type: 'muscle', x: 5600, y: 950 }, { type: 'sports', x: 5200, y: 1250 },
+      ], secs: 90, text: 'Destroy all 3 rival cars on the tarmac.' },
+      { k: 'survive', secs: 25, wanted: 3, text: 'Their friends called the cops. Survive 25 seconds!' },
+    ],
+    outro: 'RICO: Airfield is ours. That runway prints money now.',
   },
   {
-    id: 'm6', name: "LAST DEAL", brief: 'Marco stole our cut. His coupe is at the marina — end it.',
-    x: 3060, y: 1196, reward: 1500,
-    start(game, m) {
-      const car = game.addCar('sport', 560, 480, 0);
-      car.color = '#1d2a4a';
-      car.marker = 'target';
-      car.driver = 'ai';
-      m.data.car = car;
-      m.data.fleeing = false;
-      markerObj(game, 560, 480, { id: 'obj', color: '#ff4a4a', label: 'Marco' });
-      game.hud.subtitle('RICO: "Marco skimmed TWO YEARS of our cut. His coupe idles at the marina."', 5);
-    },
-    update(game, m, dt) {
-      const car = m.data.car;
-      if (!m.data.fleeing && distToPlayer(game, car.x, car.y) < 260) {
-        m.data.fleeing = true;
-        clearObjMarkers(game);
-        car.ai = { drive(c, g, dt) {
-          const p = g.player;
-          const aim = angleTo(c.x, c.y, p.x, p.y) + Math.PI;
-          const err = Math.atan2(Math.sin(aim - c.h), Math.cos(aim - c.h));
-          return { t: 1, s: clamp(err * 1.3, -1, 1) };
-        } };
-        game.hud.toast('Marco is running!');
-        game.police.addWanted(2, 'chase');
-      }
-      if (m.data.fleeing && (car.state === 'fire' || car.state === 'wreck')) {
-        game.hud.subtitle('RICO: "...and THAT is why you never skim, kids."', 5);
-        game.onGameFinished?.();
-        return 'complete';
-      }
-      if (car.state === 'wreck' && !m.data.fleeing) return 'complete';
-      return 'active';
-    },
-    cleanup(game, m) { if (m.data.car && m.data.car.state === 'drive') m.data.car.despawn = true; },
+    id: 'm6', name: 'The Vice Palms Job', giver: { x: 1900, y: 700 }, payout: 5000, finale: true,
+    stages: [
+      { k: 'goto', x: 1300, y: 900, r: 85, needCar: true, text: 'One last job. The convoy parks at Pier 2 at midnight. Go take it.' },
+      { k: 'enterTag', tag: 'convoy', text: 'Steal the Phoenix V8 from the convoy.', onEnter: 'wanted1', spawn: [{ type: 'muscle', x: 1300, y: 900, tag: 'convoy', color: '#c83020' }] },
+      { k: 'survive', secs: 45, wanted: 4, text: 'RICO: Drive! I clear the cargo in 45 — just lose the heat!' },
+      { k: 'goto', x: 5340, y: 4072, r: 62, needCar: true, text: 'Deliver the take to the beach house.' },
+    ],
+    outro: 'RICO: Vice Palms is ours, little brother. Ours.',
   },
 ];
 
-// =====================================================================
-// SIDE MISSIONS — repeatable
-// =====================================================================
-const SIDES = [
-  {
-    id: 'delivery', name: 'PALM DELIVERY', brief: 'Drop 5 packages at neon markers. 120s. $60 each.',
-    x: 1020, y: CFG.SAND_S - 26, after: 1, reward: 300, timer: 120,
-    start(game, m) {
-      m.data.left = 5;
-      m.data.drops = [];
-      for (let i = 0; i < 5; i++) m.data.drops.push([500 + rand(0, 3600) | 0, 900 + rand(0, 2400) | 0]);
-      this.next(game, m);
-      game.hud.subtitle('DISPATCH: "Five drops, five minutes, five fifties. Go."', 4);
-    },
-    next(game, m) {
-      clearObjMarkers(game);
-      const [x, y] = m.data.drops[5 - m.data.left];
-      markerObj(game, x, y, { id: 'obj', color: '#00e5ff', label: 'Drop ' + (6 - m.data.left) });
-    },
-    update(game, m, dt) {
-      const p = game.player;
-      const mk = game.missions.markers.find((k) => k.id === 'obj');
-      if (mk && dist(p.x, p.y, mk.x, mk.y) < mk.r + 8) {
-        m.data.left--;
-        game.player.money += 60;
-        game.audio?.missionTick?.();
-        game.hud.toast('Delivered! $60');
-        if (m.data.left <= 0) return 'complete';
-        this.next(game, m);
-      }
-      return 'active';
-    },
-  },
-  {
-    id: 'taxi', name: 'TAXI FARE', brief: 'Fares need rides. Pick up 3 cabbies in your cab. $100 each.',
-    x: 1700, y: 2725, after: 2, reward: 300,
-    start(game, m) {
-      m.data.left = 3;
-      m.data.needCab = true;
-      this.next(game, m);
-      game.hud.subtitle('DISPATCH: "Three fares. Meter running, heart racing."', 4);
-    },
-    next(game, m) {
-      clearObjMarkers(game);
-      const x = 400 + rand(0, 3600) | 0, y = 700 + rand(0, 2600) | 0;
-      m.data.dest = [x, y];
-      markerObj(game, x, y, { id: 'obj', color: '#ffd166', label: 'Fare' });
-    },
-    onEnterCar(game, m, car) { m.data.cab = car.type === 'taxi' ? car : m.data.cab; },
-    update(game, m, dt) {
-      const p = game.player;
-      if (!p.inCar || p.inCar.type !== 'taxi') return 'active';
-      const mk = game.missions.markers.find((k) => k.id === 'obj');
-      if (!mk) return 'active';
-      if (m.data.pickingUp && dist(p.x, p.y, mk.x, mk.y) < mk.r + 6 && p.inCar.speed < 40) {
-        m.data.pickingUp = false;
-        clearObjMarkers(game);
-        markerObj(game, m.data.dest[0], m.data.dest[1], { id: 'obj', color: '#ffd166', label: 'Destination' });
-        m.data.hauling = true;
-      } else if (m.data.hauling && dist(p.x, p.y, mk.x, mk.y) < mk.r + 10 && p.inCar.speed < 40) {
-        m.data.hauling = false;
-        m.data.left--;
-        game.player.money += 100;
-        game.audio?.missionTick?.();
-        game.hud.toast('Fare paid! $100');
-        if (m.data.left <= 0) return 'complete';
-        this.next(game, m);
-      }
-      return 'active';
-    },
-    onExitCar() {},
-  },
-  {
-    id: 'sweep', name: 'STREET SWEEP', brief: '3 gang coupes prowl Vice Palms. Wreck them all. 90s.',
-    x: 3060, y: 1196, after: 3, reward: 450, timer: 90,
-    start(game, m) {
-      m.data.cars = [];
-      const spots = [[1200, 1500], [2600, 2300], [3600, 1200]];
-      for (const [x, y] of spots) {
-        const car = game.addCar('coupe', x, y, rand(0, 6.28));
-        car.color = '#3d1f2e';
-        car.marker = 'gang';
-        car.driver = 'ai';
-        car.ai = { drive(c, g, dt) {
-          const p = g.player;
-          const aim = angleTo(c.x, c.y, p.x, p.y) + Math.PI * 0.7;
-          const err = Math.atan2(Math.sin(aim - c.h), Math.cos(aim - c.h));
-          return { t: 0.85, s: clamp(err * 1.2, -1, 1) };
-        } };
-        m.data.cars.push(car);
-      }
-      game.hud.subtitle('DISPATCH: "Gang coupes are shaking down the strip. Unshake them."', 4);
-    },
-    onCarExploded(game, m, car) {
-      const i = m.data.cars.indexOf(car);
-      if (i >= 0) { m.data.cars.splice(i, 1); game.hud.toast('Gang car wrecked! ' + m.data.cars.length + ' left'); }
-    },
-    update(game, m, dt) {
-      if (m.data.cars.length === 0) return 'complete';
-      return 'active';
-    },
-    cleanup(game, m) { for (const c of m.data.cars) if (c.state === 'drive') c.despawn = true; },
-  },
-  {
-    id: 'heatrun', name: 'HEAT RUN', brief: 'Survive 45 seconds at 3 stars without WASTED or BUSTED. $600.',
-    x: 1386, y: 1700, after: 4, reward: 600, timer: 45,
-    start(game, m) {
-      game.police.addWanted(3, 'heat-run');
-      m.data.started = true;
-      game.hud.subtitle('DISPATCH: "You wanted a chase? Keep it alive for 45 seconds."', 4);
-    },
-    update(game, m, dt) {
-      if (game.police.wanted <= 0) { m.def.failHint = 'You lost the heat too early'; return 'fail'; }
-      return 'active';
-    },
-    cleanup(game, m) { if (m.def.failHint) game.police.clear(); },
-  },
-  {
-    id: 'pilotrun', name: 'PILOT RUN', brief: 'Delivery for a pilot: reach Hangar 3 in 60 seconds. $400.',
-    x: 3060, y: 1720, after: 5, reward: 400, timer: 60,
-    start(game, m) {
-      markerObj(game, CFG.AIR_W + 420, 1500, { id: 'obj', color: '#00e5ff', label: 'Hangar 3' });
-      game.hud.subtitle('DISPATCH: "Charts in the glovebox. Hangar 3, west gate. 60 seconds."', 4);
-    },
-    update(game, m, dt) {
-      if (distToPlayer(game, CFG.AIR_W + 420, 1500) < 70) {
-        game.hud.subtitle('PILOT: "Damn, you fly low but you fly fast."', 4);
-        return 'complete';
-      }
-      return 'active';
-    },
-  },
-  {
-    id: 'vicegp', name: 'VICE GP', brief: 'Unofficial street race: 8 checkpoints around downtown. $100 per lap.',
-    x: 2404, y: 1046, after: 6, reward: 800,
-    start(game, m) {
-      m.data.checkpoints = [
-        [2735, 1360], [2395, 1020], [1360, 1020], [695, 1360],
-        [695, 2040], [1360, 2395], [2040, 2395], [2400, 1060],
-      ];
-      m.data.idx = 0;
-      this.next(game, m);
-      game.hud.subtitle('RACE ORGANIZER: "Eight corners, no rules, no insurance. GO!"', 4);
-      game.police.addWanted(1, 'street-race');
-    },
-    next(game, m) {
-      clearObjMarkers(game);
-      const [x, y] = m.data.checkpoints[m.data.idx];
-      markerObj(game, x, y, { id: 'obj', color: '#8cff5d', label: 'CP ' + (m.data.idx + 1) + '/8' });
-    },
-    update(game, m, dt) {
-      const mk = game.missions.markers.find((k) => k.id === 'obj');
-      if (!mk) return 'active';
-      if (distToPlayer(game, mk.x, mk.y) < mk.r + 10) {
-        m.data.idx++;
-        game.audio?.missionTick?.();
-        game.player.money += 100;
-        if (m.data.idx >= m.data.checkpoints.length) return 'complete';
-        this.next(game, m);
-      }
-      return 'active';
-    },
-  },
-];
+// ---------------------------------------------------------------- engine
+export function initMissions() {
+  S.mission = { active: null, side: null, index: 0, done: [], banner: null, bannerT: 0, blip: null, sideBlip: null };
+}
 
-export const STORY_COUNT = STORY.length;
-export const SIDE_LIST = SIDES;
+export function nextStory() { return S.mission.index < STORY.length ? STORY[S.mission.index] : null; }
+
+export function markers() {
+  const out = [];
+  const st = nextStory();
+  if (st && !S.mission.active) out.push({ x: st.giver.x, y: st.giver.y, kind: 'story', name: st.name });
+  if (!S.mission.active && !S.mission.side) {
+    for (const key of Object.keys(SIDES)) out.push({ x: SIDES[key].giver.x, y: SIDES[key].giver.y, kind: 'side', name: SIDES[key].name, key });
+  }
+  return out;
+}
+
+export function update(dt) {
+  // banner lifetime
+  if (S.mission.banner) { S.mission.bannerT -= dt; if (S.mission.bannerT <= 0) S.mission.banner = null; }
+
+  // check giver markers (only when idle)
+  if (!S.mission.active && !S.mission.side && !S.player.dead) {
+    const p = S.player;
+    const st = nextStory();
+    if (st && dist(p.x, p.y, st.giver.x, st.giver.y) < 46) startStory(st);
+    else if (st === null) { /* story complete */ }
+    else {
+      for (const [key, def] of Object.entries(SIDES)) {
+        if (dist(p.x, p.y, def.giver.x, def.giver.y) < 46) { startSide(key, def); break; }
+      }
+    }
+  }
+
+  if (S.mission.active) runMission(S.mission.active, dt, false);
+  if (S.mission.side) runMission(S.mission.side, dt, true);
+}
+
+function startStory(def) {
+  S.mission.active = { def, si: -1, timer: 0, spawned: [], kills: 0, got: 0, tag: null, stageT: 0 };
+  say(`${def.name.toUpperCase()} — ${def.stages[0].text}`, 6);
+  S.sfx.push({ name: 'mission', x: S.player.x, y: S.player.y });
+  nextStage(S.mission.active);
+}
+
+function startSide(key, def) {
+  S.mission.side = { def, si: -1, timer: 0, spawned: [], kills: 0, got: 0, tag: null, stageT: 0, key };
+  say(def.intro, 6);
+  S.sfx.push({ name: 'mission', x: S.player.x, y: S.player.y });
+  nextStage(S.mission.side);
+}
+
+function nextStage(m) {
+  m.si++;
+  const st = m.def.stages[m.si];
+  if (!st) { complete(m); return; }
+  m.stageT = st.secs ?? 0;
+  m.spawnedThisStage = false;
+  if (st.text) say(st.text, 5.5);
+  if (st.wanted) setWanted(st.wanted);
+  if (st.onEnter === 'wanted1') setWanted(Math.max(1, S.wanted + 1));
+  // spawn listed vehicles once
+  if (st.spawn) for (const sp of st.spawn) {
+    const car = makeCar(sp.type, sp.x, sp.y, sp.ang ?? Math.PI / 2, { color: sp.color, ai: null, missionTag: sp.tag || m.def.id });
+    m.spawned.push(car);
+  }
+  // mission-tagged target car for enterTag stages (m2 cheetah pre-spawned here)
+  if (st.k === 'enterTag' && !st.spawn) {
+    const car = makeCar('sports', 1000, 640, 0.3, { color: '#20c8e8', ai: null, missionTag: st.tag });
+    m.spawned.push(car);
+  }
+  // blip target
+  updateBlip(m);
+}
+
+function updateBlip(m) {
+  const st = m.def.stages[m.si];
+  if (!st) { m.blip = null; return; }
+  if (st.k === 'checkpoints') m.blip = { x: st.pts[m.got].x, y: st.pts[m.got].y };
+  else if (st.k === 'collect') { const it = st.items[m.got]; m.blip = it ? { x: it.x, y: it.y } : null; }
+  else if (st.k === 'destroy') m.blip = st.spawn && m.spawned.length ? { x: m.spawned[0].x, y: m.spawned[0].y } : null;
+  else m.blip = st.x !== undefined ? { x: st.x, y: st.y } : null;
+}
+
+function runMission(m, dt, isSide) {
+  const st = m.def.stages[m.si];
+  if (!st) return;
+  const p = S.player;
+  m.stageT -= dt;
+  if (st.secs && m.stageT <= 0) { fail(m, 'Out of time.'); return; }
+  if (p.dead) { fail(m, 'You got wasted.'); return; }
+
+  // car-destroyed fail (tagged delivery car)
+  if (st.carTag) {
+    const car = m.spawned.find((c) => c.missionTag === st.carTag);
+    if (car && car.dead) { fail(m, 'The car is wrecked!'); return; }
+  }
+
+  switch (st.k) {
+    case 'goto': {
+      const ok = dist(p.x, p.y, st.x, st.y) < (st.r ?? 55);
+      if (ok && st.needCar && !p.inCar) break; // wait until in a car
+      if (ok && st.drop && !m.dropPhase) {
+        m.dropPhase = true;
+        m.stageT = st.drop.secs;
+        say(st.drop.text, 5.5);
+        m.blip = { x: st.drop.x, y: st.drop.y };
+        break;
+      }
+      if (m.dropPhase) {
+        if (dist(p.x, p.y, st.drop.x, st.drop.y) < (st.drop.r ?? 55)) { if (st.drop.needCar && !p.inCar) break; m.dropPhase = false; nextStage(m); }
+      } else if (ok) nextStage(m);
+      break;
+    }
+    case 'enterTag': {
+      const car = m.spawned.find((c) => c.missionTag === st.tag && !c.dead);
+      if (!car) { fail(m, 'The car is gone!'); break; }
+      m.blip = { x: car.x, y: car.y };
+      if (p.inCar === car) {
+        addWanted(1, p.x, p.y);
+        nextStage(m);
+      }
+      break;
+    }
+    case 'wait': {
+      m.blip = null;
+      if (m.stageT <= 0.05) nextStage(m);
+      break;
+    }
+    case 'destroy': {
+      const alive = m.spawned.filter((c) => !c.dead);
+      m.blip = alive.length ? { x: alive[0].x, y: alive[0].y } : null;
+      if (alive.length === 0) { say(st.done || 'Targets destroyed.', 4); nextStage(m); }
+      break;
+    }
+    case 'checkpoints': {
+      if (!p.inCar) break;
+      const cp = st.pts[m.got];
+      m.blip = cp ? { x: cp.x, y: cp.y } : null;
+      if (cp && dist(p.x, p.y, cp.x, cp.y) < (st.r ?? 55)) {
+        m.got++;
+        S.sfx.push({ name: 'pickup', x: p.x, y: p.y });
+        say(`Checkpoint ${m.got}/${st.pts.length}`, 2);
+        if (m.got >= st.pts.length) nextStage(m);
+      }
+      break;
+    }
+    case 'collect': {
+      const it = st.items[m.got];
+      m.blip = it ? { x: it.x, y: it.y } : null;
+      if (it && dist(p.x, p.y, it.x, it.y) < 42) {
+        m.got++;
+        S.sfx.push({ name: 'pickup', x: p.x, y: p.y });
+        say(`Package ${m.got}/${st.items.length} secured.`, 3);
+        if (m.got === 2 && st.id !== 'post') setWanted(Math.max(S.wanted, 2));
+        if (m.got >= st.items.length) nextStage(m);
+      }
+      break;
+    }
+    case 'survive': {
+      m.blip = null;
+      if (m.stageT <= 0.05) { say('Heat is off. Move!', 3); nextStage(m); }
+      break;
+    }
+    case 'rampage': {
+      m.blip = null;
+      // count any car destroyed since stage start (police cars count double)
+      const n = m.kills;
+      if (n >= st.kills) { nextStage(m); }
+      break;
+    }
+  }
+}
+
+function complete(m) {
+  const def = m.def;
+  addMoney(def.payout);
+  S.mission.banner = { text: isSide(m) ? 'SIDE JOB PASSED!' : 'MISSION PASSED!', pay: def.payout, name: def.name };
+  S.mission.bannerT = 3.4;
+  if (def.outro) say(def.outro, 6);
+  S.sfx.push({ name: 'win', x: S.player.x, y: S.player.y });
+  cleanup(m);
+  if (isSide(m)) { S.mission.side = null; }
+  else {
+    S.mission.done.push(def.id);
+    if (def.finale) S.finale = true;
+    S.mission.index++;
+    S.mission.active = null;
+  }
+}
+
+export function fail(m, reason) {
+  S.mission.banner = { text: 'MISSION FAILED', pay: 0, name: `${m.def.name} — ${reason}` };
+  S.mission.bannerT = 3;
+  say(reason, 4);
+  S.sfx.push({ name: 'fail', x: S.player.x, y: S.player.y });
+  cleanup(m);
+  if (isSide(m)) S.mission.side = null;
+  else S.mission.active = null;
+}
+
+function isSide(m) { return m === S.mission.side; }
+
+function cleanup(m) {
+  for (const car of m.spawned) {
+    if (S.player.inCar === car) continue; // keep whatever the player is driving
+    car.despawn = true;
+  }
+  m.spawned = [];
+  m.blip = null;
+}
+
+// Called by game.js whenever a car fully explodes (for rampage counting).
+export function onCarDestroyed(car) {
+  const m = S.mission.side;
+  if (m && m.def.stages[m.si]?.k === 'rampage') {
+    m.kills += car.ai === 'police' ? 2 : 1;
+    say(`Wrecked: ${m.kills}/${m.def.stages[m.si].kills}`, 1.6);
+  }
+  const a = S.mission.active;
+  if (a && a.def.id === 'm5') { /* destroy stage reads spawned list directly */ }
+}
+
+// Mission HUD line (objective + timer).
+export function hudLine() {
+  const m = S.mission.active || S.mission.side;
+  if (!m) return null;
+  const st = m.def.stages[m.si];
+  if (!st) return null;
+  let obj = st.drop && m.dropPhase ? st.drop.text : st.text || '';
+  let t = null;
+  if (st.secs) t = m.stageT;
+  return { name: m.def.name, obj, t };
+}

@@ -1,136 +1,115 @@
-// shots.js — deterministic staged scenes for the 4 entry screenshots (?shot=start|play|end|chaos&seed=N)
-import { CFG } from './config.js';
-import { mulberry32 } from './rng.js';
+// shots.js — deterministic staged scenes for the four entry screenshots:
+// ?shot=start|play|end|chaos&seed=N (audio always muted in shots).
+import { S, VW, VH, clamp, dist, Rng } from './core.js';
+import { world } from './world.js';
+import { makeCar, carSpeed } from './cars.js';
+import { makePlayer } from './player.js';
+import { initMissions } from './missions.js';
+import { setWanted, spawnFootCop } from './police.js';
+import { newGame } from './game.js';
 
-export function parseShot() {
-  const q = new URLSearchParams(location.search);
-  const shot = q.get('shot') || '';
-  const seed = parseInt(q.get('seed') || '7', 10) || 7;
-  const mute = q.get('mute') === '1' || true; // staged shots are always muted
-  if (!CFG.SHOT_PARAMS.includes(shot)) return null;
-  return { shot, seed, mute };
+export const SHOTS = ['start', 'play', 'end', 'chaos'];
+
+// Called by main.js once, before the first frame. Returns hold time (s of live sim before freeze).
+export function setupShot(name, seed) {
+  S.shot = name;
+  S.muted = true;
+  S.freeze = false;
+  const rng = new Rng(seed);
+  S.rng = rng;
+  if (name === 'start') return setupStart(seed);
+  // all gameplay shots start from a fresh deterministic game
+  newGame(seed, true);
+  if (name === 'play') return setupPlay(seed);
+  if (name === 'end') return setupEnd(seed);
+  if (name === 'chaos') return setupChaos(seed);
+  return 1;
 }
 
-// called by game.js right after boot, before the first frame
-export function applyShot(game, shotInfo) {
-  if (!shotInfo) return false;
-  game.shotMode = shotInfo.shot;
-  game.startMuted = true;
-  const rng = mulberry32(shotInfo.seed * 7919 + 13);
-  const world = game.world;
-  const p = game.player;
+// 1-start: the cover shot — title screen over a live night city pan.
+function setupStart(seed) {
+  newGame(seed, true); // build the deterministic world; keeps mode untouched
+  S.mode = 'title';
+  S.demo = 1.2;
+  S.cam.zoom = 0.85;
+  return 0; // no hold; title screen renders immediately
+}
 
-  // deterministic world time (drives lights, neon flicker, waves)
-  game.t = 12 + (shotInfo.seed % 5) * 1.7;
+// 2-play: cruising Ocean Drive in a Cheetah GT, traffic and peds around.
+function setupPlay(seed) {
+  const rng = new Rng(seed ^ 0xabc);
+  S.mode = 'playing';
+  const car = makeCar('sports', 2560, 4166, 0, { color: '#e02a5a', ai: null, rng });
+  S.player.inCar = car;
+  car.driver = 'player';
+  car.fwd = 150;
+  // a couple of neighbours on the road
+  const t1 = makeCar('taxi', 2980, 4166, 0, { ai: 'traffic', rng, ni: 7, nj: 10, pi: 8, pj: 10 });
+  t1.fwd = 170; t1.cruise = 170;
+  const t2 = makeCar('van', 2300, 4134, Math.PI, { ai: 'traffic', rng, ni: 5, nj: 10, pi: 4, pj: 10 });
+  t2.fwd = -150; t2.cruise = 150;
+  makeCar('police', 2960, 3500, Math.PI / 2, { ai: 'parked', rng });
+  S.cam.x = car.x; S.cam.y = car.y;
+  S.toasts.push({ text: 'Ocean Drive, 2 AM. The night is young.', t: 0, dur: 5 });
+  return 1.6;
+}
 
-  if (shotInfo.shot === 'start') {
-    game.state = 'title';
-    return true;
-  }
+// 3-end: mission passed — payout banner over a beach-house delivery.
+function setupEnd(seed) {
+  const rng = new Rng(seed ^ 0x777);
+  S.mode = 'playing';
+  S.player.x = 5340; S.player.y = 4072;
+  S.player.ang = Math.PI;
+  S.money = 4750; S.moneyShow = 4750;
+  S.mission.banner = { text: 'MISSION PASSED!', pay: 1000, name: 'Neon Run — every checkpoint, flat out' };
+  S.mission.bannerT = 3.4;
+  S.mission.index = 3;
+  S.mission.done = ['m1', 'm2', 'm3'];
+  const car = makeCar('muscle', 5300, 4110, Math.PI / 2, { color: '#c83020', ai: 'parked', rng });
+  S.player.inCar = car; car.driver = 'player';
+  S.cam.x = S.player.x; S.cam.y = S.player.y;
+  sayLater('RICO: Fastest thing on Ocean Drive, little brother!');
+  return 0.6;
+}
 
-  // ---- shared staged setup for in-game shots ----
-  game.state = 'play';
-  // staged traffic: a mix of idling cars on the street (they hold position for the shot)
-  const baseRoad = world.roadH[7]; // y = 2720
-  const idleAI = { drive: () => ({ t: 0, s: 0 }) };
-  const staged = [
-    [980, 15, 'sedan', 0], [1240, -15, 'taxi', 0], [1520, 15, 'bus', 0],
-    [1820, -15, 'van', Math.PI], [2100, 15, 'coupe', Math.PI], [2380, -15, 'pickup', 0],
-  ];
-  for (const [x, off, type, h] of staged) {
-    const car = game.addCar(type, x, baseRoad + off, h);
-    car.driver = 'ai';
-    car.ai = idleAI;
+// 4-chaos: 5 stars — cruisers closing in, a burning car, flash mid-bang.
+function setupChaos(seed) {
+  const rng = new Rng(seed ^ 0x3311);
+  S.mode = 'playing';
+  S.wanted = 5;
+  S.player.weapon = 'pistol';
+  S.player.ammo = 999;
+  S.player.x = 3360; S.player.y = 2340;
+  S.player.ang = Math.PI * 0.75;
+  // converging cruisers
+  const positions = [[3060, 2340, 0], [3700, 2340, Math.PI], [3360, 1900, Math.PI / 2], [3360, 2760, -Math.PI / 2]];
+  let i = 0;
+  for (const [x, y, a] of positions) {
+    const cop = makeCar('police', x, y, a, { ai: 'police', siren: true, rng });
+    cop.fwd = 120; i++;
   }
-  for (let i = 0; i < 10; i++) {
-    const x = 700 + rng() * 2200;
-    game.spawnPed(x, baseRoad + (rng() < 0.5 ? -CFG.ROAD_W / 2 - 12 : CFG.ROAD_W / 2 + 12));
-  }
-  // ammo + health pickups visible on the sidewalk
-  game.addPickup(1180, baseRoad - 46, 'ammo');
-  game.addPickup(1420, baseRoad - 46, 'health');
+  // a burning sedan next to the player + parked victims
+  const burn = makeCar('sedan', 3240, 2420, 0.7, { color: '#8a8a96', ai: 'parked', rng });
+  burn.hp = 5; burn.explodeT = 1.6; burn.fireT = 1.6;
+  makeCar('taxi', 3520, 2400, 2.2, { ai: 'parked', rng });
+  makeCar('pickup', 3200, 2200, 1.0, { ai: 'parked', rng });
+  // cops on foot deploying
+  spawnFootCop(3300, 2280);
+  spawnFootCop(3440, 2440);
+  // muzzle & flash peak at the frozen frame
+  S.player.muzzleT = 0.2;
+  S.flash = 0.22; S.flashCol = '255,220,160';
+  S.shake = 9;
+  S.cam.x = S.player.x; S.cam.y = S.player.y;
+  S.cam.zoom = 0.92;
+  sayLater('WANTED — 5 STARS. The whole VCPD is out.');
+  return 1.45;
+}
 
-  if (shotInfo.shot === 'play') {
-    // player behind the wheel of a sport coupe, mid-cruise
-    const car = game.addCar('sport', 1330, baseRoad + CFG.LANE_OFF, 0, '#c22f4a');
-    p.inCar = car;
-    car.driver = 'player';
-    p.x = car.x; p.y = car.y;
-    p.ammo = 24;
-    p.money = 12480;
-    car.vx = 140; // gentle roll so the scene reads "in motion"
-    car.skidT = 0;
-    game.police.wanted = 0;
-    game.cam.x = car.x + 140; game.cam.y = car.y + 70;
-    game.hud.subtitle('RICO: "Cruise the strip, baby. The city sells itself."', 4);
-    // fresh tire marks behind the car
-    for (let i = 0; i < 6; i++) {
-      game.skids.push({ x0: car.x - 60 - i * 18, y0: car.y - 12, x1: car.x - 42 - i * 18, y1: car.y - 12 });
-      game.skids.push({ x0: car.x - 60 - i * 18, y0: car.y + 12, x1: car.x - 42 - i * 18, y1: car.y + 12 });
-    }
-    return true;
-  }
+let subs = [];
+function sayLater(text) { subs.push({ text, t: 0, dur: 6 }); S.subs.push(...subs.splice(0)); }
 
-  if (shotInfo.shot === 'end') {
-    const car = game.addCar('coupe', 1500, baseRoad + CFG.LANE_OFF, 0, '#2f7ac2');
-    p.inCar = car;
-    car.driver = 'player';
-    p.x = car.x; p.y = car.y;
-    p.money = 15200;
-    p.ammo = 24;
-    game.cam.x = car.x; game.cam.y = car.y;
-    game.hud.banner('MISSION PASSED', 'Respect+  $450');
-    game.flash = 0.15;
-    return true;
-  }
-
-  if (shotInfo.shot === 'chaos') {
-    // five stars: cruisers converging, wrecks burning, peds fleeing
-    game.police.wanted = 5;
-    game.police.heat = 5;
-    p.money = 20300;
-    p.ammo = 12;
-    const car = game.addCar('sedan', 1600, baseRoad + CFG.LANE_OFF, 0, '#5d6b7a');
-    p.inCar = car;
-    car.driver = 'player';
-    p.x = car.x; p.y = car.y;
-    // two freshly exploded wrecks with fire particles
-    for (const [x, y] of [[1240, baseRoad - CFG.LANE_OFF], [2050, baseRoad + CFG.LANE_OFF]]) {
-      const wreck = game.addCar('van', x, y, rng() * 3);
-      wreck.state = 'wreck';
-      wreck.exploded = true;
-      wreck.explodeT = 1.2;
-      for (let i = 0; i < 26; i++) {
-        game.particles.push({ x: x + (rng() - 0.5) * 60, y: y + (rng() - 0.5) * 30, vx: (rng() - 0.5) * 30, vy: -30 - rng() * 60, life: 1 + rng(), life0: 2, kind: 'fire', size: 8 + rng() * 8 });
-        game.particles.push({ x: x + (rng() - 0.5) * 80, y: y - 20 - rng() * 40, vx: (rng() - 0.5) * 20, vy: -20 - rng() * 30, life: 2 + rng(), life0: 3, kind: 'smoke', size: 10 + rng() * 14 });
-      }
-    }
-    // pursuing cruisers (kept back so the staged player survives the shot)
-    for (let i = 0; i < 4; i++) {
-      const ang = (i / 4) * Math.PI * 2;
-      const cx = p.x + Math.cos(ang) * 760, cy = p.y + Math.sin(ang) * 760;
-      const cop = game.addCar('police', cx, cy, Math.atan2(p.y - cy, p.x - cx));
-      cop.driver = 'ai';
-      cop.siren = true;
-      game.addChaser(cop);
-    }
-    // foot cops (they hold fire for the staged shot)
-    for (let i = 0; i < 4; i++) {
-      const cop = game.spawnPed(p.x + 200 + i * 60, p.y + 160, { kind: 'cop' });
-      cop.shootT = 99;
-    }
-    // staged survivability: full armor so the five-star scene photographs alive
-    p.armor = 100;
-    p.hp = 100;
-    // panicking peds
-    for (let i = 0; i < 12; i++) {
-      const ped = game.spawnPed(p.x - 300 + rng() * 700, p.y + (rng() < 0.5 ? -140 : 150));
-      if (ped) ped.state = 'flee';
-    }
-    game.cam.shake = 10;
-    game.flash = 0.4;
-    game.hud.toast('WANTED ★★★★★');
-    return true;
-  }
-  return true;
+// Short scripted walk: shots run the sim briefly, then freeze for a crisp frame.
+export function tick(dt) {
+  for (const sub of S.subs) sub.t += dt;
 }

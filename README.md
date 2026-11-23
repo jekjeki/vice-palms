@@ -4,74 +4,68 @@
 
 # Vice Palms
 
-A top-down open-world crime sandbox for the night streets of a neon coastal city — built
-from scratch for the make.fun `gta6-01` bounty. Pure vanilla JavaScript + Canvas 2D,
-no libraries, no network. Everything runs locally in the browser.
+A top-down open-world crime sandbox in the spirit of the classic GTA era — built from
+scratch in vanilla JavaScript (Canvas 2D, WebAudio, zero libraries, zero network calls).
+Night-time neon coastal city, drivable traffic, carjacking, a 5-star wanted system,
+6 chained story missions ("Rico returns to Vice Palms"), 3 side missions, and a
+synthwave radio — all in one `game/` folder of static files.
 
 ## Play
 
 ```sh
-node serve.ts            # http://localhost:8080/  (or --port N)
+node serve.ts            # serves game/ at http://localhost:8080
+node serve.ts --port 8090
 ```
 
-Then open http://localhost:8080 and press ENTER.
-
-## Features
-
-- **Night city, deterministic** — seeded road grid with neon-signed blocks, an old-town
-  brick quarter, glass-tower downtown, a central palm park with fountain plaza, a beach
-  strip (boardwalk, volleyball court, lifeguard towers), NORTH DOCKS (piers, container
-  stacks, cranes, a cargo ship, fishing boats) and PALM AIRFIELD (runway, hangars,
-  control tower, windsock, fuel drums).
-- **8 vehicles** with arcade drift physics: handbrake slides, skidmarks, nitro boost
-  (SHIFT), engine misfire at low health, damage smoke, fire, and proper explosions
-  with radius damage.
-- **Carjack anything** with F — drivers bail and bolt.
-- **Wanted system 1–5**: cruiser pursuit with ramming, foot cops that shoot, roadblocks
-  at 3+ stars, spike strips and a searchlight helicopter at 4+, out-of-sight decay,
-  WASTED/BUSTED cards with respawn fees.
-- **6 chained story missions** (Rico returns to Vice Palms) plus 6 repeatable side
-  missions (Palm Delivery, Taxi Fare, Street Sweep, Heat Run, Pilot Run, Vice GP),
-  timers, speed bonuses, payouts, subtitles.
-- **Living city**: traffic AI with lane keeping, traffic lights, queueing, turn signals
-  and horn abuse; pedestrians (joggers, dog walkers, tourists, umbrellas in the rain)
-  that wander, cross at crosswalks and flee gunfire; dynamic city events (neon parade,
-  docks raid, night market, squalls, dragnets); a looping Palm Line bus you can ride.
-- **Services & secrets**: Pay 'n' Spray (clears wanted), Octane Fuel, Ammu-Nation,
-  Palm Dogs, 8 stunt ramps with airtime payouts, 12 hidden packages, ammo/health/armor
-  pickups.
-- **Synthesized audio** — engine, gunshots, sirens, explosions, thunder, rain loop and a
-  station-aware synthwave music engine (WebAudio only, M to mute).
-- **Full city map** on TAB, pause-menu stats panel, save/delete-save via localStorage.
+Then open <http://localhost:8080>.
 
 ## Controls
 
 | Key | Action |
 | --- | --- |
-| WASD / arrows | walk / drive |
-| SHIFT | sprint / nitro boost |
-| SPACE | handbrake |
-| F | enter / exit / carjack (or ride the bus at a Palm Line stop) |
-| Mouse | aim, click to shoot (drive-bys work from cars) |
-| E | punch / buy at counters |
-| H | siren (in a cruiser) |
-| R | next radio station (in a car) |
-| TAB | city map |
-| M | mute audio |
-| ESC / P | pause (save / controls / delete-save / quit) |
+| `W A S D` | Walk / drive |
+| `Shift` | Sprint |
+| `F` | Carjack / enter / exit vehicle |
+| `Mouse` | Aim |
+| `Left click` | Punch / shoot |
+| `1 / 2` | Fists / pistol |
+| `Space` | Handbrake |
+| `M` | Mute audio |
+| `Esc` | Pause menu (save / load / quit) |
+| `Tab` | Big map |
+
+## Features
+
+- **World** — a deterministic, seeded 6400×4800 night city: downtown high-rises with lit
+  windows and neon signs, residential blocks, a palm park, an Ocean Drive beach strip,
+  the **North Docks** (container yard, gantry cranes, cargo ship) and **Palm Airfield**
+  (runway, hangars, control tower).
+- **Driving** — 8 vehicle types with arcade drift physics, handbrake, damage model
+  (scratches → smoke → fire → explosion), headlights, and traffic that obeys lights
+  and queues behind you.
+- **Wanted system** — 1–5 stars, cruiser pursuit and ramming, foot cops that shoot,
+  roadblocks at 3★+, out-of-sight decay, WASTED / BUSTED with respawn fees.
+- **Missions** — 6 chained story missions plus 3 repeatable side gigs (Fare Rush,
+  Express Post, Beach Rampage) with markers, timers, checkpoints, fail/retry and payouts.
+- **Presentation** — neon glow, headlight cones, wet-road sheen, explosion flash and
+  camera shake, circular minimap, speedometer, synthesized synthwave radio, engine,
+  sirens, gunshots and explosions — all generated in WebAudio.
 
 ## Staged screenshots
 
-The four entry shots are deterministic scenes: `?shot=start|play|end|chaos&seed=N`
-(mapped in `shots.json`), rendered at 1280×720 into `screenshots/`.
+`shots.json` lists the four deterministic staged scenes used for `screenshots/`
+(`?shot=start|play|end|chaos&seed=1337`).
 
-## Layout
+## Repo layout
 
-- `game/` — the whole game (`index.html` + `src/*.js`, ES modules):
-  `world` (city gen) · `cars`/`traffic` (physics + AI) · `player`/`peds` · `police` ·
-  `missions` · `render`/`hud`/`screens`/`mapscreen` · `audio`/`radio` · `weather` ·
-  `shops` · `jumps` · `transit` · `events` · `dialogue` · `shots` (staged scenes) ·
-  `game` (state machine) · `main` (boot/loop)
-- `serve.ts` — stdlib static server for `game/`
-- `main.ts` — builds the make.fun dossier into `out/` via `vendor/makefun-game.ts`
-- `screenshots/` — the 4 staged shots; `shots.json` describes them
+```
+game/            the game (index.html + src/*.js, no dependencies)
+screenshots/     4 rendered screenshots (≤256 KiB each)
+serve.ts         static server for game/
+main.ts          builds out/dossier.json via vendor/makefun-game.ts
+vendor/          make.fun kit (untouched)
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
