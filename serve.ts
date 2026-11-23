@@ -1,53 +1,58 @@
-// Static dev server for game/ — Node 22 TypeScript, stdlib only.
-import { createServer } from "node:http";
-import { readFile, stat } from "node:fs/promises";
-import { extname, join, normalize, sep } from "node:path";
+import { createServer } from 'node:http';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 
-const portArg = process.argv.indexOf("--port");
-const port = portArg > -1 ? Number(process.argv[portArg + 1]) : 8080;
-const root = normalize(join(process.cwd(), "game") + sep);
-
+const ROOT = path.resolve('game');
+const PORT = Number(process.argv[2] === '--port' ? process.argv[3] : 8080) || 8080;
 const MIME: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json",
-  ".jpg": "image/jpeg",
-  ".png": "image/png",
-  ".svg": "image/svg+xml",
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.json': 'application/json',
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.svg': 'image/svg+xml',
 };
 
-createServer(async (req, res) => {
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    res.writeHead(405, { Allow: "GET, HEAD" });
-    return res.end();
+const server = createServer(async (req, res) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405, { Allow: 'GET, HEAD' }).end('Method Not Allowed');
+    return;
   }
-  const rel = decodeURIComponent(new URL(req.url!, "http://x").pathname).replace(/^\/+/, "");
-  const abs = normalize(join(root, rel));
-  if (abs !== root && !abs.startsWith(root)) {
-    res.writeHead(403);
-    return res.end();
-  }
+  let urlPath: string;
   try {
-    let file = abs;
-    if ((await stat(file)).isDirectory()) file = join(file, "index.html");
-    const body = await readFile(file);
-    res.writeHead(200, { "Content-Type": MIME[extname(file)] ?? "application/octet-stream" });
-    res.end(req.method === "HEAD" ? undefined : body);
+    urlPath = decodeURIComponent(new URL(req.url ?? '/', `http://localhost:${PORT}`).pathname);
   } catch {
-    res.writeHead(404);
-    res.end("Not found");
+    res.writeHead(400).end('Bad Request');
+    return;
   }
-})
-  .on("error", (e: NodeJS.ErrnoException) => {
-    if (e.code === "EADDRINUSE")
-      console.error(`Port ${port} is busy — is another server already running?`);
-    else throw e;
-    process.exit(1);
-  })
-  .listen(port, () => console.log(`Serving game/ at http://localhost:${port}/`));
+  let file = path.resolve(ROOT, '.' + path.posix.normalize(urlPath));
+  if (file !== ROOT && !file.startsWith(ROOT + path.sep)) {
+    res.writeHead(403).end('Forbidden');
+    return;
+  }
+  let stat = await fs.stat(file).catch(() => null);
+  if (stat?.isDirectory()) {
+    file = path.join(file, 'index.html');
+    stat = await fs.stat(file).catch(() => null);
+  }
+  if (!stat) {
+    res.writeHead(404).end('Not Found');
+    return;
+  }
+  res.writeHead(200, {
+    'Content-Type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
+    'Content-Length': stat.size,
+  });
+  if (req.method === 'HEAD') return res.end();
+  await fs.readFile(file).then((data) => res.end(data)).catch(() => res.end());
+});
 
-process.on("SIGINT", () => {
-  console.log("\nStopped.");
-  process.exit(0);
+server.once('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') console.error(`Port ${PORT} is busy — pick another with --port N`);
+  else console.error(err);
+  process.exit(1);
+});
+
+server.listen(PORT, 'localhost', () => console.log(`Serving ${ROOT} at http://localhost:${PORT}`));
+
+process.on('SIGINT', () => {
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 500).unref();
 });
