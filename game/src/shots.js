@@ -9,8 +9,7 @@ const SHOTS = {
       S.mode = 'play';
       const w = S.world, p = S.player;
       const car = S.traffic.spawnAt(w.playerStart.x + 64, w.playerStart.y, Math.PI, 'coupe');
-      car.lane = null;
-      if (car) p.enterCar(car);
+      if (car) { car.lane = null; p.enterCar(car); }
       S.money = 640; S.heat = 1.0; S.wanted = 1;
       S.police.sync();
       S.missions.begin();

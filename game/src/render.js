@@ -363,7 +363,7 @@ function drawBullets(ctx, s) {
 function drawParticles(ctx, s) {
   for (const q of s.particles) {
     if (!inView(q.x, q.y, 60)) continue;
-    const a = Math.max(0, q.life / q.max);
+    const a = q.max > 0 ? Math.max(0, q.life / q.max) : 0;
     ctx.save();
     ctx.globalCompositeOperation = q.fire ? 'lighter' : 'source-over';
     ctx.globalAlpha = a * (q.fire ? 0.9 : 0.55);

@@ -6,6 +6,7 @@ import { Peds } from './peds.js';
 import { Police } from './police.js';
 import { Missions } from './missions.js';
 import { AudioSys } from './audio.js';
+import { damageCar } from './cars.js';
 
 export const S = { inited: false };
 export const STEP = 1 / 60;
@@ -55,6 +56,7 @@ export function newGame(seed) {
 
 // ---- crime / wanted -------------------------------------------------------
 export function crime(amount) {
+  if (!Number.isFinite(amount) || amount <= 0) return;
   S.heat = Math.min(5.99, S.heat + amount);
   S.crimeT = 0;
   const lvl = Math.floor(S.heat);

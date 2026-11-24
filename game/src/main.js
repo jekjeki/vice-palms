@@ -26,12 +26,13 @@ addEventListener('keydown', (e) => {
 addEventListener('keyup', (e) => { S.keys[e.code] = false; });
 cv.addEventListener('mousemove', (e) => {
   const r = cv.getBoundingClientRect();
+  if (!r.width || !r.height) return;
   S.mouse.x = (e.clientX - r.left) * (cv.width / r.width);
   S.mouse.y = (e.clientY - r.top) * (cv.height / r.height);
 });
 cv.addEventListener('mousedown', (e) => { if (e.button === 0) S.mouse.down = true; });
 addEventListener('mouseup', () => { S.mouse.down = false; });
-addEventListener('blur', () => { S.keys = {}; });
+addEventListener('blur', () => { S.keys = {}; S.mouse.down = false; });
 
 // ---- error capture (for QA) ----
 addEventListener('error', (e) => { S.errors.push(String(e.message || e.error)); });

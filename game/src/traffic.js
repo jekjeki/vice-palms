@@ -8,9 +8,10 @@ const AMBIENT = 13;
 export class Traffic {
   constructor() { this.cars = []; }
   spawnAt(x, y, a, type) {
-    const c = new Car(x, y, a, type || ['compact', 'sedan', 'coupe', 'taxi', 'pickup', 'van', 'sport'][(Math.random() * 7) | 0]);
+    const rng = S.rng || Math.random;
+    const c = new Car(x, y, a, type || ['compact', 'sedan', 'coupe', 'taxi', 'pickup', 'van', 'sport'][(rng() * 7) | 0]);
     c.driver = 'traffic';
-    c.lane = { axis: Math.abs(Math.sin(a)) < 0.7 ? 'h' : 'v', dir: Math.cos(a) >= 0 ? 1 : -1, cruise: 150 + Math.random() * 80 };
+    c.lane = { axis: Math.abs(Math.sin(a)) < 0.7 ? 'h' : 'v', dir: Math.cos(a) >= 0 ? 1 : -1, cruise: 150 + rng() * 80 };
     if (c.lane.axis === 'h') c.lane.road = Math.round(y / PITCH) * PITCH;
     else c.lane.road = Math.round(x / PITCH) * PITCH;
     this.cars.push(c);

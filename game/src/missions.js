@@ -71,25 +71,26 @@ export class Missions {
   prep(m, st) {
     this.step = st;
     const s = m.steps[st];
+    if (!s) return;
     this.timer = s.time || 0;
     this.items = []; this.targets = [];
     this.objText = s.text || '';
     S.objective = `${m.title.toUpperCase()} — ${s.text || ''}`;
     const base = S.world.missionSpots[s.at];
-    if (s.type === 'collect') {
+    if (s.type === 'collect' && base) {
       for (let i = 0; i < s.n; i++) {
         const a = (i / s.n) * Math.PI * 2;
         this.items.push({ x: base.x + Math.cos(a) * 230, y: base.y + Math.sin(a) * 230, got: false });
       }
     }
-    if (s.type === 'kill') {
+    if (s.type === 'kill' && base) {
       for (let i = 0; i < s.n; i++) {
         const q = S.peds.spawnAt(base.x + (S.rng() - 0.5) * 340, base.y + (S.rng() - 0.5) * 340);
         q.gang = true;
         this.targets.push(q);
       }
     }
-    if (s.type === 'car') {
+    if (s.type === 'car' && base) {
       this.mcar = S.traffic.spawnAt(base.x + 110, base.y + 60, 0, s.carType);
     }
   }

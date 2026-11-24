@@ -190,6 +190,7 @@ export class World {
   }
   resolveCircle(o, r) {
     const hits = [];
+    if (!o || !Number.isFinite(r) || r <= 0) return hits;
     for (const s of this.solids) {
       if (s.water) continue;
       const nx = Math.max(s.x, Math.min(o.x, s.x + s.w));

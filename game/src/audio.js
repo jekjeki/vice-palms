@@ -8,15 +8,15 @@ export class AudioSys {
   }
   setMuted(m) { this.muted = m; if (!m) this.ensure(); if (m && this.ctx) { this.stopEngine(); } }
   blip(f = 660, dur = 0.07, type = 'square', vol = 0.08) {
-    if (this.muted || !this.ctx) return;
+    if (this.muted || !this.ctx || dur <= 0 || vol <= 0) return;
     const t = this.ctx.currentTime, o = this.ctx.createOscillator(), g = this.ctx.createGain();
     o.type = type; o.frequency.setValueAtTime(f, t);
     g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
     o.connect(g).connect(this.ctx.destination); o.start(t); o.stop(t + dur + 0.02);
   }
   noise(dur = 0.2, vol = 0.3, lp = 4000) {
-    if (this.muted || !this.ctx) return;
-    const t = this.ctx.currentTime, n = Math.floor(this.ctx.sampleRate * dur);
+    if (this.muted || !this.ctx || dur <= 0 || vol <= 0) return;
+    const t = this.ctx.currentTime, n = Math.max(1, Math.floor(this.ctx.sampleRate * dur));
     const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate), d = buf.getChannelData(0);
     for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
     const src = this.ctx.createBufferSource(); src.buffer = buf;

@@ -15,6 +15,7 @@ export class Player {
   alive() { return this.hp > 0; }
 
   hurt(dmg) {
+    if (!Number.isFinite(dmg) || dmg <= 0 || !this.alive()) return;
     if (this.armor > 0) { const a = Math.min(this.armor, dmg * 0.6); this.armor -= a; dmg -= a; }
     this.hp -= dmg;
     S.shake = Math.min(12, S.shake + 3);

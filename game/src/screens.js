@@ -1,9 +1,9 @@
 // Vice Palms — title, pause, save/load UI, WASTED / BUSTED overlays
-import { S, loadGame } from './game.js';
 
 const VW = 1280, VH = 720;
 
 export function drawScreens(s, ctx) {
+  if (!s) return;
   if (s.mode === 'title') drawTitle(ctx, s);
   else if (s.mode === 'pause') drawPause(ctx, s);
   else if (s.mode === 'wasted' || s.mode === 'busted') drawEnd(ctx, s);

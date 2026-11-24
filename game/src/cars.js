@@ -71,7 +71,7 @@ export class Car {
   }
 
   damage(amt, from) {
-    if (this.dead) return;
+    if (this.dead || !Number.isFinite(amt) || amt <= 0) return;
     this.hp -= amt;
     if (this.hp <= 0) this.explode();
   }

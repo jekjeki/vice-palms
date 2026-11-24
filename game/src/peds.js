@@ -51,8 +51,8 @@ export class Peds {
       if (q.dead) continue;
       if (q.mode === 'flee') {
         q.t -= dt;
-        if (q.t <= 0) q.mode = 'walk';
-        q.spd = 190;
+        if (q.t <= 0) { q.mode = 'walk'; q.spd = 70; }
+        else q.spd = 190;
       }
       q.x += Math.cos(q.a) * q.spd * dt;
       q.y += Math.sin(q.a) * q.spd * dt;

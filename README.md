@@ -17,7 +17,7 @@ node serve.ts
 # → http://localhost:8080
 ```
 
-No build step, no dependencies — plain ES modules and Canvas 2D.
+No build step, no dependencies — plain ES modules and Canvas 2D. Set `PORT` to override the default port `8080`.
 
 ## Controls
 

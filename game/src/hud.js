@@ -37,12 +37,13 @@ function drawBars(ctx, s) {
 }
 function bar(ctx, w, f, c, bg, label, y) {
   const yy = y || 0;
+  const frac = Math.max(0, Math.min(1, Number.isFinite(f) ? f : 0));
   ctx.fillStyle = 'rgba(8,10,14,0.72)';
   ctx.fillRect(-w, yy, w, 20);
   ctx.fillStyle = bg;
-  ctx.fillRect(-w + 2, yy + 2, (w - 4) * Math.max(0, f), 16);
+  ctx.fillRect(-w + 2, yy + 2, (w - 4) * frac, 16);
   ctx.fillStyle = c;
-  ctx.fillRect(-w + 2, yy + 2, (w - 4) * Math.max(0, f), 6);
+  ctx.fillRect(-w + 2, yy + 2, (w - 4) * frac, 6);
   ctx.font = 'bold 11px Arial'; ctx.textAlign = 'left';
   ctx.fillStyle = '#e8ecf2';
   ctx.fillText(label, -w + 6, yy + 15);

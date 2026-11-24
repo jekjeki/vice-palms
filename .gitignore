@@ -2,3 +2,5 @@ out/
 node_modules/
 *.log
 .playwright-mcp/
+.DS_Store
+Thumbs.db

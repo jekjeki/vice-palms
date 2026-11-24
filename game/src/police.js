@@ -94,6 +94,7 @@ export class Police {
   }
 
   roadblock(car) {
+    if (!car || car.dead) return;
     const dirx = Math.cos(car.a), diry = Math.sin(car.a);
     const bx = car.x + dirx * 860, by = car.y + diry * 860;
     if (bx < 120 || bx > CITY_W - 120 || by < 120 || by > CITY_H - 120) return;

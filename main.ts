@@ -4,6 +4,9 @@ import { cpSync, mkdirSync, writeFileSync, readdirSync, statSync } from 'node:fs
 import { join } from 'node:path';
 
 const out = process.env.MAKEFUN_OUTPUT_DIR || '/output';
+if (!statSync('game', { throwIfNoEntry: false })?.isDirectory()) {
+  throw new Error('Missing game/ directory');
+}
 mkdirSync(out, { recursive: true });
 cpSync('game', join(out, 'game'), { recursive: true });
 if (statSync('screenshots', { throwIfNoEntry: false })?.isDirectory()) {
