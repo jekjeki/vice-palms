@@ -1,6 +1,6 @@
 [
-  { "name": "1-start", "shot": "start", "url": "http://localhost:8080/?shot=start&seed=7&mute=1", "desc": "Neon title cover: Vice Palms logo over the night city" },
-  { "name": "2-play",  "shot": "play",  "url": "http://localhost:8080/?shot=play&seed=7&mute=1",  "desc": "Downtown drive: sports car, traffic, peds, neon glow" },
-  { "name": "3-end",   "shot": "end",   "url": "http://localhost:8080/?shot=end&seed=7&mute=1",   "desc": "MISSION PASSED banner at the safehouse" },
-  { "name": "4-chaos", "shot": "chaos", "url": "http://localhost:8080/?shot=chaos&seed=7&mute=1","desc": "Chaos: explosion flash, burning car, police pursuit" }
+  { "file": "screenshots/1-start.jpg", "caption": "Vice Palms neon title screen" },
+  { "file": "screenshots/2-play.jpg", "caption": "First mission — behind the wheel at night" },
+  { "file": "screenshots/3-end.jpg", "caption": "Mid story — docks run at 2 stars wanted" },
+  { "file": "screenshots/4-chaos.jpg", "caption": "4-star chaos with a burning wreck" }
 ]

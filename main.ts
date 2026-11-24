@@ -1,12 +1,14 @@
-// Vice Palms — build step: stage game/ + screenshots/ into MAKEFUN_OUTPUT_DIR, write dossier.json.
-import { mkdirSync, cpSync, existsSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+// Vice Palms — build make.fun dossier from game/ + screenshots/ into the output dir
 import { buildDossier } from './vendor/makefun-game.ts';
+import { cpSync, mkdirSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 
-const out = resolve(process.env.MAKEFUN_OUTPUT_DIR || '/output');
+const out = process.env.MAKEFUN_OUTPUT_DIR || '/output';
 mkdirSync(out, { recursive: true });
 cpSync('game', join(out, 'game'), { recursive: true });
-if (existsSync('screenshots')) cpSync('screenshots', join(out, 'screenshots'), { recursive: true });
+if (statSync('screenshots', { throwIfNoEntry: false })?.isDirectory()) {
+  cpSync('screenshots', join(out, 'screenshots'), { recursive: true });
+}
 
 const caps = {
   text_max_bytes: 163840,
@@ -15,12 +17,7 @@ const caps = {
   game_max_bytes: 50331648,
   game_path_max_bytes: 1000,
 };
-
-try {
-  const dossier = buildDossier(out, caps);
-  writeFileSync(join(out, 'dossier.json'), dossier);
-  console.log(`dossier.json written → ${out}`);
-} catch (e) {
-  console.error('dossier failed:', e instanceof Error ? e.message : e);
-  process.exit(1);
-}
+const dossier = buildDossier(out, caps);
+writeFileSync(join(out, 'dossier.json'), dossier);
+console.log(`dossier written: ${join(out, 'dossier.json')} (${dossier.length} bytes), files: ${readdirSync(join(out, 'game'), { recursive: true }).length}`);
+process.exit(0);

@@ -2,21 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Vice Palms</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230b0a14'/%3E%3Ctext x='8' y='12' font-size='10' text-anchor='middle' fill='%23ff2e88'%3EV%3C/text%3E%3C/svg%3E">
 <style>
-  html, body { margin: 0; padding: 0; background: #07080c; height: 100%; overflow: hidden; }
-  body { display: flex; align-items: center; justify-content: center; }
-  canvas {
-    width: 100vw; height: 56.25vw;
-    max-height: 100vh; max-width: 177.78vh;
-    background: #07080c;
-    cursor: crosshair;
-  }
+  html,body{margin:0;padding:0;background:#07060d;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  canvas{width:min(100vw,177.7vh);height:min(56.25vw,100vh);background:#07060d;image-rendering:auto;outline:none}
 </style>
 </head>
 <body>
-<canvas id="c" width="1280" height="720"></canvas>
-<script type="module" src="./src/main.js"></script>
+<canvas id="cv" width="1280" height="720"></canvas>
+<script type="module" src="src/main.js"></script>
 </body>
 </html>

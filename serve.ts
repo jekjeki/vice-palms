@@ -1,68 +1,23 @@
-// Vice Palms — static dev server for game/ (Node 22 stdlib only).
+// Vice Palms — stdlib static file server for game/ on :8080
 import { createServer } from 'node:http';
-import { readFile, stat } from 'node:fs/promises';
-import { join, resolve, extname, sep } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join, extname } from 'node:path';
 
-const ROOT = resolve('game');
-const MIME: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.txt': 'text/plain; charset=utf-8',
-  '.wasm': 'application/wasm',
-  '.mp3': 'audio/mpeg',
+const ROOT = join(import.meta.dirname, 'game');
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css', '.json': 'application/json', '.png': 'image/png',
+  '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
 };
 
-let port = 8080;
-const pi = process.argv.indexOf('--port');
-if (pi > 0 && process.argv[pi + 1]) port = Number(process.argv[pi + 1]) || 8080;
-
-const server = createServer(async (req, res) => {
+createServer(async (req, res) => {
   try {
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    let p = decodeURIComponent(url.pathname);
-    if (p.endsWith('/')) p += 'index.html';
-    const file = resolve(join(ROOT, p));
-    if (file !== ROOT && !file.startsWith(ROOT + sep)) {
-      res.writeHead(403);
-      res.end('forbidden');
-      return;
-    }
-    const st = await stat(file).catch(() => null);
-    if (!st || st.isDirectory()) {
-      res.writeHead(404);
-      res.end('not found');
-      return;
-    }
-    const body = req.method === 'HEAD' ? null : await readFile(file);
-    res.writeHead(200, {
-      'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
-      'content-length': st.size,
-      'cache-control': 'no-store',
-    });
-    res.end(body);
+    let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    if (p === '/') p = '/index.html';
+    const file = await readFile(join(ROOT, p));
+    res.writeHead(200, { 'content-type': MIME[extname(p)] || 'application/octet-stream' });
+    res.end(file);
   } catch {
-    try { res.writeHead(500); res.end('error'); } catch { /* socket gone */ }
+    res.writeHead(404); res.end('not found');
   }
-});
-
-server.on('error', (e: NodeJS.ErrnoException) => {
-  if (e.code === 'EADDRINUSE') {
-    console.error(`Port ${port} is busy — another Vice Palms server is already running there.`);
-    process.exit(1);
-  }
-  throw e;
-});
-
-server.listen(port, () => console.log(`Vice Palms → http://localhost:${port}/  (Ctrl+C to stop)`));
-process.on('SIGINT', () => {
-  server.close(() => process.exit(0));
-  process.exit(0);
-});
+}).listen(8080, () => console.log('Vice Palms → http://localhost:8080'));

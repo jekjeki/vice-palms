@@ -1,73 +1,64 @@
-// Vice Palms — boot + main loop.
-
-import { Game } from './game.js';
-import { Render } from './render.js';
+// Vice Palms — boot + game loop
+import { S, makeState, updateGame, handleKey } from './game.js';
+import { setupShot } from './shots.js';
+import { drawWorld } from './render.js';
 import { drawHUD } from './hud.js';
 import { drawScreens } from './screens.js';
-import { setupShot, SHOT_SIM } from './shots.js';
-import { VIEW_W, VIEW_H } from './config.js';
 
-const canvas = document.getElementById('c');
-const params = new URLSearchParams(location.search);
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const q = new URLSearchParams(location.search);
+const seed = (parseInt(q.get('seed') || '0', 10) || (Date.now() % 1e9)) >>> 0;
 
-const opts = {
-  seed: params.has('seed') ? (Number(params.get('seed')) || 7) : 7,
-  shot: params.get('shot') || null,
-};
+makeState(seed);
+window.__state = S;
+window.__errors = S.errors;
 
-const game = new Game(canvas, opts);
-const render = new Render(canvas);
-game.setRender(render);
+if (q.get('shot')) setupShot(q.get('shot'), q);
+if (q.get('audio') === '1') S.audioOn = true;
 
-// mute before anything can make a sound
-let startMuted = params.get('mute') === '1';
-try {
-  if (localStorage.getItem('vicepalms.mute') === '1') startMuted = true;
-  if (params.get('mute') === '0') startMuted = false;
-} catch { /* ignore */ }
-if (startMuted) game.audio.setMuted(true);
+// ---- input ----
+const PREVENT = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter']);
+addEventListener('keydown', (e) => {
+  if (PREVENT.has(e.code)) e.preventDefault();
+  if (!e.repeat) { S.keys[e.code] = true; S.pressed.add(e.code); handleKey(e.code); }
+});
+addEventListener('keyup', (e) => { S.keys[e.code] = false; });
+cv.addEventListener('mousemove', (e) => {
+  const r = cv.getBoundingClientRect();
+  S.mouse.x = (e.clientX - r.left) * (cv.width / r.width);
+  S.mouse.y = (e.clientY - r.top) * (cv.height / r.height);
+});
+cv.addEventListener('mousedown', (e) => { if (e.button === 0) S.mouse.down = true; });
+addEventListener('mouseup', () => { S.mouse.down = false; });
+addEventListener('blur', () => { S.keys = {}; });
 
-// staged screenshot mode: deterministic, input disabled
-if (opts.shot) {
-  game.input.enabled = false;
-  setupShot(game, opts.shot);
-}
+// ---- error capture (for QA) ----
+addEventListener('error', (e) => { S.errors.push(String(e.message || e.error)); });
+const ce = console.error.bind(console);
+console.error = (...a) => { S.errors.push(a.map(String).join(' ')); ce(...a); };
 
-// audio unlocks on the first gesture
-game.input.onAny = () => game.audio.ensure();
-game.audio.music(true);
-
-let last = performance.now();
-let acc = 0;
-let frames = 0;
+// ---- main loop: fixed 60 Hz sim, uncapped draw ----
+const STEP = 1 / 60;
+let last = performance.now(), acc = 0;
 
 function loop(now) {
-  const real = Math.min(0.6, (now - last) / 1000);
-  last = now;
-
-  // fixed-step catch-up: sim time tracks wall time even in throttled tabs
-  acc += real;
-  let steps = 0;
-  while (acc > 0.0005 && steps < 14) {
-    const dt = Math.min(0.05, acc);
-    game.update(dt);
-    acc -= dt;
-    steps++;
-  }
-  if (acc > 0.25) acc = 0; // drop the backlog instead of spiraling
-
-  render.draw(game, real);
-  drawHUD(game, render);
-  drawScreens(game, render);
-
-  frames++;
-  if (opts.shot && (game.time >= (SHOT_SIM[opts.shot] || 1.2))) {
-    window.__shotReady = true;
-  }
   requestAnimationFrame(loop);
+  let dt = (now - last) / 1000; last = now;
+  if (dt > 0.25) dt = 0.25;
+  acc += dt;
+  let steps = 0;
+  while (acc >= STEP && steps < 5) {
+    updateGame(S);
+    acc -= STEP; steps++; S.frame++;
+    if (S.shot && !S.shotReady && S.frame >= S.shotAt) {
+      S.shotReady = true; window.__shotReady = true;
+    }
+  }
+  if (steps > 0) S.pressed.clear();
+
+  drawWorld(S, ctx);
+  drawHUD(S, ctx);
+  drawScreens(S, ctx);
 }
 requestAnimationFrame(loop);
-
-// exposed for the play-test harness
-window.game = game;
-window.VIEW = { W: VIEW_W, H: VIEW_H };
