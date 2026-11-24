@@ -1,465 +1,412 @@
-// missions.js — 6 chained story missions (Rico returns to Vice Palms) plus
-// 3 side missions: markers, steps, timers, fail/retry, payouts, subtitles.
+// missions.js — 6 chained story missions (Rico returns to Vice Palms) +
+// 3 side missions. Marker-driven, staged, with timers, fail/retry, payouts.
 
-import { CFG } from './config.js';
-import { dist, clamp, angDiff } from './util.js';
-import { makeCar, explodeCar, carSpeed } from './cars.js';
-import { makePed, panicNear } from './peds.js';
-import { LANDMARKS } from './world.js';
+import { CFG, ctx, VERSION } from './config.js';
+import { clamp, dist, fmtMoney, TAU } from './util.js';
+import { makeCar, TYPES } from './cars.js';
 
-// ------------------------------------------------------------------ defs
+// --------------------------------------------------------------- helpers ---
+function G(x, y, label) { return { x, y, label }; }
 
-export function buildMissionDefs() {
-  const L = LANDMARKS;
-  return {
-    story: [
-      {
-        id: 'm1', name: 'Homecoming', giver: { x: L.diner.x, y: L.diner.y }, payout: 500,
-        brief: ["RICO: Look who crawled back to Vice Palms!", "RICO: Grab the lockbox from Sunrise Garage before the brackets rust.", "RICO: And don't scratch the paint, hotshot."],
-        steps: [
-          { type: 'goto', x: L.garage.x, y: L.garage.y, r: 60, text: "Pick up the lockbox at Sunrise Garage." },
-          { type: 'goto', x: L.diner.x, y: L.diner.y, r: 60, text: "Bring the lockbox back to Rico's Diner." },
-        ],
-      },
-      {
-        id: 'm2', name: 'Repo Runner', giver: { x: L.diner.x, y: L.diner.y }, payout: 1500,
-        brief: ["RICO: A pink Banshee GT is squatting at the North Docks.", "RICO: The bank wants it. We want it more. Bring it in clean."],
-        steps: [
-          { type: 'jackCar', model: 'sports', x: 3350, y: 560, color: '#ff5fa8', text: "Steal the pink Banshee at the North Docks.", alarmStars: 1 },
-          { type: 'deliverCar', x: L.garage.x, y: L.garage.y, r: 70, text: "Deliver the Banshee to Sunrise Garage." },
-        ],
-      },
-      {
-        id: 'm3', name: 'Bombshell', giver: { x: L.diner.x, y: L.diner.y }, payout: 2500,
-        brief: ["RICO: The Ferrettis run product out of the warehouse on the docks.", "RICO: This van has a very generous payload. Park it inside and walk away.", "RICO: You've got 75 seconds. After that the van finds its own boom."],
-        steps: [
-          { type: 'jackCar', model: 'van', x: 700, y: 2700, color: '#3a3f4c', text: "Pick up the bomb van at the safehouse.", bomb: true },
-          { type: 'deliverCar', x: L.warehouse.x, y: L.warehouse.y, r: 80, text: "Park the van inside the rival warehouse.", deliverTimer: 75 },
-          { type: 'exitAt', x: L.warehouse.x, y: L.warehouse.y, r: 200, text: "Get clear — 200m blast radius!" },
-        ],
-      },
-      {
-        id: 'm4', name: 'Hot Pursuit', giver: { x: L.diner.x, y: L.diner.y }, payout: 3000,
-        brief: ["RICO: A Ferretti runner is touring Ocean Drive in a red Banshee.", "RICO: Wreck it before he clears the city limits."],
-        steps: [
-          { type: 'destroyRunner', x: 4260, y: 1400, text: "Destroy the red runner on Ocean Drive.", escapeT: 100 },
-        ],
-      },
-      {
-        id: 'm5', name: 'Airfield Run', giver: { x: L.diner.x, y: L.diner.y }, payout: 4000,
-        brief: ["RICO: A crate with our name on it landed at Palm Airfield.", "RICO: The brass is twitchy — expect heat the moment you touch grass."],
-        steps: [
-          { type: 'goto', x: L.airfieldPkg.x, y: L.airfieldPkg.y, r: 50, text: "Reach the crate at Palm Airfield.", forceStars: 2 },
-          { type: 'goto', x: L.diner.x, y: L.diner.y, r: 60, text: "Run the crate back to Rico's Diner." },
-        ],
-      },
-      {
-        id: 'm6', name: 'The Last Palm', giver: { x: L.diner.x, y: L.diner.y }, payout: 10000,
-        brief: ["RICO: Last job, kid. The Ferretti convoy is staging at the docks.", "RICO: Burn both cars. Then lose the storm that follows and get home."],
-        steps: [
-          { type: 'destroyTargets', near: { x: 3400, y: 780 }, n: 2, text: "Destroy both convoy cars at the docks." },
-          { type: 'escape', text: "Lose the heat and get back to the safehouse.", dest: { x: L.safehouse.x, y: L.safehouse.y }, r: 70, forceStars: 4 },
-        ],
-      },
+// stage factories
+const st = {
+  goto: (x, y, text, opts = {}) => ({ type: 'goto', x, y, r: opts.r || 46, text, ...opts }),
+  drive: (x, y, text, opts = {}) => ({ type: 'drive', x, y, r: opts.r || 52, text, ...opts }),
+  collect: (points, text, opts = {}) => ({ type: 'collect', points, text, ...opts }),
+  kill: (x, y, n, text, opts = {}) => ({ type: 'kill', x, y, n, text, ...opts }),
+  survive: (x, y, time, text, opts = {}) => ({ type: 'survive', x, y, time, text, ...opts }),
+  escape: (text, opts = {}) => ({ type: 'escape', text, ...opts }),
+};
+
+// -------------------------------------------------------------- missions ---
+// Story: Rico returns to Vice Palms after the events upstate.
+export const STORY = [
+  {
+    id: 'm1', title: 'Welcome Back, Rico',
+    giver: G(2600, 3905, 'Rico — diner'),
+    payout: 500,
+    intro: 'RICO: "Long time, cousin. The docks smell like trouble again. Grab a car."',
+    stages: [
+      st.goto(3305, 1685, 'Meet the contact at the docks gate', {}),
+      st.collect([[5150, 760], [5480, 290], [4620, 900]], 'Collect the 3 crates around the docks'),
+      st.drive(2215, 4415, 'Deliver the crates to the lockup', { needVehicle: true }),
     ],
-    side: [
-      {
-        id: 's1', name: 'Cab Duty', giver: { x: L.taxiStand.x, y: L.taxiStand.y }, payout: 450, color: '#46b1ff',
-        brief: ["DISPATCH: Three fares, three neighborhoods. The meter is running."],
-        steps: [
-          { type: 'gotoCar', x: 2360, y: 560, r: 70, text: "Fare 1: pick up at the downtown block." },
-          { type: 'gotoCar', x: 3600, y: 1700, r: 70, text: "Fare 2: drop-in near the east towers." },
-          { type: 'gotoCar', x: 1160, y: 2300, r: 70, text: "Fare 3: last pickup in Palm Heights." },
-        ],
-      },
-      {
-        id: 's2', name: 'Beach Run', giver: { x: 4200, y: 1100 }, payout: 1000, color: '#46b1ff',
-        brief: ["STREET RACE SIGN-UP: Three gates down Ocean Drive. Beat 40 seconds."],
-        steps: [
-          { type: 'gates', gates: [{ x: 4260, y: 1500 }, { x: 4260, y: 2200 }, { x: 4260, y: 2900 }], r: 90, t: 40, text: "Hit gate 1 on Ocean Drive!" },
-        ],
-      },
-      {
-        id: 's3', name: 'Vigilante', giver: { x: L.police.x, y: L.police.y }, payout: 2000, color: '#46b1ff',
-        brief: ["SERGEANT DANA: Three gang buggies are tearing up Palm Heights.", "SERGEANT DANA: Flatten all three and the city looks the other way."],
-        steps: [
-          { type: 'destroyGang', n: 3, text: "Destroy the gang buggies (red dots on the map)." },
-        ],
-      },
+    outro: 'RICO: "Clean run. The Palms missed you."',
+  },
+  {
+    id: 'm2', title: "Rico's Ride",
+    giver: G(2215, 4415, 'Lockup'),
+    payout: 800,
+    intro: 'RICO: "A collector wants a Banshee. There\'s one rusting at the airfield."',
+    stages: [
+      st.goto(950, 2250, 'Steal the Banshee from the airfield', {}),
+      st.escape('Shake the security response', {}),
+      st.drive(3610, 1330, 'Deliver the Banshee to the downtown garage', { needVehicle: true }),
     ],
-  };
-}
+    onStart: () => {
+      // spawn the mission Banshee at the airfield pad
+      const car = makeCar('sports', 950, 2250, 0);
+      car.color = '#e8d830';
+      car.tag = 'm2-banshee';
+      ctx.cars.push(car);
+    },
+    outro: 'RICO: "Purists, I swear. Cash is cash."',
+  },
+  {
+    id: 'm3', title: 'Beach Party Crash',
+    giver: G(3610, 1330, 'Garage'),
+    payout: 700,
+    intro: 'RICO: "Some cargo washed up on the beach. Beachgoers first, collectors second. Deal with the crew guarding it."',
+    stages: [
+      st.goto(4030, 5900, 'Go to the beach stash', {}),
+      st.kill(4030, 5900, 4, 'Take out the 4 stash guards'),
+    ],
+    outro: 'RICO: "Brutal. Efficient. Very family."',
+  },
+  {
+    id: 'm4', title: 'Courier Heat',
+    giver: G(4030, 5850, 'Beach stash'),
+    payout: 900,
+    intro: 'RICO: "One last package runs tonight. The docks to the tower. Cops are twitchy — move fast."',
+    stages: [
+      st.goto(5480, 290, 'Pick up the package on the pier', { time: 70 }),
+      st.drive(3040, 1010, 'Deliver to the tower — keep it rolling', { needVehicle: true, time: 95 }),
+    ],
+    onStart: () => { ctx.police.forceLevel(2); },
+    onEnd: () => { ctx.police.clearForced(); },
+    outro: 'RICO: "The tower pays through the nose for punctuality."',
+  },
+  {
+    id: 'm5', title: 'Break the Blockade',
+    giver: G(3040, 1010, 'Tower'),
+    payout: 1200,
+    intro: 'RICO: "The Palms PD locked the whole harbor. Break their blockade and vanish. Make it loud."',
+    stages: [
+      st.goto(4000, 900, 'Get to the harbor mouth', { needVehicle: true }),
+      st.escape('Lose the heat — duck the roadblocks', {}),
+    ],
+    onStart: () => { ctx.police.forceLevel(3); },
+    onEnd: () => { ctx.police.clearForced(); },
+    outro: 'RICO: "They will write about that one. The good kind of story."',
+  },
+  {
+    id: 'm6', title: "Rico's Payback",
+    giver: G(2215, 4415, 'Lockup'),
+    payout: 3000,
+    intro: 'RICO: "Everything ends where it started. The airfield. Hold the line 60 seconds and the Palms are ours."',
+    stages: [
+      st.goto(700, 2760, 'Reach the airfield control tower', {}),
+      st.survive(700, 2760, 60, 'Hold the airfield — survive the wave'),
+    ],
+    outro: 'RICO: "Vice Palms is ours, cousin. TO BE CONTINUED…"',
+    final: true,
+  },
+];
 
-// ------------------------------------------------------------------ state
+// side missions (independent, repeatable after finish? — once each)
+export const SIDE = [
+  {
+    id: 's1', title: 'Beach Sweep', side: true,
+    giver: G(4620, 5850, 'Beach clean-up board'),
+    payout: 300,
+    intro: 'BOARD: "Glass and gulls everywhere. Grab the 6 litter bags before the tide — 90 seconds."',
+    stages: [
+      st.collect([[4500, 5760], [4900, 5820], [5250, 5750], [4700, 5950], [5400, 5900], [4300, 5900]],
+        'Collect the 6 litter bags on the beach', { time: 90 }),
+    ],
+    outro: 'BOARD: "The Palms sparkle again. Small money, good karma."',
+  },
+  {
+    id: 's2', title: 'Dock Sweep', side: true,
+    giver: G(5300, 1700, 'Foreman'),
+    payout: 350,
+    intro: 'FOREMAN: "Night shift walked off with my inventory. Recover 4 crates in 75 seconds."',
+    stages: [
+      st.collect([[5150, 760], [5480, 290], [4620, 900], [5900, 800]],
+        'Recover the 4 crates in the docks', { time: 75 }),
+    ],
+    outro: 'FOREMAN: "Union dues: paid. Gratitude: implied."',
+  },
+  {
+    id: 's3', title: 'Airfield Sprint', side: true,
+    giver: G(950, 2200, 'Runway club hut'),
+    payout: 600,
+    intro: 'CLUB: "Midnight time trial. 5 checkpoints, 80 seconds. Bring something fast."',
+    stages: [
+      st.collect([[400, 2400], [1100, 2400], [1400, 2800], [700, 2900], [900, 2350]],
+        'Hit the 5 checkpoints on the runway', { time: 80, needVehicle: true }),
+    ],
+    outro: 'CLUB: "Clean lines, cousin. The club approves."',
+  },
+  {
+    id: 's4', title: 'Neon Run', side: true,
+    giver: G(3040, 1010, 'Tower concierge'),
+    payout: 500,
+    intro: 'CONCIERGE: "The strip lights go out in 70 seconds. Tag all 5 neon corners before they do."',
+    stages: [
+      st.collect([[2500, 900], [4700, 900], [4700, 3100], [2500, 3100], [3600, 2000]],
+        'Tag the 5 neon corners of downtown', { time: 70 }),
+    ],
+    outro: 'CONCIERGE: "All corners lit. The strip will remember tonight."',
+  },
+  {
+    id: 's5', title: 'Pier Prowler', side: true,
+    giver: G(4300, 420, 'Pier night watch'),
+    payout: 450,
+    intro: 'WATCH: "Crates keep washing against the pier legs. Bring me 3 before the tide takes them — 80 seconds."',
+    stages: [
+      st.collect([[4500, 300], [5450, 300], [4300, 320]],
+        'Collect the 3 beached crates on the piers', { time: 80 }),
+    ],
+    outro: 'WATCH: "Good haul. The sea pays in salvage, cousin."',
+  },
+  {
+    id: 's6', title: 'Ferry Flare', side: true,
+    giver: G(5450, 300, 'Harbormaster skiff'),
+    payout: 550,
+    intro: 'HARBORMASTER: "The night ferry lost power. Grab 2 flares and hold the pier head for 30 seconds while it limps in."',
+    stages: [
+      st.collect([[4520, 300], [5380, 300]], 'Grab the 2 flares from the pier heads', { time: 60 }),
+      st.survive(5450, 300, 30, 'Hold the pier head while the ferry docks'),
+    ],
+    outro: 'HARBORMASTER: "She docked clean. The crew drinks on you tonight."',
+  },
+];
 
-export function initMissions(g) {
-  const defs = buildMissionDefs();
-  g.missions = {
-    defs,
-    storyIdx: 0,
-    sideDone: [],
-    active: null,
-    activeSide: false,
-    retry: null,
-    stats: { passed: 0, failed: 0, kills: 0, jacks: 0, earned: 0 },
-  };
-  if (!g.subs) g.subs = [];
-}
-
-export function say(g, text, dur = 3.4) {
-  g.subs.push({ text, t: dur, dur });
-  if (g.subs.length > 3) g.subs.shift();
-}
-
-export function toast(g, text, col) {
-  g.toasts.push({ text, t: 2.6, col: col || '#e8e8f0' });
-}
-
-/** markers the world shows right now (for hud + render + minimap) */
-export function currentMarkers(g) {
-  const out = [];
-  const M = g.missions;
-  if (M.active) {
-    const A = M.active;
-    const st = A.def.steps[A.step];
-    if (st) {
-      if (st.type === 'goto' || st.type === 'gotoCar' || st.type === 'deliverCar') {
-        out.push({ x: st.x, y: st.y, r: st.r || CFG.MARKER_R, col: '#ffd24a', kind: 'target' });
-      } else if (st.type === 'escape') {
-        out.push({ x: st.dest.x, y: st.dest.y, r: st.r, col: '#ffd24a', kind: 'target' });
-      } else if (st.type === 'gates') {
-        const gate = st.gates[A.data.gateIdx || 0];
-        if (gate) out.push({ x: gate.x, y: gate.y, r: st.r, col: '#46b1ff', kind: 'target' });
-      } else if (st.type === 'jackCar' || st.type === 'deliverCar2') {
-        if (A.data.car && !A.data.car.dead) out.push({ x: A.data.car.x, y: A.data.car.y, r: 30, col: '#ffd24a', kind: 'target' });
-      } else if (st.type === 'destroyRunner' && A.data.runner && !A.data.runner.dead) {
-        out.push({ x: A.data.runner.x, y: A.data.runner.y, r: 30, col: '#ff5a5a', kind: 'target' });
-      } else if (st.type === 'destroyTargets') {
-        for (const t of A.data.targets || []) if (t && !t.dead && !t.exploded) out.push({ x: t.x, y: t.y, r: 30, col: '#ff5a5a', kind: 'target' });
-      } else if (st.type === 'destroyGang') {
-        for (const t of A.data.gang || []) if (t && !t.dead && !t.exploded) out.push({ x: t.x, y: t.y, r: 30, col: '#ff5a5a', kind: 'target' });
-      } else if (st.type === 'exitAt' && A.data.car && !A.data.car.dead) {
-        out.push({ x: A.data.car.x, y: A.data.car.y, r: 30, col: '#ff7a1a', kind: 'target' });
-      }
-    }
-  } else {
-    const s = M.defs.story[M.storyIdx];
-    if (s) out.push({ x: s.giver.x, y: s.giver.y, r: CFG.MARKER_R, col: '#ffd24a', kind: 'giver', mission: s, side: false });
-    M.defs.side.forEach((sm) => {
-      if (!M.sideDone.includes(sm.id)) out.push({ x: sm.giver.x, y: sm.giver.y, r: CFG.MARKER_R, col: sm.color, kind: 'giver', mission: sm, side: true });
-    });
-  }
-  return out;
-}
-
-// ------------------------------------------------------------------ start / stop
-
-export function startMission(g, def, isSide) {
-  const M = g.missions;
-  if (M.active) return;
-  M.active = { def, step: 0, t: 0, data: {}, cars: [], timer: null, markers: [] };
-  M.activeSide = isSide;
-  say(g, `— ${def.name.toUpperCase()} —`, 2.6);
-  for (const line of def.brief) say(g, line, 3.2);
-  applyStars(g, def, def.steps[0]);
-}
-
-function applyStars(g, def, step) {
-  const stars = (step && step.forceStars) || 0;
-  if (stars > 0 && g.wanted < stars) g.hooks.addWanted(stars - g.wanted, 'mission heat');
-}
-
-export function failMission(g, reason) {
-  const M = g.missions;
-  if (!M.active) return;
-  const def = M.active.def;
-  g.passedOverlay = { text: 'MISSION FAILED', sub: reason, t: 3.2, col: '#ff5a5a' };
-  g.audio.fail();
-  M.stats.failed++;
-  M.coolT = 2.5;
-  cleanupMission(g);
-  M.retry = def;
-  say(g, 'Walk back into the marker to retry.', 3);
-}
-
-export function passMission(g) {
-  const M = g.missions;
-  if (!M.active) return;
-  const def = M.active.def;
-  const pay = def.payout;
-  g.hooks.giveMoney(pay);
-  g.audio.cash();
-  g.passedOverlay = { text: 'MISSION PASSED!', sub: `$${pay.toLocaleString('en-US')}`, t: 3.4, col: '#ffd24a' };
-  M.stats.passed++;
-  M.stats.earned += pay;
-  M.coolT = 2.5;
-  cleanupMission(g);
-  if (M.activeSide) M.sideDone.push(def.id);
-  else M.storyIdx++;
-  say(g, def.name + ' complete. ' + (M.storyIdx >= M.defs.story.length ? '' : 'Rico will be in touch.'), 3.2);
-}
-
-function cleanupMission(g) {
-  const M = g.missions;
-  M.active = null;
-}
-
-// ------------------------------------------------------------------ update
-
-export function updateMissions(g, dt) {
-  const M = g.missions;
-  if (!M) return;
-  const p = g.player;
-  if (!p || p.dead) return;
-
-  // idle: giver markers
-  if (!M.active) {
-    M.coolT = (M.coolT || 0) - dt;
-    if (M.coolT > 0) return;
-    for (const m of currentMarkers(g)) {
-      if (m.kind !== 'giver') continue;
-      if (dist(p.x, p.y, m.x, m.y) < m.r) {
-        startMission(g, m.mission, m.side);
-      }
-    }
-    return;
-  }
-
-  const A = M.active;
-  A.t += dt;
-  const def = A.def;
-  const step = def.steps[A.step];
-  if (!step) return passMission(g);
-
-  // step entry effects
-  if (A.stepEntered !== A.step) {
-    A.stepEntered = A.step;
-    if (step.text) say(g, step.text, 3.4);
-    applyStars(g, def, step);
-    stepEnter(g, A, step);
+// ---------------------------------------------------------------- manager --
+export class Missions {
+  constructor() {
+    this.storyIdx = 0;               // next story mission to offer
+    this.sideIdx = 0;                // next side mission to offer
+    this.done = new Set();           // completed ids
+    this.active = null;              // mission def currently running
+    this.stage = 0;
+    this.stageTime = -1;             // countdown, -1 = no timer
+    this.collectLeft = [];
+    this.killTargets = [];
+    this.surviveT = 0;
+    this.banner = null;              // {title, sub, t}
+    this.failMsg = 0;
+    this.retryable = true;
+    this.rewardFx = 0;
+    this.missionVehicles = [];
   }
 
-  // timers
-  if (A.timer !== null) {
-    A.timer -= dt;
-    if (A.timer <= 0) return failMission(g, 'Out of time.');
+  // all defs not yet done, in offering order (story first)
+  available() {
+    const out = [];
+    if (this.storyIdx < STORY.length) out.push(STORY[this.storyIdx]);
+    if (this.sideIdx < SIDE.length) out.push(SIDE[this.sideIdx]);
+    return out;
   }
 
-  // generic fails
-  if (p.dead) return; // game.js handles wasted → fail
-
-  // step-specific progress
-  const done = stepUpdate(g, A, step, dt);
-  if (done) {
-    A.step++;
-    if (A.step >= def.steps.length) passMission(g);
+  giverMarkers() {
+    const out = [];
+    if (!this.active) {
+      for (const m of this.available()) out.push({ x: m.giver.x, y: m.giver.y, kind: 'giver' });
+    }
+    return out;
   }
-}
 
-function stepEnter(g, A, step) {
-  const p = g.player;
-  switch (step.type) {
-    case 'jackCar': {
-      const c = makeCar(g, step.x, step.y, Math.PI / 2, step.model, {
-        kind: 'mission', driver: null, color: step.color || '#b8bcc8',
-      });
-      c.exitKeep = true;
-      A.data.car = c;
-      if (step.bomb) {
-        A.data.bombArmed = false;
-        A.data.bombT = 0;
-      }
-      if (step.deliverTimer) A.timer = step.deliverTimer;
-      break;
+  objectiveMarkers() {
+    if (!this.active) return [];
+    const s = this.active.stages[this.stage];
+    const out = [];
+    if (!s) return out;
+    if (s.type === 'goto' || s.type === 'drive') {
+      out.push({ x: s.x, y: s.y, kind: 'obj' });
+    } else if (s.type === 'collect') {
+      for (const p of this.collectLeft) out.push({ x: p[0], y: p[1], kind: 'obj' });
+    } else if (s.type === 'kill') {
+      out.push({ x: s.x, y: s.y, kind: 'obj' });
+    } else if (s.type === 'survive') {
+      out.push({ x: s.x, y: s.y, kind: 'obj' });
     }
-    case 'deliverCar':
-      if (step.deliverTimer) A.timer = step.deliverTimer;
-      break;
-    case 'destroyRunner': {
-      const c = makeCar(g, step.x, step.y, -Math.PI / 2, 'sports', {
-        kind: 'mission', driver: 'npc', color: '#e0342f',
-      });
-      c.exitKeep = true;
-      A.data.runner = c;
-      A.data.escapeT = step.escapeT;
-      break;
-    }
-    case 'destroyTargets': {
-      A.data.targets = [];
-      for (let i = 0; i < step.n; i++) {
-        const c = makeCar(g, step.near.x + i * 90 - 45, step.near.y, 0, i === 0 ? 'sports' : 'sedan', {
-          kind: 'mission', driver: 'npc', color: i === 0 ? '#e0342f' : '#3a3f4c',
-        });
-        c.exitKeep = true;
-        A.data.targets.push(c);
-      }
-      break;
-    }
-    case 'destroyGang': {
-      A.data.gang = [];
-      for (let i = 0; i < step.n; i++) {
-        const ang = (i / step.n) * Math.PI * 2;
-        const c = makeCar(g, 2300 + Math.cos(ang) * 500, 1700 + Math.sin(ang) * 500, ang, 'buggy', {
-          kind: 'mission', driver: 'npc', color: '#2a2a30',
-        });
-        c.exitKeep = true;
-        A.data.gang.push(c);
-      }
-      break;
-    }
-    case 'gates':
-      A.data.gateIdx = 0;
-      A.timer = step.t;
-      break;
-    case 'escape':
-      if (step.forceStars && g.wanted < step.forceStars) {
-        g.hooks.addWanted(step.forceStars - g.wanted, 'the final storm');
-      }
-      break;
-    case 'exitAt':
-      A.data.bombArmed = true;
-      break;
+    return out;
   }
-}
 
-function stepUpdate(g, A, step, dt) {
-  const p = g.player;
-  switch (step.type) {
-    case 'goto':
-      return dist(p.x, p.y, step.x, step.y) < step.r;
-    case 'gotoCar':
-      return p.car && dist(p.x, p.y, step.x, step.y) < step.r;
-    case 'jackCar': {
-      const c = A.data.car;
-      if (!c || c.dead) { failMission(g, 'The car was destroyed.'); return false; }
-      if (c.driver === 'player') {
-        if (!A.data.starsApplied && step.alarmStars) {
-          A.data.starsApplied = true;
-          g.hooks.addWanted(step.alarmStars, 'car alarm');
+  tryStart(S) {
+    if (this.active) return;
+    const p = S.player;
+    for (const m of this.available()) {
+      if (dist(p.x, p.y, m.giver.x, m.giver.y) < 42) {
+        this.begin(m, S);
+        return;
+      }
+    }
+  }
+
+  begin(m, S) {
+    this.active = m;
+    this.stage = 0;
+    this.retryable = true;
+    ctx.subtitle(m.title, 2.6);
+    ctx.subtitle(m.intro, 5.5);
+    if (m.onStart) m.onStart();
+    this.enterStage(0, S);
+  }
+
+  enterStage(i, S) {
+    this.stage = i;
+    const s = this.active.stages[i];
+    if (!s) { this.complete(S); return; }
+    if (s.time !== undefined) this.stageTime = s.time;
+    else this.stageTime = -1;
+    if (s.type === 'collect') this.collectLeft = s.points.slice();
+    if (s.type === 'kill') {
+      this.killTargets = ctx.peds.spawnGang(s.x, s.y, s.n);
+    }
+    if (s.type === 'survive') {
+      this.surviveT = s.time;
+      ctx.peds.spawnGang(s.x, s.y, 4);
+      ctx.police.forceLevel(2);
+    }
+    if (s.type === 'escape') {
+      // make sure there is some heat to escape
+      if (ctx.police.level === 0) ctx.police.forceLevel(Math.max(2, this.active.stageHeat || 2));
+      if (this.active.id === 'm2') ctx.police.forceLevel(2);
+      if (this.active.id === 'm5') ctx.police.forceLevel(3);
+    }
+    if (s.text) ctx.subtitle(s.text, 3.2);
+  }
+
+  update(dt, S) {
+    if (this.banner) {
+      this.banner.t -= dt;
+      if (this.banner.t <= 0) this.banner = null;
+    }
+    this.rewardFx = Math.max(0, this.rewardFx - dt);
+    this.failMsg = Math.max(0, this.failMsg - dt);
+
+    this.tryStart(S);
+
+    if (!this.active) return;
+    const s = this.active.stages[this.stage];
+    if (!s) return;
+
+    // stage timer
+    if (this.stageTime >= 0) {
+      this.stageTime -= dt;
+      if (this.stageTime <= 0) { this.fail('Out of time.', S); return; }
+    }
+
+    const p = S.player;
+
+    switch (s.type) {
+      case 'goto': {
+        if (dist(p.x, p.y, s.x, s.y) < s.r) this.nextStage(S);
+        break;
+      }
+      case 'drive': {
+        if (p.inCar && dist(p.x, p.y, s.x, s.y) < s.r) {
+          if (s.needVehicle) this.nextStage(S);
+          else this.nextStage(S);
         }
-        return true;
+        break;
       }
-      return false;
-    }
-    case 'deliverCar': {
-      const c = A.data.car;
-      if (!c || c.dead) { failMission(g, 'The car was destroyed.'); return false; }
-      if (c.driver !== 'player') {
-        if (dist(c.x, c.y, step.x, step.y) < step.r) return true;
-        return false;
-      }
-      if (dist(p.x, p.y, step.x, step.y) < step.r) {
-        if (step.type === 'deliverCar' && A.def.id === 'm3') {
-          // park & get out handled by next step
+      case 'collect': {
+        for (let i = this.collectLeft.length - 1; i >= 0; i--) {
+          const c = this.collectLeft[i];
+          if (dist(p.x, p.y, c[0], c[1]) < 40) {
+            this.collectLeft.splice(i, 1);
+            if (ctx.sfx) ctx.sfx('pickup', c[0], c[1]);
+            if (this.collectLeft.length === 0) this.nextStage(S);
+          }
         }
-        return true;
+        break;
       }
-      return false;
-    }
-    case 'exitAt': {
-      // bomb countdown after the player leaves the blast zone
-      const c = A.data.car;
-      if (c && !c.dead && dist(p.x, p.y, step.x, step.y) > step.r) {
-        if (!A.data.boomStarted) {
-          A.data.boomStarted = true;
-          say(g, 'BOMB ARMED — RUN!', 2.5);
+      case 'kill': {
+        let alive = 0;
+        for (const g of this.killTargets) if (!g.dead) alive++;
+        if (alive === 0) this.nextStage(S);
+        break;
+      }
+      case 'survive': {
+        this.surviveT -= dt;
+        // top up gangs / heat
+        if (Math.random() < dt * 0.35) ctx.peds.spawnGang(s.x, s.y, 1);
+        if (this.surviveT <= 0) {
+          ctx.police.clearForced();
+          this.nextStage(S);
         }
-        A.data.boomT = (A.data.boomT || 3.5) - dt;
-        if (A.data.boomT <= 0) {
-          if (c && !c.exploded) explodeCar(g, c);
-          return true;
+        break;
+      }
+      case 'escape': {
+        if (ctx.police.level === 0) {
+          if (this.active.onEnd) this.active.onEnd();
+          this.nextStage(S);
         }
+        break;
       }
-      if (c && c.dead) return true;
-      return false;
-    }
-    case 'destroyRunner': {
-      const r = A.data.runner;
-      if (!r) return false;
-      if (r.dead || r.exploded) {
-        toast(g, 'Runner down!', '#8fdc8f');
-        return true;
-      }
-      // flee AI + escape timer
-      runnerAI(g, r, p, dt);
-      A.data.escapeT -= dt;
-      if (A.data.escapeT <= 0) { failMission(g, 'The runner escaped the city.'); return false; }
-      return false;
-    }
-    case 'destroyTargets': {
-      const ts = A.data.targets || [];
-      let alive = 0;
-      for (const t of ts) if (t && !t.dead && !t.exploded) alive++;
-      for (const t of ts) if (t && !t.exploded && t.driver === 'npc') runnerAI(g, t, p, dt, 0.75);
-      return alive === 0;
-    }
-    case 'destroyGang': {
-      const ts = A.data.gang || [];
-      let alive = 0;
-      for (const t of ts) if (t && !t.dead && !t.exploded) alive++;
-      for (const t of ts) if (t && !t.exploded && t.driver === 'npc') gangAI(g, t, p, dt);
-      return alive === 0;
-    }
-    case 'gates': {
-      const gi = A.data.gateIdx;
-      const gate = step.gates[gi];
-      if (p.car && dist(p.x, p.y, gate.x, gate.y) < step.r) {
-        A.data.gateIdx++;
-        g.audio.pickup();
-        if (A.data.gateIdx >= step.gates.length) return true;
-        A.timer = 14;
-        say(g, `Gate ${A.data.gateIdx + 1} of ${step.gates.length}!`, 2.2);
-      }
-      return false;
-    }
-    case 'escape': {
-      if (g.wanted === 0) {
-        return dist(p.x, p.y, step.dest.x, step.dest.y) < step.r;
-      }
-      return false;
     }
   }
-  return false;
-}
 
-// ------------------------------------------------------------------ chase AIs
-
-function runnerAI(g, c, p, dt, speedMul = 1) {
-  // flee: drive away from the player, bounce off walls, never stop
-  const away = Math.atan2(c.y - p.y, c.x - p.x);
-  const want = away;
-  const diff = angDiff(c.ang, want);
-  c.steer = clamp(diff * 2.4, -1, 1);
-  c.throttle = 1;
-  c.brake = 0;
-  c.handbrake = Math.abs(diff) > 1.5;
-  const sp = carSpeed(c);
-  if (sp < 20) c.stuckT += dt; else c.stuckT = 0;
-  if (c.stuckT > 1.4) { c.stuckT = 0; c.reverseT = 0.8; }
-  if (c.reverseT > 0) { c.reverseT -= dt; c.throttle = 0; c.brake = 1; c.steer = -c.steer; }
-  c.panicT = 1;
-}
-
-function gangAI(g, c, p, dt) {
-  // gang cars circle and occasionally ram the player
-  const d = dist(c.x, c.y, p.x, p.y);
-  if (d < 420) {
-    runnerAI(g, c, p, dt, 0.9);
-    // charge instead of flee when close
-    const want = Math.atan2(p.y - c.y, p.x - c.x);
-    c.steer = clamp(angDiff(c.ang, want) * 2, -1, 1);
-    c.throttle = 1;
-  } else {
-    runnerAI(g, c, p, dt, 0.9);
+  nextStage(S) {
+    if (this.active.onEnd && this.stage === this.active.stages.length - 1) {
+      // mission-scoped forced heat gets cleared by specific stages already
+    }
+    if (this.stage + 1 >= this.active.stages.length) this.complete(S);
+    else this.enterStage(this.stage + 1, S);
   }
-}
 
-// ------------------------------------------------------------------ wasted/busted hooks into missions
+  complete(S) {
+    const m = this.active;
+    if (!m) return;
+    const payout = m.payout;
+    S.money += payout;
+    S.stats.earned += payout;
+    S.stats.missions++;
+    this.done.add(m.id);
+    if (!m.side) this.storyIdx++;
+    else this.sideIdx++;
+    this.banner = { title: 'MISSION PASSED!', sub: m.title + '  —  ' + fmtMoney(payout), t: 5, dur: 5 };
+    this.rewardFx = 3;
+    if (ctx.sfx) ctx.sfx('mission', S.player.x, S.player.y);
+    ctx.subtitle(m.outro, 5);
+    if (m.final) {
+      this.banner = { title: 'VICE PALMS IS YOURS', sub: 'The story continues…  —  ' + fmtMoney(payout), t: 8, dur: 8 };
+    }
+    // cleanup mission vehicles
+    for (const c of this.missionVehicles) c.tag = null;
+    this.missionVehicles.length = 0;
+    this.active = null;
+    this.stage = 0;
+    this.stageTime = -1;
+  }
 
-export function onPlayerDied(g) {
-  if (g.missions && g.missions.active) failMission(g, 'You got wasted.');
-}
+  fail(reason, S) {
+    const m = this.active;
+    if (!m) return;
+    if (m.onEnd) m.onEnd();
+    if (m.id === 'm6') ctx.police.clearForced();
+    ctx.subtitle('MISSION FAILED — ' + reason, 4);
+    ctx.subtitle('Return to the marker to retry.', 3.5);
+    this.failMsg = 6;
+    this.active = null;
+    this.stage = 0;
+    this.stageTime = -1;
+    // despawn stage spawns lazily (gang members fade via cull)
+  }
 
-export function onBusted(g) {
-  if (g.missions && g.missions.active) failMission(g, 'You got busted.');
+  // called by game.js when the player dies/busted during a mission
+  abort(S) {
+    if (!this.active) return;
+    if (this.active.onEnd) this.active.onEnd();
+    this.active = null;
+    this.stage = 0;
+    this.stageTime = -1;
+    this.collectLeft = [];
+  }
+
+  // ------------------------------------------------------------- save/load --
+  saveData() {
+    return { storyIdx: this.storyIdx, sideIdx: this.sideIdx, done: [...this.done] };
+  }
+
+  loadData(d) {
+    if (!d) return;
+    this.storyIdx = d.storyIdx | 0;
+    this.sideIdx = d.sideIdx | 0;
+    this.done = new Set(d.done || []);
+  }
 }

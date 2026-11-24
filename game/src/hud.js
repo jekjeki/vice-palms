@@ -1,255 +1,319 @@
-// hud.js — health/armor/money/ammo/stars, speedometer, subtitles, toasts,
-// mission line + timer, and the circular minimap.
+// hud.js — canvas HUD: health/armor/money/stars, speedo, subtitles,
+// mission banner, circular minimap with blips.
 
-import { CFG } from './config.js';
-import { clamp, fmtMoney, fmtTime, TAU } from './util.js';
-import { currentMarkers } from './missions.js';
+import { CFG, ctx, VERSION } from './config.js';
+import { clamp, fmtMoney, fmtTime, TAU, dist } from './util.js';
+import { WEAPONS, WEAPON_ORDER } from './weapons.js';
 
-export function drawHud(g, ctx) {
-  const p = g.player;
-  if (!p) return;
-
-  // ---------- top-left: vitals + money
-  panel(ctx, 14, 14, 190, p.armor > 0 ? 92 : 74);
-  bar(ctx, 24, 24, 170, 14, clamp(p.hp / CFG.PLAYER_HP, 0, 1), '#67e08a', '#173322');
-  ctx.fillStyle = '#cfd2da';
-  ctx.font = 'bold 11px monospace';
-  ctx.textAlign = 'left';
-  ctx.fillText('HEALTH', 24, 21);
-  if (p.armor > 0) {
-    bar(ctx, 24, 46, 170, 12, clamp(p.armor / 100, 0, 1), '#5ab2ff', '#14243d');
-    ctx.fillStyle = '#cfd2da';
-    ctx.fillText('ARMOR', 24, 43);
+export class Hud {
+  constructor() {
+    this.subtitle = null;      // {text, t}
+    this.subtitle2 = null;
+    this.starPulse = 0;
   }
-  const moneyY = p.armor > 0 ? 84 : 66;
-  ctx.font = 'bold 21px monospace';
-  ctx.fillStyle = '#8fe08f';
-  ctx.fillText(fmtMoney(p.money), 24, moneyY);
-  // ammo
-  ctx.font = 'bold 14px monospace';
-  ctx.fillStyle = '#e8d98a';
-  ctx.fillText(`AMMO ${p.ammo}`, 150, moneyY);
 
-  // ---------- top-right: wanted stars
-  const stars = g.wanted;
-  ctx.save();
-  ctx.translate(CFG.VIEW_W - 30, 30);
-  for (let i = 0; i < CFG.WANTED_MAX; i++) {
-    const x = -i * 30;
-    const on = i < stars;
-    drawStar(ctx, x, 0, 11, on ? '#ffd24a' : 'rgba(255,255,255,0.16)', on);
-    if (on) {
-      ctx.shadowColor = '#ffd24a';
-      ctx.shadowBlur = 10;
-      drawStar(ctx, x, 0, 11, '#ffd24a', true);
-      ctx.shadowBlur = 0;
+  pushSubtitle(text, dur) {
+    const s = { text, t: dur, dur };
+    if (this.subtitle && this.subtitle.text === text) { this.subtitle.t = dur; return; }
+    if (this.subtitle2 && this.subtitle2.text === text) { this.subtitle2.t = dur; return; }
+    if (!this.subtitle || this.subtitle.t < 0.4) this.subtitle = s;
+    else if (!this.subtitle2) this.subtitle2 = s;
+    else {
+      this.subtitle2 = this.subtitle;
+      this.subtitle = s;
     }
   }
-  ctx.restore();
 
-  // toasts under stars
-  let ty = 62;
-  for (const t of g.toasts) {
-    ctx.font = 'bold 14px monospace';
-    ctx.textAlign = 'right';
-    ctx.fillStyle = 'rgba(8,10,20,0.6)';
-    const w = ctx.measureText(t.text).width + 18;
-    ctx.fillRect(CFG.VIEW_W - 22 - w, ty - 14, w, 22);
-    ctx.fillStyle = t.col;
-    ctx.fillText(t.text, CFG.VIEW_W - 31, ty + 1);
-    ty += 28;
-  }
-  ctx.textAlign = 'left';
-
-  // ---------- mission line
-  const M = g.missions;
-  if (M && M.active) {
-    const A = M.active;
-    const st = A.def.steps[A.step];
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 15px monospace';
-    ctx.fillStyle = '#ffd24a';
-    ctx.fillText(A.def.name.toUpperCase(), CFG.VIEW_W / 2, 30);
-    ctx.font = '13px monospace';
-    ctx.fillStyle = '#e6e8f0';
-    if (st && st.text) ctx.fillText(st.text, CFG.VIEW_W / 2, 50);
-    if (A.timer !== null) {
-      const tt = Math.max(0, A.timer);
-      ctx.font = 'bold 26px monospace';
-      ctx.fillStyle = tt < 10 ? '#ff6a6a' : '#e8e8f0';
-      ctx.fillText(fmtTime(tt), CFG.VIEW_W / 2, 80);
+  update(dt) {
+    for (const s of [this.subtitle, this.subtitle2]) {
+      if (s) s.t -= dt;
     }
-    // escape countdown for the runner mission
-    if (st && st.type === 'destroyRunner' && A.data.escapeT != null) {
-      ctx.font = 'bold 22px monospace';
-      ctx.fillStyle = A.data.escapeT < 15 ? '#ff6a6a' : '#e8e8f0';
-      ctx.fillText(`ESCAPES IN ${Math.ceil(A.data.escapeT)}s`, CFG.VIEW_W / 2, 80);
+    if (this.subtitle && this.subtitle.t <= 0) this.subtitle = this.subtitle2;
+    if (this.subtitle2 && this.subtitle2.t <= 0) this.subtitle2 = null;
+    this.starPulse = Math.max(0, this.starPulse - dt);
+  }
+
+  draw(g, S) {
+    const W = CFG.viewW, H = CFG.viewH;
+    g.textBaseline = 'alphabetic';
+
+    this.drawMoney(g, S);
+    this.drawStars(g, S);
+    this.drawBars(g, S);
+    this.drawMinimap(g, S);
+    this.drawSpeedo(g, S);
+    this.drawMissionInfo(g, S);
+    this.drawSubtitles(g, S);
+    this.drawBanner(g, S);
+    this.drawHints(g, S);
+  }
+
+  drawMoney(g, S) {
+    g.font = 'bold 26px "Courier New", monospace';
+    g.textAlign = 'right';
+    const txt = fmtMoney(S.money);
+    g.fillStyle = 'rgba(0,0,0,0.6)';
+    g.fillText(txt, CFG.viewW - 208 + 2, 44);
+    g.fillStyle = '#7ae85a';
+    g.fillText(txt, CFG.viewW - 210, 42);
+  }
+
+  drawStars(g, S) {
+    const lvl = ctx.police ? ctx.police.level : 0;
+    g.font = '24px monospace';
+    g.textAlign = 'right';
+    for (let i = 0; i < 5; i++) {
+      const x = CFG.viewW - 210 - i * 26;
+      const y = 74;
+      const on = i < lvl;
+      g.fillStyle = on ? '#ffd24a' : 'rgba(255,255,255,0.14)';
+      if (on) {
+        const pulse = 1 + Math.sin(S.time * 6) * 0.08;
+        this.star(g, x, y, 11 * pulse);
+      } else {
+        this.star(g, x, y, 10);
+      }
     }
-    ctx.textAlign = 'left';
   }
 
-  // ---------- subtitles
-  ctx.textAlign = 'center';
-  let sy = CFG.VIEW_H - 64;
-  for (let i = g.subs.length - 1; i >= 0 && i >= g.subs.length - 2; i--) {
-    const s = g.subs[i];
-    const a = clamp(s.t / 0.4, 0, 1);
-    ctx.font = '15px monospace';
-    const w = ctx.measureText(s.text).width + 26;
-    ctx.fillStyle = `rgba(6,8,16,${0.72 * a})`;
-    ctx.fillRect(CFG.VIEW_W / 2 - w / 2, sy - 18, w, 26);
-    ctx.fillStyle = `rgba(240,240,246,${a})`;
-    ctx.fillText(s.text, CFG.VIEW_W / 2, sy);
-    sy -= 34;
-  }
-  ctx.textAlign = 'left';
-
-  // ---------- speedometer
-  if (p.car && !p.car.dead) {
-    const c = p.car;
-    const sp = Math.hypot(c.vx, c.vy) * 0.42; // "km/h"
-    const cx = CFG.VIEW_W - 96, cy = CFG.VIEW_H - 96, r = 62;
-    ctx.fillStyle = 'rgba(8,10,20,0.55)';
-    ctx.beginPath();
-    ctx.arc(cx, cy, r + 14, 0, TAU);
-    ctx.fill();
-    // arc gauge
-    ctx.lineWidth = 7;
-    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, Math.PI * 0.75, Math.PI * 2.25);
-    ctx.stroke();
-    const frac = clamp(sp / 170, 0, 1);
-    ctx.strokeStyle = frac > 0.8 ? '#ff6a6a' : '#8fd0ff';
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, Math.PI * 0.75, Math.PI * 0.75 + frac * Math.PI * 1.5);
-    ctx.stroke();
-    ctx.fillStyle = '#eef0f6';
-    ctx.font = 'bold 20px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(Math.round(sp), cx, cy + 6);
-    ctx.font = '10px monospace';
-    ctx.fillStyle = '#9aa0b0';
-    ctx.fillText('KM/H', cx, cy + 22);
-    if (c.hp < CFG.SMOKE_HP) {
-      ctx.fillStyle = c.burning > 0 ? '#ff6a3a' : '#ffb03a';
-      ctx.font = 'bold 11px monospace';
-      ctx.fillText(c.burning > 0 ? '! FIRE !' : 'DAMAGED', cx, cy - 24);
+  star(g, x, y, r) {
+    g.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + (i * Math.PI) / 5;
+      const rr = i % 2 === 0 ? r : r * 0.45;
+      const px = x + Math.cos(a) * rr, py = y - r + r + Math.sin(a) * rr;
+      if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
     }
-    ctx.textAlign = 'left';
+    g.closePath();
+    g.fill();
   }
 
-  drawMinimap(g, ctx);
-}
-
-// ------------------------------------------------------------------ minimap
-
-function drawMinimap(g, ctx) {
-  const p = g.player;
-  const mm = g.world.minimap;
-  if (!mm || !p) return;
-  const R = 96;
-  const cx = 26 + R, cy = CFG.VIEW_H - 26 - R;
-  const z = 0.34;                    // minimap zoom (screen px per world px)
-  const ms = mm.scale;
-
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(cx, cy, R, 0, TAU);
-  ctx.clip();
-  // backing
-  ctx.fillStyle = '#10131c';
-  ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
-
-  const srcW = (2 * R / z) * ms;
-  const sx = p.x * ms - srcW / 2;
-  const sy = p.y * ms - srcW / 2;
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(mm.canvas, sx, sy, srcW, srcW, cx - R, cy - R, R * 2, R * 2);
-
-  const w2s = (wx, wy) => ({ x: cx + (wx - p.x) * z, y: cy + (wy - p.y) * z });
-
-  // markers
-  for (const m of g.markers) {
-    const s = w2s(m.x, m.y);
-    if (Math.hypot(s.x - cx, s.y - cy) > R - 6) continue;
-    ctx.fillStyle = m.kind === 'target' ? m.col : m.col;
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, 4, 0, TAU);
-    ctx.fill();
+  drawBars(g, S) {
+    const p = S.player;
+    const x = CFG.viewW - 206, y = 96, w = 190, h = 11;
+    // health
+    g.fillStyle = 'rgba(0,0,0,0.55)';
+    g.fillRect(x - 2, y - 2, w + 4, h + 4);
+    g.fillStyle = '#3a2028';
+    g.fillRect(x, y, w, h);
+    g.fillStyle = p.health < 30 ? '#ff4055' : '#e84a68';
+    g.fillRect(x, y, w * clamp(p.health / CFG.playerMaxHealth, 0, 1), h);
+    // armor
+    const y2 = y + h + 6;
+    g.fillStyle = 'rgba(0,0,0,0.55)';
+    g.fillRect(x - 2, y2 - 2, w + 4, h + 4);
+    g.fillStyle = '#1c2a44';
+    g.fillRect(x, y2, w, h);
+    g.fillStyle = '#5aa0f0';
+    g.fillRect(x, y2, w * clamp(p.armor / CFG.playerMaxArmor, 0, 1), h);
+    // weapon readout (current weapon + reserve)
+    const wp = ctx.weapons;
+    let wlabel = '';
+    if (wp && !p.inCar) {
+      const w = WEAPONS[wp.current];
+      wlabel = w.melee ? w.name : w.name + ' ' + (wp.ammo[wp.current] || 0);
+    }
+    g.font = 'bold 15px monospace';
+    g.textAlign = 'left';
+    g.fillStyle = 'rgba(255,255,255,0.75)';
+    g.fillText(wlabel, x, y2 + 26);
+    // slots strip
+    if (wp) {
+      g.font = '11px monospace';
+      let sx = x;
+      for (const id of WEAPON_ORDER) {
+        const w = WEAPONS[id];
+        const owned = wp.owned.has(id);
+        const cur = wp.current === id;
+        g.fillStyle = cur ? '#f5c04a' : owned ? 'rgba(255,255,255,0.55)' : 'rgba(255,255,255,0.12)';
+        const code = { fists: '1:F', pistol: '2:P', shotgun: '3:SG', smg: '4:SM' }[id];
+        g.fillText(code, sx, y2 + 44);
+        sx += 34;
+      }
+    }
   }
-  // cops
-  ctx.fillStyle = '#ff4040';
-  for (const c of g.cars) {
-    if (c.kind !== 'police' || c.dead) continue;
-    const s = w2s(c.x, c.y);
-    if (Math.hypot(s.x - cx, s.y - cy) > R - 5) continue;
-    ctx.fillRect(s.x - 2.5, s.y - 2.5, 5, 5);
+
+  drawMinimap(g, S) {
+    const R = CFG.minimapSize / 2;
+    const cx = 18 + R, cy = CFG.viewH - 18 - R;
+    const ren = ctx.renderer;
+    const scale = CFG.minimapScale;
+    const px = S.player.x, py = S.player.y;
+
+    g.save();
+    g.beginPath();
+    g.arc(cx, cy, R, 0, TAU);
+    g.clip();
+    g.fillStyle = '#0a1420';
+    g.fillRect(cx - R, cy - R, R * 2, R * 2);
+    // map image, offset so player is centered
+    const k = 560 / CFG.map;
+    const imgR = R / scale;             // world radius shown
+    g.drawImage(
+      ren.minimap,
+      (px - imgR) * k, (py - imgR) * k, imgR * 2 * k, imgR * 2 * k,
+      cx - R, cy - R, R * 2, R * 2
+    );
+    // blips
+    const blip = (wx, wy, color, r = 3) => {
+      const dx = (wx - px) * scale, dy = (wy - py) * scale;
+      if (dx * dx + dy * dy > (R - 4) * (R - 4)) {
+        // clamp to rim
+        const d = Math.hypot(dx, dy) || 1;
+        const f = (R - 6) / d;
+        g.fillStyle = color;
+        g.beginPath(); g.arc(cx + dx * f, cy + dy * f, r * 0.8, 0, TAU); g.fill();
+        return;
+      }
+      g.fillStyle = color;
+      g.beginPath(); g.arc(cx + dx, cy + dy, r, 0, TAU); g.fill();
+    };
+    for (const m of S.missions.giverMarkers()) blip(m.x, m.y, '#f5c04a', 4);
+    for (const m of S.missions.objectiveMarkers()) blip(m.x, m.y, '#f05ec8', 4);
+    for (const car of ctx.cars) {
+      if (car.ai === 'police' && !car.dead) blip(car.x, car.y, '#5aa0f0', 3);
+    }
+    // player arrow
+    const p = S.player;
+    const ang = p.inCar ? p.inCar.angle : p.angle;
+    g.save();
+    g.translate(cx, cy);
+    g.rotate(ang);
+    g.fillStyle = '#ffffff';
+    g.beginPath();
+    g.moveTo(7, 0); g.lineTo(-5, -4.6); g.lineTo(-5, 4.6);
+    g.closePath(); g.fill();
+    g.restore();
+    g.restore();
+
+    // rim
+    g.strokeStyle = 'rgba(255,255,255,0.35)';
+    g.lineWidth = 3;
+    g.beginPath(); g.arc(cx, cy, R + 1.5, 0, TAU); g.stroke();
+    // north tick
+    g.fillStyle = 'rgba(255,255,255,0.6)';
+    g.font = 'bold 11px monospace';
+    g.textAlign = 'center';
+    g.fillText('N', cx, cy - R + 14);
   }
-  // mission cars (red dots handled via markers)
-  // player arrow
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate((p.car ? p.car.ang : p.ang) + Math.PI / 2);
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.moveTo(0, -7);
-  ctx.lineTo(5, 5);
-  ctx.lineTo(-5, 5);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-  ctx.restore();
 
-  // ring + N
-  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(cx, cy, R, 0, TAU);
-  ctx.stroke();
-  ctx.fillStyle = '#cfd2da';
-  ctx.font = 'bold 11px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText('N', cx, cy - R + 14);
-  ctx.textAlign = 'left';
-}
-
-// ------------------------------------------------------------------ widgets
-
-function panel(ctx, x, y, w, h) {
-  ctx.fillStyle = 'rgba(8,10,20,0.55)';
-  ctx.fillRect(x, y, w, h);
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
-}
-
-function bar(ctx, x, y, w, h, frac, col, bg) {
-  ctx.fillStyle = bg;
-  ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = col;
-  ctx.fillRect(x, y, Math.max(0, w * frac), h);
-  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
-}
-
-function drawStar(ctx, x, y, r, col, fill) {
-  ctx.beginPath();
-  for (let i = 0; i < 10; i++) {
-    const rr = i % 2 === 0 ? r : r * 0.45;
-    const a = -Math.PI / 2 + (i / 10) * TAU;
-    const px = x + Math.cos(a) * rr;
-    const py = y + Math.sin(a) * rr;
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
+  drawSpeedo(g, S) {
+    const p = S.player;
+    if (!p.inCar) return;
+    const car = p.inCar;
+    const mph = Math.round(car.speed * 0.28);
+    const x = CFG.viewW - 120, y = CFG.viewH - 60;
+    g.fillStyle = 'rgba(0,0,0,0.5)';
+    g.beginPath(); g.arc(x, y, 44, 0, TAU); g.fill();
+    g.strokeStyle = 'rgba(255,255,255,0.25)';
+    g.lineWidth = 4;
+    g.beginPath(); g.arc(x, y, 40, Math.PI * 0.75, Math.PI * 2.25); g.stroke();
+    // speed arc
+    const frac = clamp(car.speed / car.spec.max, 0, 1);
+    g.strokeStyle = frac > 0.85 ? '#ff4055' : '#7ae85a';
+    g.lineWidth = 6;
+    g.beginPath();
+    g.arc(x, y, 40, Math.PI * 0.75, Math.PI * 0.75 + Math.PI * 1.5 * frac);
+    g.stroke();
+    g.fillStyle = '#f0f0f0';
+    g.font = 'bold 24px monospace';
+    g.textAlign = 'center';
+    g.fillText(String(mph), x, y + 6);
+    g.font = '10px monospace';
+    g.fillStyle = 'rgba(255,255,255,0.6)';
+    g.fillText('MPH', x, y + 20);
   }
-  ctx.closePath();
-  if (fill) {
-    ctx.fillStyle = col;
-    ctx.fill();
-  } else {
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 1.4;
-    ctx.stroke();
+
+  drawMissionInfo(g, S) {
+    const M = S.missions;
+    if (M.active) {
+      const s = M.active.stages[M.stage];
+      g.font = 'bold 15px monospace';
+      g.textAlign = 'center';
+      g.fillStyle = 'rgba(0,0,0,0.55)';
+      const label = (s && s.text) ? s.text.toUpperCase() : M.active.title.toUpperCase();
+      const tw = g.measureText(label).width;
+      g.fillRect(CFG.viewW / 2 - tw / 2 - 12, 16, tw + 24, 24);
+      g.fillStyle = '#f0a0c8';
+      g.fillText(label, CFG.viewW / 2, 33);
+      // timers
+      if (M.stageTime >= 0) {
+        const t = fmtTime(M.stageTime);
+        g.font = 'bold 20px monospace';
+        g.fillStyle = M.stageTime < 10 ? '#ff4055' : '#f5c04a';
+        g.fillText(t, CFG.viewW / 2, 62);
+      }
+      if (s && s.type === 'collect') {
+        g.font = '14px monospace';
+        g.fillStyle = 'rgba(255,255,255,0.8)';
+        g.fillText(`${s.points.length - M.collectLeft.length} / ${s.points.length}`, CFG.viewW / 2, 62);
+      }
+      if (s && s.type === 'survive') {
+        const t = fmtTime(M.surviveT);
+        g.font = 'bold 20px monospace';
+        g.fillStyle = '#f5c04a';
+        g.fillText('HOLD: ' + t, CFG.viewW / 2, 62);
+      }
+    } else if (M.failMsg > 0) {
+      g.font = 'bold 15px monospace';
+      g.textAlign = 'center';
+      g.fillStyle = '#ff7080';
+      g.fillText('RETURN TO A YELLOW MARKER TO RETRY', CFG.viewW / 2, 33);
+    }
+  }
+
+  drawSubtitles(g, S) {
+    const draw = (s, y) => {
+      if (!s) return;
+      const alpha = Math.min(1, s.t * 2, (s.dur - s.t) * 6 + 0.3);
+      g.font = '17px Georgia, serif';
+      g.textAlign = 'center';
+      const tw = g.measureText(s.text).width;
+      g.fillStyle = `rgba(0,0,0,${0.62 * Math.min(1, alpha)})`;
+      g.fillRect(CFG.viewW / 2 - tw / 2 - 14, y - 22, tw + 28, 30);
+      g.fillStyle = `rgba(240,240,255,${Math.min(1, alpha)})`;
+      g.fillText(s.text, CFG.viewW / 2, y);
+    };
+    draw(this.subtitle, CFG.viewH - 64);
+    draw(this.subtitle2, CFG.viewH - 102);
+  }
+
+  drawBanner(g, S) {
+    const b = S.missions.banner;
+    if (!b) return;
+    const W = CFG.viewW;
+    const t = b.t;
+    const dur = b.dur || 5;
+    const a = Math.min(1, t * 1.5, (dur - t) * 2 + 0.3);
+    g.globalAlpha = Math.min(1, Math.max(0, a));
+    g.textAlign = 'center';
+    g.font = 'bold 46px "Arial Black", sans-serif';
+    g.fillStyle = 'rgba(0,0,0,0.65)';
+    g.fillRect(0, CFG.viewH / 2 - 78, W, 120);
+    g.fillStyle = '#f5c04a';
+    g.fillText(b.title, W / 2, CFG.viewH / 2 - 22);
+    g.font = '20px monospace';
+    g.fillStyle = '#f0f0f0';
+    g.fillText(b.sub, W / 2, CFG.viewH / 2 + 14);
+    g.globalAlpha = 1;
+  }
+
+  drawHints(g, S) {
+    // small bottom-right control hints, fade after first minute of play
+    if (S.playTime > 75) return;
+    const a = S.playTime > 60 ? (75 - S.playTime) / 15 : 1;
+    g.globalAlpha = a * 0.75;
+    g.font = '12px monospace';
+    g.textAlign = 'right';
+    g.fillStyle = '#cfd4e0';
+    const lines = [
+      'WASD move · SHIFT sprint',
+      'F enter/exit/jack car · SPACE handbrake',
+      'MOUSE aim · LMB shoot',
+      'M mute · ESC pause',
+    ];
+    let y = CFG.viewH - 26;
+    for (const l of lines) { g.fillText(l, CFG.viewW - 176, y); y -= 17; }
+    g.globalAlpha = 1;
   }
 }

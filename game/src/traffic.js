@@ -1,199 +1,232 @@
-// traffic.js — lane-following AI, traffic lights, queueing, panic fleeing,
-// population maintenance around the player.
+// traffic.js — civilian lane AI: waypoint driving on the right-hand lane,
+// intersection turns, red lights, queueing. Spawns/culls around the camera.
 
-import { CFG } from './config.js';
-import { RNG } from './rng.js';
-import { clamp, angDiff } from './util.js';
-import { makeCar, carSpeed, mkPart } from './cars.js';
-import {
-  ROAD_V, ROAD_H, V_SPAN, H_SPAN, ROAD_HALF,
-  nextIntersection, dirVec, laneShift, randomLanePoint, lightRed,
-} from './world.js';
+import { CFG, ctx } from './config.js';
+import { clamp, dist, mulberry32 } from './util.js';
+import { Car, CIV_TYPES, makeCar, steerToward } from './cars.js';
+import { I_MIN, I_MAX, J_MIN, J_MAX, RE, DIRS, nodeValid, zoneAt } from './world.js';
 
-const AXIS_ANG = [0, Math.PI / 2, Math.PI, -Math.PI / 2]; // E,S,W,N
+const LANE = CFG.laneOff;
 
-export function spawnTraffic(g) {
-  while (g.cars.filter((c) => c.kind === 'traffic' && !c.dead).length < CFG.TRAFFIC_N) {
-    const p = randomLanePoint(g.rng, g.player, 2200);
-    makeCar(g, p.x, p.y, AXIS_ANG[p.dir], g.rng.pick(['sedan', 'sedan', 'taxi', 'van', 'sports', 'truck', 'buggy', 'limo']), {
-      kind: 'traffic', driver: 'npc', dir: p.dir, color: g.rng.pick(CFG.CAR_COLORS),
-    });
+// lane offset for a heading dir: right-hand traffic
+function laneOffset(dir) {
+  switch (dir) {
+    case 0: return { x: 0, y: LANE };    // east keeps south side
+    case 1: return { x: -LANE, y: 0 };   // south keeps west side
+    case 2: return { x: 0, y: -LANE };   // west keeps north side
+    default: return { x: LANE, y: 0 };   // north keeps east side
   }
 }
 
-export function updateTraffic(g, dt) {
-  const cars = g.cars;
-  for (const c of cars) {
-    if (c.kind !== 'traffic' || c.dead || c.driver === 'player') continue;
-    if (c.driver !== 'npc') continue;
-    trafficAI(g, c, dt);
-  }
-  // panic contagion
-  for (const c of cars) {
-    if (c.kind === 'traffic' && !c.dead && g.panicOrigin) {
-      const d = Math.hypot(c.x - g.panicOrigin.x, c.y - g.panicOrigin.y);
-      if (d < 620) c.panicT = Math.max(c.panicT, 2.4);
-    }
-  }
-  // cull far cars, top-up population
-  for (let i = cars.length - 1; i >= 0; i--) {
-    const c = cars[i];
-    if (c.kind !== 'traffic') continue;
-    if (g.player && Math.hypot(c.x - g.player.x, c.y - g.player.y) > 2500) {
-      cars.splice(i, 1);
-    }
-  }
-  g.trafficSpawnT -= dt;
-  if (g.trafficSpawnT <= 0) {
-    g.trafficSpawnT = 0.7;
-    spawnTraffic(g);
-  }
+// red-light phase for an intersection: deterministic 8s cycle
+// returns which axis has green: 'v' | 'h' | null (no light)
+export function lightPhase(i, j, time) {
+  if (((i + j) % 2) !== 0) return null;      // half the nodes are unlit
+  const t = (time * 0.25) % 2;               // 8s cycle (4s per phase)
+  return t < 1 ? 'v' : 'h';
 }
 
-function trafficAI(g, c, dt) {
-  const v = dirVec(c.dir);
-  const rail = laneShift(c.dir);
+export class Traffic {
+  constructor() {
+    this.rng = mulberry32(0xC0FFEE);
+    this.spawnT = 0;
+    this.dummy = { throttle: 0, steer: 0, hand: false };
+  }
 
-  // pick a target intersection
-  if (!c.target) {
-    c.target = chooseTarget(g, c);
-    if (!c.target) { // dead end (shouldn't happen on a loop grid) — reverse
-      c.dir = (c.dir + 2) & 3;
-      c.target = nextIntersection(c.x, c.y, c.dir);
+  count() {
+    let n = 0;
+    for (const c of ctx.cars) if (c.ai === 'traffic' && !c.dead) n++;
+    return n;
+  }
+
+  update(dt, S) {
+    const cam = ctx.renderer ? ctx.renderer.cam : { x: CFG.map / 2, y: CFG.map / 2 };
+    this.spawnT -= dt;
+    if (this.spawnT <= 0) {
+      this.spawnT = 1.1;
+      if (this.count() < CFG.trafficTarget) this.spawnNear(S, cam);
+    }
+
+    for (const car of ctx.cars) {
+      if (car.ai !== 'traffic' || car.dead) continue;
+      this.driveCar(car, dt, S);
+      // cull far traffic
+      if (dist(car.x, car.y, S.player.x, S.player.y) > 2100 && car.driver !== 'player') {
+        car.dead = true;
+        car.wreckT = 0;
+      }
     }
   }
 
-  // along-axis distance to the intersection center
-  const alongAxis = c.dir === 0 || c.dir === 2 ? 'x' : 'y';
-  const sign = c.dir === 0 || c.dir === 1 ? 1 : -1;
-  const toNode = (c.target[alongAxis] - c[alongAxis]) * sign;
-
-  // desired speed
-  let want = CFG.TRAFFIC_SPEED * (c.panicT > 0 ? 1.65 : 1);
-  c.panicT -= dt;
-
-  // red light: stop before the intersection box
-  const stopLine = toNode - ROAD_HALF - 14;
-  const approaching = toNode > 0 && stopLine < 90;
-  if (approaching && lightRed(g.world, c.target.x, c.target.y, c.dir, g.time) && c.panicT <= 0) {
-    if (toNode > ROAD_HALF) {
-      // before the box: brake to the stop line
-      if (stopLine > 8) want = Math.min(want, stopLine * 2.4);
-      else want = 0;
-    }
-    // inside the box: crawl through, never block the crossing
-  }
-
-  // queueing: car ahead in the same lane
-  const ahead = findCarAhead(g, c);
-  if (ahead) {
-    const gap = ahead.d;
-    if (gap < 110) want = Math.min(want, Math.max(0, (gap - 46) * 2.2));
-    if (gap < 46) want = 0;
-    if (want === 0 && gap < 90 && c.waitT > 2.5 && Math.random() < dt * 0.5) {
-      c.honkT = 0.35;
-      g.audio && g.audio.horn();
-    }
-  }
-
-  // stuck detection
-  const sp = carSpeed(c);
-  if (sp < 6 && want > 0) c.stuckT += dt;
-  else c.stuckT = Math.max(0, c.stuckT - dt * 2);
-  if (c.stuckT > 5) {
-    c.stuckT = 0;
-    c.dir = (c.dir + (g.rng.chance(0.5) ? 1 : 3)) & 3;
-    c.target = null;
-  }
-
-  // drive
-  const vf = c.vx * v.x + c.vy * v.y;
-  if (vf < want - 6) {
-    c.throttle = 1;
-    c.brake = 0;
-  } else if (vf > want + 22) {
-    c.throttle = 0;
-    c.brake = want === 0 ? 1 : 0.4;
-  } else {
-    c.throttle = 0;
-    c.brake = 0;
-  }
-  c.steer = 0;
-  c.handbrake = false;
-  c.waitT = want === 0 ? c.waitT + dt : 0;
-
-  // rail alignment: face along the axis, drift laterally to lane center
-  const targetAng = AXIS_ANG[c.dir];
-  const dAng = angDiff(c.ang, targetAng);
-  c.ang += dAng * clamp(dt * 6, 0, 1);
-  const lateralAxis = alongAxis === 'x' ? 'y' : 'x';
-  const railCoord = c.target[lateralAxis] + (lateralAxis === 'y' ? rail.y : rail.x);
-  const lc = c[lateralAxis];
-  c[lateralAxis] = lc + (railCoord - lc) * clamp(dt * (alongAxis === 'x' ? 3 : 3), 0, 1);
-
-  // arrive at node: pick the next leg
-  if (toNode < 6 && Math.abs(vf) < 400) {
-    const reached = c.target;
-    c.x = reached.x + rail.x;
-    c.y = reached.y + rail.y;
-    c.target = chooseTarget(g, c);
-  }
-}
-
-function chooseTarget(g, c) {
-  const opts = [];
-  // straight first (from the node we'd arrive at, in current dir)
-  const cur = nextIntersection(c.x, c.y, c.dir);
-  if (cur) opts.push({ dir: c.dir, node: cur, w: 0.62 });
-  const left = (c.dir + 3) & 3, right = (c.dir + 1) & 3;
-  // lateral probe: is there an intersecting road to the left/right?
-  const probeL = probeTurn(c, left);
-  if (probeL) opts.push({ dir: left, node: probeL, w: 0.19 });
-  const probeR = probeTurn(c, right);
-  if (probeR) opts.push({ dir: right, node: probeR, w: 0.19 });
-  if (!opts.length) return null;
-  let r = g.rng.next() * opts.reduce((s, o) => s + o.w, 0);
-  for (const o of opts) {
-    r -= o.w;
-    if (r <= 0) {
-      c.dir = o.dir;
-      return o.node;
+  spawnNear(S, cam) {
+    const w = ctx.world;
+    // pick a road point at 700–1500 from camera
+    for (let tries = 0; tries < 12; tries++) {
+      const ang = this.rng() * Math.PI * 2;
+      const d = 750 + this.rng() * 750;
+      const px = cam.x + Math.cos(ang) * d;
+      const py = clamp(cam.y + Math.sin(ang) * d, CFG.waterTop + 200, CFG.beachTop - 100);
+      const zone = zoneAt(px, py);
+      if (zone === 'water' || zone === 'park' || zone === 'airfield') continue;
+      const i = clamp(Math.round(px / RE), I_MIN, I_MAX);
+      const j = clamp(Math.round(py / RE), J_MIN, J_MAX);
+      const onV = Math.abs(px - i * RE) < 60;
+      const onH = Math.abs(py - j * RE) < 60;
+      if (!onV && !onH) continue;
+      let dir, x, y;
+      if (onV) {
+        dir = this.rng() < 0.5 ? 1 : 3;
+        x = i * RE + laneOffset(dir).x;
+        y = clamp(py, CFG.waterTop + 150, CFG.beachTop - 60);
+      } else {
+        dir = this.rng() < 0.5 ? 0 : 2;
+        y = j * RE + laneOffset(dir).y;
+        x = px;
+      }
+      // don't spawn on top of another car
+      let blocked = false;
+      for (const c of ctx.cars) {
+        if (!c.dead && dist(c.x, c.y, x, y) < 90) { blocked = true; break; }
+      }
+      if (blocked) continue;
+      const type = CIV_TYPES[(this.rng() * CIV_TYPES.length) | 0];
+      const car = makeCar(type, x, y, dir * (Math.PI / 2));
+      // heading angle from dir: 0=E,1=S,2=W,3=N
+      car.angle = [0, Math.PI / 2, Math.PI, -Math.PI / 2][dir];
+      car.vx = Math.cos(car.angle) * car.spec.max * 0.4;
+      car.vy = Math.sin(car.angle) * car.spec.max * 0.4;
+      car.driver = 'traffic';
+      car.ai = 'traffic';
+      car.aiState = { dir, node: this.nextNode(x, y, dir), wait: 0, stuck: 0 };
+      ctx.cars.push(car);
+      return;
     }
   }
-  return opts[0].node;
-}
 
-/** from current position, the next node if we turned to `dir` right here */
-function probeTurn(c, dir) {
-  const node = nextIntersection(c.x, c.y, dir);
-  if (!node) return null;
-  // must be a real crossing (a road we can join), not just the end of this road
-  const v = dirVec(dir);
-  if (v.x !== 0) {
-    // moving horizontally: the target y must be a road H
-    if (!ROAD_H.includes(node.y)) return null;
-  } else {
-    if (!ROAD_V.includes(node.x)) return null;
+  // the next intersection node ahead along dir from a lane position
+  nextNode(x, y, dir) {
+    const d = DIRS[dir];
+    // find the node we're heading toward: nearest node center in front
+    const i = Math.round(x / RE), j = Math.round(y / RE);
+    let ni = i, nj = j;
+    if (d.dx > 0) ni = Math.max(i, Math.ceil(x / RE));
+    if (d.dx < 0) ni = Math.min(i, Math.floor(x / RE));
+    if (d.dy > 0) nj = Math.max(j, Math.ceil(y / RE));
+    if (d.dy < 0) nj = Math.min(j, Math.floor(y / RE));
+    if (!nodeValid(ni, nj)) { ni = i; nj = j; }
+    return { i: ni, j: nj };
   }
-  return node;
-}
 
-/** nearest car (or player car) ahead in the same lane */
-function findCarAhead(g, c) {
-  const v = dirVec(c.dir);
-  let best = null;
-  const check = (ox, oy, ovx, ovy) => {
-    const dx = ox - c.x, dy = oy - c.y;
-    const fwd = dx * v.x + dy * v.y;
-    const side = Math.abs(dx * v.y - dy * v.x); // lateral distance to my lane line
-    if (fwd > 10 && fwd < 130 && side < 22) {
-      if (!best || fwd < best.d) best = { d: fwd };
+  driveCar(car, dt, S) {
+    const st = car.aiState;
+    if (!st || !st.node) return;
+    const w = ctx.world;
+    const node = w.roadNodes[st.node.i] && w.roadNodes[st.node.i][st.node.j];
+    if (!node) { car.aiState = null; car.ai = 'parked'; car.driver = null; return; }
+
+    const dToNode = dist(car.x, car.y, node.x, node.y);
+
+    // intersection reached → choose next direction
+    if (dToNode < 26) {
+      st.dir = this.chooseDir(st, node);
+      st.node = this.nextNodeFrom(node, st.dir);
+      if (!st.node) { // dead end (edge of grid): force reverse
+        st.dir = (st.dir + 2) % 4;
+        st.node = this.nextNodeFrom(node, st.dir);
+      }
+      if (!st.node) { // boxed in: abandon driving
+        car.ai = 'parked'; car.driver = null; car.aiState = null; return;
+      }
     }
-  };
-  for (const o of g.cars) {
-    if (o === c || o.dead) continue;
-    if (o.kind !== 'traffic' && o.kind !== 'police' && o.driver !== 'player' && o.kind !== 'mission') continue;
-    check(o.x, o.y);
+
+    // waypoint = target node center + lane offset, pulled 20 short of center
+    const lo = laneOffset(st.dir);
+    const d = DIRS[st.dir];
+    const tx = node.x + lo.x - d.dx * 20;
+    const ty = node.y + lo.y - d.dy * 20;
+
+    let throttle = 0.75;
+    let steer = steerToward(car, tx, ty, dt);
+    let hand = false;
+
+    // red light: stop before the node
+    const phase = lightPhase(st.node.i, st.node.j, S.time);
+    const myAxis = (st.dir === 0 || st.dir === 2) ? 'h' : 'v';
+    if (phase && phase !== myAxis && dToNode < 110 && dToNode > 40) {
+      throttle = dToNode < 62 ? -0.6 : 0.15;
+      if (dToNode < 62 && car.speed < 30) throttle = 0;
+    }
+
+    // queue: car ahead in my lane within 60 → match/stop
+    const hx = Math.cos(car.angle), hy = Math.sin(car.angle);
+    for (const other of ctx.cars) {
+      if (other === car || other.dead) continue;
+      const rx = other.x - car.x, ry = other.y - car.y;
+      const fwd = rx * hx + ry * hy;
+      if (fwd < 8 || fwd > 78) continue;
+      const side = Math.abs(-rx * hy + ry * hx);
+      if (side > 16) continue;
+      const ospeed = (other.vx * hx + other.vy * hy);
+      const mine = car.vx * hx + car.vy * hy;
+      if (ospeed < mine - 5) {
+        throttle = fwd < 48 ? (fwd < 30 ? 0 : -0.4) : 0.1;
+      }
+    }
+
+    // player car ahead → brake politely (and honk sometimes)
+    const pl = S.player;    if (pl.inCar && pl.inCar !== car) {
+      const rx = pl.inCar.x - car.x, ry = pl.inCar.y - car.y;
+      const fwd = rx * hx + ry * hy;
+      const side = Math.abs(-rx * hy + ry * hx);
+      if (fwd > 8 && fwd < 70 && side < 18) {
+        throttle = Math.min(throttle, 0);
+        if (this.rng() < 0.008) { car.honkT = 0.4; if (ctx.sfx) ctx.sfx('horn', car.x, car.y); }
+      }
+    }
+
+    // buses idle at bus stops
+    if (car.type === 'bus' && !car.stopIdle) {
+      for (const bs of ctx.world.busStops) {
+        if (dist(car.x, car.y, bs.x, bs.y) < 34 && car.speed < 40) {
+          car.stopIdle = 2.6;
+          break;
+        }
+      }
+    }
+    if (car.stopIdle > 0) {
+      car.stopIdle -= dt;
+      throttle = -0.5;
+      if (car.speed < 8) throttle = 0;
+    }
+
+    // stuck detection → abandon car
+    if (car.speed < 12 && throttle > 0.2) {
+      st.stuck += dt;
+      if (st.stuck > 6) { car.ai = 'parked'; car.driver = null; car.aiState = null; return; }
+    } else st.stuck = 0;
+
+    this.dummy.throttle = throttle;
+    this.dummy.steer = steer;
+    this.dummy.hand = hand;
+    car.update(dt, this.dummy);
   }
-  return best;
+
+  chooseDir(st, node) {
+    const opts = [];
+    for (let d = 0; d < 4; d++) {
+      if (d === (st.dir + 2) % 4) continue;      // no U-turns
+      const ni = node.i + DIRS[d].dx, nj = node.j + DIRS[d].dy;
+      if (!nodeValid(ni, nj)) continue;
+      opts.push(d);
+    }
+    if (opts.length === 0) return (st.dir + 2) % 4;
+    if (opts.includes(st.dir) && this.rng() < 0.62) return st.dir;   // straight bias
+    return opts[(this.rng() * opts.length) | 0];
+  }
+
+  nextNodeFrom(node, dir) {
+    const ni = node.i + DIRS[dir].dx, nj = node.j + DIRS[dir].dy;
+    if (!nodeValid(ni, nj)) return null;
+    return { i: ni, j: nj };
+  }
 }

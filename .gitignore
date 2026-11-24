@@ -1,5 +1,7 @@
-out/
 node_modules/
+out/
 *.log
 .playwright-mcp/
 .superpowers/
+.DS_Store
+Thumbs.db

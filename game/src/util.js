@@ -1,138 +1,114 @@
-// util.js — small math and geometry helpers shared by every module.
+// util.js — math, RNG, geometry helpers. No side effects at import.
 
+// ---------------------------------------------------------------- RNG ----
+// mulberry32: small, fast, deterministic. worldgen + staged shots use it.
+export function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function rng() {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// hash of two ints -> [0,1). Used for per-block determinism.
+export function hash2(a, b) {
+  let h = (Math.imul(a, 374761393) + Math.imul(b, 668265263)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177) | 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+// ------------------------------------------------------------- math ------
 export const TAU = Math.PI * 2;
 
-export function clamp(v, a, b) {
-  return v < a ? a : v > b ? b : v;
-}
+export function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+export function lerp(a, b, t) { return a + (b - a) * t; }
+export function dist(ax, ay, bx, by) { return Math.hypot(bx - ax, by - ay); }
+export function dist2(ax, ay, bx, by) { const dx = bx - ax, dy = by - ay; return dx * dx + dy * dy; }
 
-export function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-
-export function dist(ax, ay, bx, by) {
-  const dx = bx - ax, dy = by - ay;
-  return Math.hypot(dx, dy);
-}
-
-export function dist2(ax, ay, bx, by) {
-  const dx = bx - ax, dy = by - ay;
-  return dx * dx + dy * dy;
-}
-
-/** Angle wrapped to (-PI, PI]. */
-export function wrapAng(a) {
+export function angNorm(a) {
   while (a > Math.PI) a -= TAU;
-  while (a <= -Math.PI) a += TAU;
+  while (a < -Math.PI) a += TAU;
   return a;
 }
-
-/** Shortest angular difference from a to b, wrapped. */
-export function angDiff(a, b) {
-  return wrapAng(b - a);
-}
-
-/** Interpolate angle along the shortest arc. */
 export function angLerp(a, b, t) {
-  return a + angDiff(a, b) * clamp(t, 0, 1);
+  return a + angNorm(b - a) * t;
 }
 
-export function pointInRect(px, py, r) {
-  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
-}
+export function pick(rng, arr) { return arr[(rng() * arr.length) | 0]; }
+export function picki(arr, i) { return arr[i % arr.length]; }
 
-export function rectsOverlap(a, b) {
-  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
-}
-
-/** Closest point on a rect to p; also returns the penetration axis hint. */
-export function closestOnRect(px, py, r) {
-  const cx = clamp(px, r.x, r.x + r.w);
-  const cy = clamp(py, r.y, r.y + r.h);
-  return { x: cx, y: cy };
-}
-
-/** Push a circle out of an axis-aligned rect; returns null when no overlap. */
-export function circleRectResolve(px, py, pr, r) {
-  const cx = clamp(px, r.x, r.x + r.w);
-  const cy = clamp(py, r.y, r.y + r.h);
-  const dx = px - cx, dy = py - cy;
-  const d2 = dx * dx + dy * dy;
-  if (d2 > pr * pr) return null;
-  if (d2 > 1e-6) {
-    const d = Math.sqrt(d2);
-    return { x: px + (dx / d) * (pr - d), y: py + (dy / d) * (pr - d), nx: dx / d, ny: dy / d, push: pr - d };
+export function shuffle(rng, arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = (rng() * (i + 1)) | 0;
+    const t = a[i]; a[i] = a[j]; a[j] = t;
   }
-  // center inside the rect: push along the smallest exit axis
-  const left = px - r.x, right = r.x + r.w - px, top = py - r.y, bot = r.y + r.h - py;
-  const m = Math.min(left, right, top, bot);
-  if (m === left) return { x: r.x - pr, y: py, nx: -1, ny: 0, push: pr + left };
-  if (m === right) return { x: r.x + r.w + pr, y: py, nx: 1, ny: 0, push: pr + right };
-  if (m === top) return { x: px, y: r.y - pr, nx: 0, ny: -1, push: pr + top };
-  return { x: px, y: r.y + r.h + pr, nx: 0, ny: 1, push: pr + bot };
-}
-
-/** A circle overlapping an axis-aligned rect at all. */
-export function circleRectHit(px, py, pr, r) {
-  const cx = clamp(px, r.x, r.x + r.w);
-  const cy = clamp(py, r.y, r.y + r.h);
-  const dx = px - cx, dy = py - cy;
-  return dx * dx + dy * dy <= pr * pr;
-}
-
-/** Push a circle out of every solid it touches. Mutates nothing but returns the new position. */
-export function resolveCircleSolids(x, y, r, solids) {
-  let hit = false;
-  for (let i = 0; i < solids.length; i++) {
-    const res = circleRectResolve(x, y, r, solids[i]);
-    if (res) {
-      x = res.x;
-      y = res.y;
-      hit = true;
-    }
-  }
-  return { x, y, hit };
+  return a;
 }
 
 export function fmtMoney(n) {
   const s = Math.max(0, Math.round(n)).toString();
   let out = '';
   for (let i = 0; i < s.length; i++) {
+    if (i > 0 && (s.length - i) % 3 === 0) out += ',';
     out += s[i];
-    const rest = s.length - 1 - i;
-    if (rest > 0 && rest % 3 === 0) out += ',';
   }
   return '$' + out;
 }
 
 export function fmtTime(sec) {
   sec = Math.max(0, Math.ceil(sec));
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
+  const m = (sec / 60) | 0, s = sec % 60;
   return m + ':' + (s < 10 ? '0' : '') + s;
 }
 
-export function aabbOf(x, y, w, l, ang) {
-  // bounding box of a rotated rect (w across, l along heading) centered at x,y
-  const c = Math.abs(Math.cos(ang)), s = Math.abs(Math.sin(ang));
-  const hw = (w * c + l * s) / 2;
-  const hh = (w * s + l * c) / 2;
-  return { x: x - hw, y: y - hh, w: hw * 2, h: hh * 2 };
+// ---------------------------------------------------------- geometry -----
+export function pointInRect(px, py, r) {
+  return px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1;
 }
 
-export function shade(hex, f) {
-  // f>0 lighten toward white, f<0 darken toward black
-  const n = parseInt(hex.slice(1), 16);
-  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-  if (f >= 0) {
-    r = Math.round(r + (255 - r) * f);
-    g = Math.round(g + (255 - g) * f);
-    b = Math.round(b + (255 - b) * f);
-  } else {
-    const k = 1 + f;
-    r = Math.round(r * k);
-    g = Math.round(g * k);
-    b = Math.round(b * k);
-  }
-  return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+export function rectsOverlap(a, b) {
+  return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
 }
+
+// Circle vs AABB. Returns push vector {x,y,depth} to move the circle out,
+// or null when not touching.
+export function circleRectPush(px, py, r, rect) {
+  const cx = clamp(px, rect.x0, rect.x1);
+  const cy = clamp(py, rect.y0, rect.y1);
+  const dx = px - cx, dy = py - cy;
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= r * r) return null;
+  if (d2 > 1e-9) {
+    const d = Math.sqrt(d2);
+    const depth = r - d;
+    return { x: (dx / d) * depth, y: (dy / d) * depth, depth };
+  }
+  // center inside the rect: push out through the nearest face
+  const l = px - rect.x0, rr = rect.x1 - px, t = py - rect.y0, b = rect.y1 - py;
+  const m = Math.min(l, rr, t, b);
+  if (m === l) return { x: -(l + r), y: 0, depth: l + r };
+  if (m === rr) return { x: rr + r, y: 0, depth: rr + r };
+  if (m === t) return { x: 0, y: -(t + r), depth: t + r };
+  return { x: 0, y: b + r, depth: b + r };
+}
+
+// distance from point to a rect's edge (0 when inside)
+export function rectDist(px, py, r) {
+  const dx = Math.max(r.x0 - px, 0, px - r.x1);
+  const dy = Math.max(r.y0 - py, 0, py - r.y1);
+  return Math.hypot(dx, dy);
+}
+
+// axis-aligned bounding rect of a circle
+export function circleAABB(x, y, r) {
+  return { x0: x - r, y0: y - r, x1: x + r, y1: y + r };
+}
+
+// ------------------------------------------------------------- misc ------
+let _uid = 1;
+export function uid() { return _uid++; }
+
+export function nowSec() { return performance.now() / 1000; }

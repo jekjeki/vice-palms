@@ -1,83 +1,84 @@
-// main.js — boot: canvas, loop, module wiring. Fixed-step sim, RAF render.
+// main.js — boot: canvas, error surface, game loop.
 
-import { CFG } from './config.js';
-import { Input } from './input.js';
-import { AudioSys } from './audio.js';
-import { createGame, update, newGame } from './game.js';
-import { applyShot } from './shots.js';
-import { render } from './render.js';
-import { drawHud } from './hud.js';
-import { drawTitle, drawPause, drawControls, drawOverlays, drawFinale } from './screens.js';
+import { CFG, ctx } from './config.js';
+import { CFG as _C } from './config.js';
+import { Game } from './game.js';
 
-function boot() {
-  const canvas = document.getElementById('game');
-  const ctx = canvas.getContext('2d');
-  canvas.width = CFG.VIEW_W;
-  canvas.height = CFG.VIEW_H;
+const canvas = document.getElementById('game');
+canvas.width = CFG.viewW;
+canvas.height = CFG.viewH;
 
-  const params = new URLSearchParams(location.search);
-  const muted = params.get('mute') === '1';
-  const shot = params.get('shot');
-  const seedStr = params.get('seed') || 'vice-palms';
+// surface boot errors on-screen (headless debugging + screenshot sanity)
+function showError(msg) {
+  const g = canvas.getContext('2d');
+  g.fillStyle = 'rgba(10,0,10,0.85)';
+  g.fillRect(0, 0, canvas.width, canvas.height);
+  g.fillStyle = '#ff7080';
+  g.font = 'bold 22px monospace';
+  g.textAlign = 'left';
+  const lines = String(msg).split('\n').slice(0, 12);
+  let y = 60;
+  for (const l of lines) { g.fillText(l, 30, y); y += 26; }
+}
 
-  const audio = new AudioSys();
-  const input = new Input(canvas);
-  const g = createGame(audio, input, seedStr);
-  window.G = g; // debugging hook
+window.addEventListener('error', (e) => {
+  showError('ERROR: ' + e.message + '\n' + (e.filename || '') + ':' + (e.lineno || 0));
+});
+window.addEventListener('unhandledrejection', (e) => {
+  showError('PROMISE REJECTION: ' + (e.reason && e.reason.message || e.reason));
+});
 
-  // audio may only wake on a gesture; when muted from the start, never wake it
-  let gestureSeen = muted;
-  const wake = () => {
-    if (gestureSeen) return;
-    gestureSeen = true;
-    audio.start(false);
-    audio.ensure();
-    if (g.state === 'play') audio.musicOn(true);
-  };
-  window.addEventListener('keydown', wake, { once: true });
-  canvas.addEventListener('mousedown', wake, { once: true });
-  if (muted) audio.start(true); // stays at gain 0 forever
+// keep crisp on HiDPI
+(function fit() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  const w = CFG.viewW, h = CFG.viewH;
+  const aspect = w / h;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let cw = vw, ch = vw / aspect;
+  if (ch > vh) { ch = vh; cw = vh * aspect; }
+  canvas.style.width = cw + 'px';
+  canvas.style.height = ch + 'px';
+  canvas.style.position = 'absolute';
+  canvas.style.left = (vw - cw) / 2 + 'px';
+  canvas.style.top = (vh - ch) / 2 + 'px';
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+})();
+// BUT: the renderer reads canvas.width for the view size — reset to logical size
+// and scale via CSS only, keeping game math in 1280x720 space.
+canvas.width = CFG.viewW;
+canvas.height = CFG.viewH;
 
-  // staged screenshot scenes
-  if (shot) {
-    newGame(g, false);
-    applyShot(g, shot, params.get('seed'));
-  }
+const game = new Game(canvas);
+ctx.game = game;
+window.__game = game;
 
-  // fixed-step loop
-  let last = performance.now();
-  let acc = 0;
-  const STEP = 1 / 60;
+let last = performance.now();
+let ready = false;
 
-  function frame(now) {
+function loop(now) {
+  try {
     let dt = (now - last) / 1000;
     last = now;
-    if (dt > CFG.MAX_DT) dt = CFG.MAX_DT;
-    acc += dt;
-    let steps = 0;
-    while (acc >= STEP && steps < 4) {
-      update(g, STEP);
-      acc -= STEP;
-      steps++;
-    }
-    draw(g, ctx);
-    requestAnimationFrame(frame);
+    if (dt > CFG.dtMax) dt = CFG.dtMax;
+    if (dt < 0) dt = 0;
+    game.frame(dt);
+  } catch (e) {
+    showError('LOOP ERROR: ' + e.message + '\n' + (e.stack || '').split('\n').slice(0, 4).join('\n'));
+    // don't spam: stop the loop on hard failure
+    return;
   }
-  requestAnimationFrame(frame);
+  if (!ready) {
+    ready = true;
+    window.__ready = true;
+  }
+  requestAnimationFrame(loop);
 }
 
-function draw(g, ctx) {
-  if (g.state === 'title') {
-    drawTitle(g, ctx);
-  } else if (g.state === 'controls') {
-    drawControls(g, ctx);
-  } else {
-    render(g, ctx);
-    drawHud(g, ctx);
-    drawOverlays(g, ctx);
-    if (g.state === 'pause') drawPause(g, ctx);
-    if (g.state === 'end') drawFinale(g, ctx);
-  }
-}
+requestAnimationFrame(loop);
 
-boot();
+document.addEventListener('visibilitychange', () => {
+  last = performance.now();
+});

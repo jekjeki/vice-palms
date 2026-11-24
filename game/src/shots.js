@@ -1,88 +1,137 @@
-// shots.js — deterministic staged scenes for the 4 dossier screenshots:
-// ?shot=start|play|end|chaos&seed=N  (audio stays muted in every shot)
+// shots.js — deterministic staged scenes for the 4 required screenshots.
+// URL: ?shot=start|play|end|chaos&seed=N (audio handled by ?mute=1 → audio.js)
 
-import { CFG } from './config.js';
-import { dist } from './util.js';
+import { CFG, ctx } from './config.js';
+import { clamp, dist, mulberry32, TAU } from './util.js';
 import { makeCar } from './cars.js';
-import { makePed } from './peds.js';
-import { addWanted } from './police.js';
-import { say } from './missions.js';
-import { LANDMARKS } from './world.js';
-import { mkPart } from './cars.js';
+import { Ped } from './peds.js';
+import { nearestRoadPoint } from './world.js';
 
-export function applyShot(g, shot, seed) {
-  const L = LANDMARKS;
-  const p = g.player;
-  switch (shot) {
-    case 'start': {
-      // pure title screen; nothing to stage
-      g.state = 'title';
-      break;
-    }
+export function currentShot() {
+  try {
+    const p = new URLSearchParams(location.search);
+    const s = p.get('shot');
+    if (!s) return null;
+    const seed = parseInt(p.get('seed') || '7', 10) || 7;
+    return { shot: s, seed };
+  } catch { return null; }
+}
+
+// Called by Game after wiring ctx. Returns true if a shot scenario was set.
+export function setupShot(game, info) {
+  if (!info) return false;
+  const S = game.S;
+  const rng = mulberry32(info.seed * 7919 + 11);
+  const w = ctx.world;
+
+  switch (info.shot) {
+    case 'start':
+      // stay on the title screen; the world simulates underneath as ambience
+      S.mode = 'title';
+      S.money = 1250;
+      // gentle pre-baked traffic for the backdrop
+      for (let i = 0; i < 8; i++) {
+        const pt = nearestRoadPoint(w, 3200 + (rng() - 0.5) * 2400, 2400 + (rng() - 0.5) * 2400);
+        const car = makeCar(['sedan', 'taxi', 'sports', 'van'][(rng() * 4) | 0], pt.x, pt.y, 0);
+        car.angle = [0, Math.PI / 2, Math.PI, -Math.PI / 2][pt.dir];
+        car.driver = 'traffic';
+        car.ai = 'traffic';
+        car.aiState = { dir: pt.dir, node: null, stuck: 0 };
+        const d = [0, 1, 2, 3][pt.dir];
+        const dd = [[1, 0], [0, 1], [-1, 0], [0, -1]][pt.dir];
+        const ni = { i: clamp(Math.round((pt.x + dd[0] * 800) / CFG.roadEvery), 0, 8), j: clamp(Math.round((pt.y + dd[1] * 800) / CFG.roadEvery), 1, 7) };
+        car.aiState.node = ni;
+        ctx.cars.push(car);
+      }
+      for (let i = 0; i < 10; i++) {
+        ctx.pedsList.push(new Ped(2200 + rng() * 2200, 3000 + rng() * 1800));
+      }
+      return true;
+
     case 'play': {
-      g.state = 'play';
-      // Rico handing out a job near the diner, player rolling up in a Banshee
-      p.x = L.diner.x - 260;
-      p.y = L.diner.y - 190;
-      const car = makeCar(g, p.x - 40, p.y + 46, Math.PI, 'sports', {
-        kind: 'mission', driver: 'player', color: '#ff5fa8',
-      });
-      p.car = car;
-      car.throttle = 1; // rolling shot
-      makePed(g, L.diner.x + 40, L.diner.y + 60);
-      makePed(g, L.diner.x - 60, L.diner.y + 90);
-      say(g, 'RICO: Welcome back to Vice Palms, kid.', 6);
-      say(g, 'MISSION — Homecoming: get the lockbox from Sunrise Garage.', 6);
-      g.cam.x = p.x + 120;
-      g.cam.y = p.y;
-      g.cam.zoom = CFG.CAM_ZOOM_CAR;
-      break;
+      S.mode = 'play';
+      S.money = 2450;
+      S.player.ammo = 24;
+      ctx.weapons.give('pistol', 24);
+      // player sports car cruising downtown
+      const car = makeCar('sports', 2640, 2400 + CFG.laneOff, 0);
+      car.color = '#d8308a';
+      car.driver = 'player';
+      ctx.cars.push(car);
+      S.player.inCar = car;
+      car.vx = 150; car.vy = 0;
+      // nearby traffic + peds
+      for (let i = 0; i < 9; i++) {
+        const pt = nearestRoadPoint(w, car.x + (rng() - 0.5) * 1800, car.y + (rng() - 0.5) * 1200);
+        const t2 = makeCar(['sedan', 'taxi', 'bus', 'van'][(rng() * 4) | 0], pt.x, pt.y, 0);
+        t2.angle = [0, Math.PI / 2, Math.PI, -Math.PI / 2][pt.dir];
+        t2.driver = 'traffic';
+        t2.ai = 'traffic';
+        const dd = [[1, 0], [0, 1], [-1, 0], [0, -1]][pt.dir];
+        t2.aiState = { dir: pt.dir, node: { i: clamp(Math.round((pt.x + dd[0] * 800) / CFG.roadEvery), 0, 8), j: clamp(Math.round((pt.y + dd[1] * 800) / CFG.roadEvery), 1, 7) }, stuck: 0 };
+        ctx.cars.push(t2);
+      }
+      for (let i = 0; i < 14; i++) {
+        ctx.pedsList.push(new Ped(1900 + rng() * 2000, 1800 + rng() * 1400));
+      }
+      ctx.subtitle('Ocean Drive, midnight — the Palms at their best.', 6);
+      return true;
     }
+
     case 'end': {
-      g.state = 'play';
-      // the finale frame: last mission passed, stats on screen
-      g.missions.storyIdx = g.missions.defs.story.length;
-      g.passedOverlay = { text: 'MISSION PASSED!', sub: '$10,000', t: 30, col: '#ffd24a' };
-      g.cam.x = L.safehouse.x + 300;
-      g.cam.y = L.safehouse.y;
-      p.x = L.safehouse.x + 300;
-      p.y = L.safehouse.y;
-      const car = makeCar(g, p.x + 90, p.y + 40, Math.PI / 2, 'sports', {
-        kind: 'mission', driver: null, color: '#b46bff',
-      });
-      car.exitKeep = true;
-      g.cam.zoom = CFG.CAM_ZOOM_CAR;
-      break;
+      S.mode = 'play';
+      S.money = 4180;
+      // completed-mission banner over a beach scene
+      S.player.x = 4150; S.player.y = 5960;
+      S.player.ammo = 30;
+      ctx.weapons.give('pistol', 30);
+      ctx.weapons.give('shotgun', 16);
+      S.missions.banner = { title: 'MISSION PASSED!', sub: "Rico's Ride  —  $800", t: 60, dur: 60 };
+      S.missions.rewardFx = 60;
+      for (let i = 0; i < 10; i++) {
+        ctx.pedsList.push(new Ped(3600 + rng() * 900, 5700 + rng() * 320));
+      }
+      // parked cars along the beach road
+      for (let i = 0; i < 4; i++) {
+        const car = makeCar(['sedan', 'pickup'][(rng() * 2) | 0], 3700 + i * 220, 5600 + CFG.laneOff, 0);
+        ctx.cars.push(car);
+      }
+      // celebratory sparks
+      for (let i = 0; i < 30; i++) {
+        S.fx.push({ type: 'spark', x: 3800 + rng() * 500, y: 5700 + rng() * 200, vx: (rng() - 0.5) * 60, vy: -rng() * 90, life: 0.8 + rng(), life0: 1.6, size: 2 });
+      }
+      return true;
     }
+
     case 'chaos': {
-      g.state = 'play';
-      g.subs.length = 0;
-      // three stars of trouble: cruisers closing in, a wreck burning nearby
-      addWanted(g, 3, 'a very loud evening');
-      p.x = 2300;
-      p.y = 1700;
-      const car = makeCar(g, p.x, p.y, Math.PI / 2, 'sports', {
-        kind: 'mission', driver: 'player', color: '#7c8494',
-      });
-      car.hp = 40; // smoking
-      p.car = car;
-      makeCar(g, p.x + 190, p.y - 160, Math.PI / 2, 'police', { kind: 'police', driver: 'npc', siren: true, copMode: 'pursuit' });
-      makeCar(g, p.x - 210, p.y + 150, -Math.PI / 2, 'police', { kind: 'police', driver: 'npc', siren: true, copMode: 'pursuit' });
-      makeCar(g, p.x + 320, p.y + 260, 0, 'sedan', { kind: 'traffic', driver: 'npc', color: '#8a3b46' });
-      // fresh explosion flash to the side
-      g.explosions.push({ x: p.x + 240, y: p.y - 220, t: 0.25, power: 1 });
-      g.cam.flash = 0.34;
-      g.cam.shake = 10;
-      makePed(g, p.x - 160, p.y - 90);
-      makePed(g, p.x + 80, p.y + 200);
-      say(g, 'DISPATCH: All units — gray Banshee, downtown grid, use any force.', 8);
-      say(g, 'Three stars of trouble and one very loud evening.', 8);
-      g.cam.x = p.x;
-      g.cam.y = p.y;
-      g.cam.zoom = CFG.CAM_ZOOM_CAR;
-      break;
+      S.mode = 'play';
+      S.money = 990;
+      // burning getaway sedan, 4 stars, cruisers swarming
+      const car = makeCar('sedan', 3200, 2400 + CFG.laneOff, 0);
+      car.color = '#8a2f3b';
+      car.driver = 'player';
+      ctx.cars.push(car);
+      S.player.inCar = car;
+      car.impact(car.maxHp * 0.72);      // heavy smoke + close to fire
+      S.player.ammo = 40;
+      ctx.weapons.give('pistol', 40);
+      ctx.weapons.give('smg', 90);
+      ctx.police.forceLevel(4);
+      // cruisers inbound
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * TAU;
+        const c2 = makeCar('police', car.x + Math.cos(a) * 420, car.y + Math.sin(a) * 420, a + Math.PI);
+        c2.driver = 'police';
+        c2.ai = 'police';
+        c2.aiState = { mode: 'pursuit' };
+        c2.siren = true;
+        ctx.cars.push(c2);
+      }
+      // an explosion going off nearby
+      ctx.explodeAt(3420, 2560, 1.1);
+      ctx.subtitle('HEAT 4 — lose them or kiss the pavement.', 5);
+      return true;
     }
-    default:
-      break;
   }
+  return false;
 }

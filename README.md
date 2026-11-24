@@ -4,49 +4,68 @@
 
 # Vice Palms
 
-A top-down, open-world night-drive fable built with raw Canvas 2D — no libraries, no network, everything synthesized (graphics, physics, audio). Rico returns to Vice Palms: six chained story missions, three side hustles, five stars of heat, and one neon-soaked coastal city with a port district and a palm-fringed airfield.
-
-## Run it
-
-```sh
-node serve.ts            # http://localhost:8080  (or --port N)
-```
-
-## Play
-
-| Key | Action |
-|---|---|
-| `W A S D` / arrows | walk / drive |
-| `SHIFT` | sprint |
-| `F` | enter / exit / jack a car |
-| `LMB` / `CTRL` | punch · shoot (mouse aims) |
-| `SPACE` | handbrake |
-| `H` | horn |
-| `ESC` | pause (save game here) |
-| `M` | mute |
+A neon-soaked, top-down open-city crime sandbox for the night — built from
+scratch with zero dependencies (pure Canvas 2D + WebAudio, no libraries, no
+network).
 
 ## The city
 
-- **Downtown grid** — parallax 2.5D towers with neon trim, wet asphalt after the rain.
-- **North Docks** — piers, container stacks, gantry cranes, a moored freighter.
-- **Palm Airfield** — runway, hangars, control tower, and one suspicious crate.
-- **Ocean Drive** — beach, palms, and three race gates.
-- Traffic obeys the lights until it panics. Peds wander, then run. The VP Metro PD escalates from one star to roadblocks.
+- **6400×6400** seeded night city: downtown towers with neon trims, residential
+  pastel blocks, a central park with a pond, a beach with palms and lifeguard
+  huts, **north docks** (piers, container stacks, cranes, cargo ships) and
+  **Palm Airfield** (runway, taxiway, hangars, control tower, parked planes).
+- Full road grid with right-hand traffic, working **red lights**, queueing,
+  and a live traffic AI that turns at intersections.
 
-## Missions
+## Play
 
-Six story missions start at **Rico's Diner** (yellow marker). Side hustles (blue markers): **Cab Duty** at the taxi stand, **Beach Run** on Ocean Drive, **Vigilante** at the police station. Fail a mission and the giver marker reappears — walk back in to retry.
+- **8 vehicle types** (Sentinel, Banshee, Cabbie, Moonbeam, Bobcat, Coach,
+  Cruiser, Stretch) with arcade drift physics, handbrake slides, damage →
+  smoke → fire → explosion chains, headlight cones and tail lights.
+- **On foot**: walk/sprint, mouse aiming, **4 weapons** (fists, pistol with
+  ammo, shotgun spread, full-auto SMG), carjacking (F), health/armor/weapon
+  pickups.
+- **Story**: 6 chained missions as **Rico returns to Vice Palms** (diner →
+  docks → airfield → beach → tower → the finale), plus **6 side missions**
+  (Beach Sweep, Dock Sweep, Airfield Sprint, Neon Run, Pier Prowler, Ferry
+  Flare). Markers, timers, payouts, fail-and-retry.
+- **Wanted 1–5★**: cruisers pursue and ram, foot cops shoot and arrest,
+  roadblocks at 3★+, a searchlight **helicopter at 4★**, out-of-sight decay,
+  WASTED / BUSTED with hospital and bail fees.
+- **Living city**: ambient events (gang drive-bys, street racers, patrol
+  sweeps, crowds), bus stops, phone booths, dumpsters, neon billboards,
+  pedestrians on phones, skidmarks from every drift.
+- **Weather**: drifting rain storms with screen-space rain, lightning +
+  thunder, wet-road sheen that reacts to the storm.
+- **HUD**: money, health/armor bars, stars, speedometer, subtitles, mission
+  banner and a circular minimap with blips.
+- **Audio**: fully synthesized — engine pitch, gunfire (per weapon), crashes,
+  explosions, sirens, rain ambience, thunder, pickups, and a looping synthwave
+  bed (M to mute).
 
-## Determinism
+## Controls
 
-`?seed=N` reseeds the world and traffic. `?shot=start|play|end|chaos` stages the four dossier screenshots deterministically. `?mute=1` keeps every test silent.
+| Key | Action |
+| --- | --- |
+| WASD / arrows | move / drive |
+| SHIFT | sprint |
+| SPACE | handbrake / shoot alternative |
+| F | jack / enter / exit car |
+| 1–4 / Q | weapon select / cycle |
+| MOUSE | aim |
+| LMB | shoot / punch |
+| M | mute |
+| ESC | pause (save / delete save) |
+| F1 | controls overlay |
+| GAMEPAD | stick move · A handbrake · X jack · Y mute · start pause |
 
-## Layout
+## Run
 
 ```
-game/            the whole game (index.html + ES modules)
-serve.ts         stdlib static server for game/
-main.ts          builds out/dossier.json via vendor/makefun-game.ts
-screenshots/     the four staged renders
-vendor/, LICENSE make.fun kit (untouched)
+node serve.ts            # http://localhost:8080
+node serve.ts --port 8090
+node main.ts             # build dossier into $MAKEFUN_OUTPUT_DIR (default /output)
 ```
+
+Deterministic staged scenes for screenshots: `?shot=start|play|end|chaos&seed=N`
+(mute with `&mute=1`). Saves live in `localStorage` under `vp_save1`.

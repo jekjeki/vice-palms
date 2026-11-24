@@ -1,5 +1,6 @@
 // main.ts — build the make.fun dossier: stage game/ + screenshots/ into out/,
-// then hand the staged dir to the vendored buildDossier.
+// then hand the staged dir to the vendored buildDossier. Node 22 stdlib.
+
 import { cp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { buildDossier } from './vendor/makefun-game.ts';

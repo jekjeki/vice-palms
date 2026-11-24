@@ -1,6 +1,6 @@
 [
-  { "file": "screenshots/1-start.jpg", "shot": "start", "url": "http://localhost:8080/?shot=start&mute=1&seed=vice", "label": "Title — neon cover" },
-  { "file": "screenshots/2-play.jpg", "shot": "play", "url": "http://localhost:8080/?shot=play&mute=1&seed=vice", "label": "Rolling up to Rico's Diner" },
-  { "file": "screenshots/3-end.jpg", "shot": "end", "url": "http://localhost:8080/?shot=end&mute=1&seed=vice", "label": "Mission passed — the finale payout" },
-  { "file": "screenshots/4-chaos.jpg", "shot": "chaos", "url": "http://localhost:8080/?shot=chaos&mute=1&seed=vice", "label": "Three stars of trouble at the intersection" }
+  { "file": "1-start.jpg", "shot": "start", "url": "/?shot=start&seed=7", "width": 1280, "height": 720 },
+  { "file": "2-play.jpg", "shot": "play", "url": "/?shot=play&seed=11", "width": 1280, "height": 720 },
+  { "file": "3-end.jpg", "shot": "end", "url": "/?shot=end&seed=23", "width": 1280, "height": 720 },
+  { "file": "4-chaos.jpg", "shot": "chaos", "url": "/?shot=chaos&seed=42", "width": 1280, "height": 720 }
 ]
