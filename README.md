@@ -2,66 +2,51 @@
 [![rank](https://make.fun/badge/gta6-01/jekjeki/vice-palms/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/jekjeki/vice-palms/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-# VICE PALMS
+# Vice Palms
 
-A neon-coastal top-down crime story for the make.fun **gta6-01** bounty. Pure
-Canvas 2D + WebAudio, zero libraries, zero network — everything is synthesized
-in the browser.
+A top-down, open-world night-drive fable built with raw Canvas 2D — no libraries, no network, everything synthesized (graphics, physics, audio). Rico returns to Vice Palms: six chained story missions, three side hustles, five stars of heat, and one neon-soaked coastal city with a port district and a palm-fringed airfield.
+
+## Run it
+
+```sh
+node serve.ts            # http://localhost:8080  (or --port N)
+```
 
 ## Play
 
-```bash
-node serve.ts            # http://localhost:8080  (--port N for another port)
-```
+| Key | Action |
+|---|---|
+| `W A S D` / arrows | walk / drive |
+| `SHIFT` | sprint |
+| `F` | enter / exit / jack a car |
+| `LMB` / `CTRL` | punch · shoot (mouse aims) |
+| `SPACE` | handbrake |
+| `H` | horn |
+| `ESC` | pause (save game here) |
+| `M` | mute |
 
 ## The city
 
-- **Vice Palms strip** — a road-grid night city with neon signs, street lamps
-  and a wet-asphalt sheen.
-- **Ocean Drive & the beach** — sand, boardwalk, palms, umbrellas and piers.
-- **Palm Park** — grass, paths, a pond, palm groves.
-- **The North Docks** — piers, container stacks, cranes and the cargo ship
-  *Palm Star*.
-- **Palm Airfield** — runway, hangars and an ATC tower.
+- **Downtown grid** — parallax 2.5D towers with neon trim, wet asphalt after the rain.
+- **North Docks** — piers, container stacks, gantry cranes, a moored freighter.
+- **Palm Airfield** — runway, hangars, control tower, and one suspicious crate.
+- **Ocean Drive** — beach, palms, and three race gates.
+- Traffic obeys the lights until it panics. Peds wander, then run. The VP Metro PD escalates from one star to roadblocks.
 
-## Features
+## Missions
 
-- 8 vehicle types with arcade physics: drift, handbrake, skid marks,
-  progressive damage (smoke → fire → explosion), headlights, water sinking.
-- Lane-following traffic that obeys the two-phase lights and queues.
-- Pedestrians that stroll, sunbathe and flee gunfire; gang lookouts that shoot.
-- Wanted system 1–5 stars: cruiser pursuit with ramming, roadblocks at 3+,
-  foot cops that shoot, line-of-sight decay, WASTED and BUSTED respawns with fees.
-- Player: walk / sprint, fists + pistol (with soft auto-aim), carjacking (F),
-  health / armor / money.
-- 6 chained story missions (Rico is back in Vice Palms) + 3 repeatable side
-  gigs (taxi fares, vigilante, hot delivery) with markers, timers, payouts,
-  fail/retry and subtitles.
-- HUD with circular minimap, speedo, wanted stars, objective text and toasts.
-- Full synthesized audio: engine, sirens, gunshots, explosions and a
-  synthwave bass loop.
-- Save / continue via `localStorage` (title menu and pause menu).
+Six story missions start at **Rico's Diner** (yellow marker). Side hustles (blue markers): **Cab Duty** at the taxi stand, **Beach Run** on Ocean Drive, **Vigilante** at the police station. Fail a mission and the giver marker reappears — walk back in to retry.
 
-## Controls
+## Determinism
 
-| key | action |
-| --- | --- |
-| WASD / arrows | drive / walk |
-| SPACE | attack on foot / handbrake in a car |
-| SHIFT | sprint |
-| F | enter or jack the nearest car |
-| Q | switch weapon (fists ↔ pistol) |
-| H | horn |
-| ESC / P | pause |
+`?seed=N` reseeds the world and traffic. `?shot=start|play|end|chaos` stages the four dossier screenshots deterministically. `?mute=1` keeps every test silent.
 
-## Staged scenes
+## Layout
 
-`?shot=start|play|end|chaos&seed=N` renders the four deterministic scenes used
-for `screenshots/` (also with `&mute=1` to silence audio).
-
-## Build the dossier
-
-```bash
-node main.ts   # copies game/ + screenshots/ into $MAKEFUN_OUTPUT_DIR (or /output)
-               # and writes dossier.json via the vendored makefun kit
+```
+game/            the whole game (index.html + ES modules)
+serve.ts         stdlib static server for game/
+main.ts          builds out/dossier.json via vendor/makefun-game.ts
+screenshots/     the four staged renders
+vendor/, LICENSE make.fun kit (untouched)
 ```

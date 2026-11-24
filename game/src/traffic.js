@@ -1,127 +1,199 @@
-// VICE PALMS — ambient traffic: cars keep to lanes on the grid, obey the
-// two-phase lights, queue behind one another, and despawn far away.
+// traffic.js — lane-following AI, traffic lights, queueing, panic fleeing,
+// population maintenance around the player.
 
 import { CFG } from './config.js';
-import { G } from './state.js';
-import { dist, angTo, normAng, moveToward, clamp } from './util.js';
-import { runRNG } from './rng.js';
-import { phaseNow } from './world.js';
-import { spawnTrafficCar, driveCar, carAhead, CAR_TYPES } from './cars.js';
+import { RNG } from './rng.js';
+import { clamp, angDiff } from './util.js';
+import { makeCar, carSpeed, mkPart } from './cars.js';
+import {
+  ROAD_V, ROAD_H, V_SPAN, H_SPAN, ROAD_HALF,
+  nextIntersection, dirVec, laneShift, randomLanePoint, lightRed,
+} from './world.js';
 
-export function manageTraffic(dt) {
-  // despawn far cars that nobody is in
-  const px = G.player.car ? G.player.car.x : G.player.x;
-  const py = G.player.car ? G.player.car.y : G.player.y;
-  for (let i = G.cars.length - 1; i >= 0; i--) {
-    const c = G.cars[i];
-    if (c.driver === 'player' || c.missionTag) continue;
-    const d = dist(c.x, c.y, px, py);
-    if (c.ai && c.ai.kind === 'traffic' && d > CFG.TRAFFIC_DESPAWN_R) { G.cars.splice(i, 1); continue; }
-    if (c.driver === 'none' && !c.ai && d > 1600 && !c.missionTag && !c.locked) { G.cars.splice(i, 1); continue; }
-    if (c.dead && c.deadT > 14 && d > 700) { G.cars.splice(i, 1); continue; }
-  }
+const AXIS_ANG = [0, Math.PI / 2, Math.PI, -Math.PI / 2]; // E,S,W,N
 
-  // spawn up to the cap
-  const trafficCount = G.cars.filter(c => c.ai && c.ai.kind === 'traffic' && !c.dead).length;
-  G.trafficTimer -= dt;
-  if (trafficCount < CFG.TRAFFIC_MAX && G.trafficTimer <= 0) {
-    G.trafficTimer = 0.35;
-    const car = spawnTrafficCar(runRNG, { x: px, y: py }, 620, CFG.TRAFFIC_SPAWN_R);
-    if (car) G.cars.push(car);
+export function spawnTraffic(g) {
+  while (g.cars.filter((c) => c.kind === 'traffic' && !c.dead).length < CFG.TRAFFIC_N) {
+    const p = randomLanePoint(g.rng, g.player, 2200);
+    makeCar(g, p.x, p.y, AXIS_ANG[p.dir], g.rng.pick(['sedan', 'sedan', 'taxi', 'van', 'sports', 'truck', 'buggy', 'limo']), {
+      kind: 'traffic', driver: 'npc', dir: p.dir, color: g.rng.pick(CFG.CAR_COLORS),
+    });
   }
 }
 
-const TURN_CHANCES = { straight: 0.62, left: 0.19, right: 0.19 };
+export function updateTraffic(g, dt) {
+  const cars = g.cars;
+  for (const c of cars) {
+    if (c.kind !== 'traffic' || c.dead || c.driver === 'player') continue;
+    if (c.driver !== 'npc') continue;
+    trafficAI(g, c, dt);
+  }
+  // panic contagion
+  for (const c of cars) {
+    if (c.kind === 'traffic' && !c.dead && g.panicOrigin) {
+      const d = Math.hypot(c.x - g.panicOrigin.x, c.y - g.panicOrigin.y);
+      if (d < 620) c.panicT = Math.max(c.panicT, 2.4);
+    }
+  }
+  // cull far cars, top-up population
+  for (let i = cars.length - 1; i >= 0; i--) {
+    const c = cars[i];
+    if (c.kind !== 'traffic') continue;
+    if (g.player && Math.hypot(c.x - g.player.x, c.y - g.player.y) > 2500) {
+      cars.splice(i, 1);
+    }
+  }
+  g.trafficSpawnT -= dt;
+  if (g.trafficSpawnT <= 0) {
+    g.trafficSpawnT = 0.7;
+    spawnTraffic(g);
+  }
+}
 
-export function trafficBrain(car, dt) {
-  const ai = car.ai;
-  if (!ai || ai.kind !== 'traffic') return;
-  if (car.dead) { car.throttle = 0; return; }
+function trafficAI(g, c, dt) {
+  const v = dirVec(c.dir);
+  const rail = laneShift(c.dir);
 
-  const vertical = Math.abs(Math.sin(car.ang)) > 0.7;   // moving mostly along Y
-  const dir = vertical ? Math.sign(Math.sin(car.ang)) : Math.sign(Math.cos(car.ang));
-  const line = vertical ? nearestOf(G.world.roadsX, car.x) : nearestOf(G.world.roadsY, car.y);
+  // pick a target intersection
+  if (!c.target) {
+    c.target = chooseTarget(g, c);
+    if (!c.target) { // dead end (shouldn't happen on a loop grid) — reverse
+      c.dir = (c.dir + 2) & 3;
+      c.target = nextIntersection(c.x, c.y, c.dir);
+    }
+  }
 
-  // target lane position
-  const lane = line + dir * CFG.LANE_OFF;
-  const cross = vertical ? car.x : car.y;
-  const drift = (lane - cross);
+  // along-axis distance to the intersection center
+  const alongAxis = c.dir === 0 || c.dir === 2 ? 'x' : 'y';
+  const sign = c.dir === 0 || c.dir === 1 ? 1 : -1;
+  const toNode = (c.target[alongAxis] - c[alongAxis]) * sign;
 
-  // desired speed: base, unless red light ahead or car ahead
-  let want = ai.speed;
+  // desired speed
+  let want = CFG.TRAFFIC_SPEED * (c.panicT > 0 ? 1.65 : 1);
+  c.panicT -= dt;
 
-  // queueing
-  const ahead = carAhead(car, 95);
+  // red light: stop before the intersection box
+  const stopLine = toNode - ROAD_HALF - 14;
+  const approaching = toNode > 0 && stopLine < 90;
+  if (approaching && lightRed(g.world, c.target.x, c.target.y, c.dir, g.time) && c.panicT <= 0) {
+    if (toNode > ROAD_HALF) {
+      // before the box: brake to the stop line
+      if (stopLine > 8) want = Math.min(want, stopLine * 2.4);
+      else want = 0;
+    }
+    // inside the box: crawl through, never block the crossing
+  }
+
+  // queueing: car ahead in the same lane
+  const ahead = findCarAhead(g, c);
   if (ahead) {
-    const d = dist(car.x, car.y, ahead.x, ahead.y);
-    want = Math.min(want, Math.max(0, (d - 46) * 2.2));
-    if (d < 52) want = 0;
-  }
-
-  // traffic lights: check the next intersection along our axis
-  const phase = phaseNow(G.time);
-  const lines = vertical ? G.world.roadsY : G.world.roadsX;
-  let nextCross = null;
-  for (const ry of lines) {
-    const aheadDist = vertical ? (ry - car.y) * dir : (ry - car.x) * dir;
-    if (aheadDist > 20 && aheadDist < 130) { nextCross = { at: ry, dist: aheadDist }; break; }
-  }
-  if (nextCross && !lightGreenFor(vertical, phase)) {
-    if (nextCross.dist < 74 && nextCross.dist > 6) want = Math.min(want, Math.max(0, (nextCross.dist - 56) * 3));
-  }
-
-  // turning decisions when passing an intersection center
-  ai.waitT -= dt;
-  if (nextCross && nextCross.dist < 8 && !ai.turned) {
-    ai.turned = true;
-    const roll = runRNG.next();
-    if (roll > TURN_CHANCES.straight) {
-      // turn: become a car on the crossing road
-      const newDir = roll > TURN_CHANCES.straight + TURN_CHANCES.left ? 1 : -1;
-      const newLine = nextCross.at;
-      if (newLine > 200 && newLine < (vertical ? CFG.BEACH_Y : 4060)) {
-        ai.turnTo = { vertical: !vertical, line: newLine, dir: newDir };
-      }
-    }
-  }
-  if (!nextCross || nextCross.dist > 40) ai.turned = false;
-
-  // smooth cross-axis correction toward lane
-  const steerAmt = clamp(drift / 40, -1, 1);
-  car.steer = vertical ? steerAmt * dir : steerAmt * -dir;
-  // hmm: steering semantics handled by driveCar; simpler: nudge heading
-  const targetAng = vertical ? (dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (dir > 0 ? 0 : Math.PI);
-  let corr = normAng(targetAng - car.ang);
-  // lane correction biases the heading
-  corr += clamp(drift * (vertical ? -dir : dir) / 260, -0.5, 0.5);
-  car.ang += clamp(corr, -1.8 * dt, 1.8 * dt);
-
-  // execute a queued turn: rotate to the new axis when we reach the crossing point
-  if (ai.turnTo) {
-    const t = ai.turnTo;
-    const alongPos = vertical ? car.y : car.x;
-    const targetPos = t.line + t.dir * CFG.LANE_OFF;
-    if (Math.abs(alongPos - targetPos) < 30) {
-      car.ang = t.vertical ? (t.dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (t.dir > 0 ? 0 : Math.PI);
-      ai.turnTo = null;
-      ai.turned = true;
+    const gap = ahead.d;
+    if (gap < 110) want = Math.min(want, Math.max(0, (gap - 46) * 2.2));
+    if (gap < 46) want = 0;
+    if (want === 0 && gap < 90 && c.waitT > 2.5 && Math.random() < dt * 0.5) {
+      c.honkT = 0.35;
+      g.audio && g.audio.horn();
     }
   }
 
-  car.throttle = want > Math.hypot(car.vx, car.vy) + 8 ? 0.7 : (want < Math.hypot(car.vx, car.vy) - 12 ? -0.6 : 0);
-  if (want === 0) { car.throttle = -0.4; }
-  car.hand = false;
+  // stuck detection
+  const sp = carSpeed(c);
+  if (sp < 6 && want > 0) c.stuckT += dt;
+  else c.stuckT = Math.max(0, c.stuckT - dt * 2);
+  if (c.stuckT > 5) {
+    c.stuckT = 0;
+    c.dir = (c.dir + (g.rng.chance(0.5) ? 1 : 3)) & 3;
+    c.target = null;
+  }
+
+  // drive
+  const vf = c.vx * v.x + c.vy * v.y;
+  if (vf < want - 6) {
+    c.throttle = 1;
+    c.brake = 0;
+  } else if (vf > want + 22) {
+    c.throttle = 0;
+    c.brake = want === 0 ? 1 : 0.4;
+  } else {
+    c.throttle = 0;
+    c.brake = 0;
+  }
+  c.steer = 0;
+  c.handbrake = false;
+  c.waitT = want === 0 ? c.waitT + dt : 0;
+
+  // rail alignment: face along the axis, drift laterally to lane center
+  const targetAng = AXIS_ANG[c.dir];
+  const dAng = angDiff(c.ang, targetAng);
+  c.ang += dAng * clamp(dt * 6, 0, 1);
+  const lateralAxis = alongAxis === 'x' ? 'y' : 'x';
+  const railCoord = c.target[lateralAxis] + (lateralAxis === 'y' ? rail.y : rail.x);
+  const lc = c[lateralAxis];
+  c[lateralAxis] = lc + (railCoord - lc) * clamp(dt * (alongAxis === 'x' ? 3 : 3), 0, 1);
+
+  // arrive at node: pick the next leg
+  if (toNode < 6 && Math.abs(vf) < 400) {
+    const reached = c.target;
+    c.x = reached.x + rail.x;
+    c.y = reached.y + rail.y;
+    c.target = chooseTarget(g, c);
+  }
 }
 
-function nearestOf(arr, v) {
-  let best = arr[0], bd = Math.abs(arr[0] - v);
-  for (const a of arr) { const d = Math.abs(a - v); if (d < bd) { bd = d; best = a; } }
+function chooseTarget(g, c) {
+  const opts = [];
+  // straight first (from the node we'd arrive at, in current dir)
+  const cur = nextIntersection(c.x, c.y, c.dir);
+  if (cur) opts.push({ dir: c.dir, node: cur, w: 0.62 });
+  const left = (c.dir + 3) & 3, right = (c.dir + 1) & 3;
+  // lateral probe: is there an intersecting road to the left/right?
+  const probeL = probeTurn(c, left);
+  if (probeL) opts.push({ dir: left, node: probeL, w: 0.19 });
+  const probeR = probeTurn(c, right);
+  if (probeR) opts.push({ dir: right, node: probeR, w: 0.19 });
+  if (!opts.length) return null;
+  let r = g.rng.next() * opts.reduce((s, o) => s + o.w, 0);
+  for (const o of opts) {
+    r -= o.w;
+    if (r <= 0) {
+      c.dir = o.dir;
+      return o.node;
+    }
+  }
+  return opts[0].node;
+}
+
+/** from current position, the next node if we turned to `dir` right here */
+function probeTurn(c, dir) {
+  const node = nextIntersection(c.x, c.y, dir);
+  if (!node) return null;
+  // must be a real crossing (a road we can join), not just the end of this road
+  const v = dirVec(dir);
+  if (v.x !== 0) {
+    // moving horizontally: the target y must be a road H
+    if (!ROAD_H.includes(node.y)) return null;
+  } else {
+    if (!ROAD_V.includes(node.x)) return null;
+  }
+  return node;
+}
+
+/** nearest car (or player car) ahead in the same lane */
+function findCarAhead(g, c) {
+  const v = dirVec(c.dir);
+  let best = null;
+  const check = (ox, oy, ovx, ovy) => {
+    const dx = ox - c.x, dy = oy - c.y;
+    const fwd = dx * v.x + dy * v.y;
+    const side = Math.abs(dx * v.y - dy * v.x); // lateral distance to my lane line
+    if (fwd > 10 && fwd < 130 && side < 22) {
+      if (!best || fwd < best.d) best = { d: fwd };
+    }
+  };
+  for (const o of g.cars) {
+    if (o === c || o.dead) continue;
+    if (o.kind !== 'traffic' && o.kind !== 'police' && o.driver !== 'player' && o.kind !== 'mission') continue;
+    check(o.x, o.y);
+  }
   return best;
 }
-
-function lightGreenFor(vertical, phase) {
-  // phase 0: NS green ; phase 1: EW green
-  return vertical ? phase === 0 : phase === 1;
-}
-
-export function clampTrafficSpeed(car) { car.ai && (car.ai.speed = Math.min(car.ai.speed, CFG.TRAFFIC_SPEED * 1.25)); }

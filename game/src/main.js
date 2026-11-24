@@ -1,67 +1,83 @@
-// VICE PALMS — boot: canvas setup, query params (?shot=&seed=&mute=), fixed
-// timestep loop.
+// main.js — boot: canvas, loop, module wiring. Fixed-step sim, RAF render.
 
-import { G } from './state.js';
-import { installInput } from './input.js';
-import { installAudio, updateAudio } from './audio.js';
-import { initGame, update, renderGame } from './game.js';
-import { stageShot, updateShot } from './shots.js';
+import { CFG } from './config.js';
+import { Input } from './input.js';
+import { AudioSys } from './audio.js';
+import { createGame, update, newGame } from './game.js';
+import { applyShot } from './shots.js';
+import { render } from './render.js';
+import { drawHud } from './hud.js';
+import { drawTitle, drawPause, drawControls, drawOverlays, drawFinale } from './screens.js';
 
 function boot() {
   const canvas = document.getElementById('game');
-  G.canvas = canvas;
-  G.ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d');
+  canvas.width = CFG.VIEW_W;
+  canvas.height = CFG.VIEW_H;
 
-  const q = new URLSearchParams(location.search);
-  const shot = q.get('shot');
-  const seed = parseInt(q.get('seed') || '1337', 10) >>> 0 || 1337;
-  if (q.get('mute') === '1' || q.get('mute') === 'true') G.muted = true;
-  if (shot) G.shotMode = shot;
+  const params = new URLSearchParams(location.search);
+  const muted = params.get('mute') === '1';
+  const shot = params.get('shot');
+  const seedStr = params.get('seed') || 'vice-palms';
 
-  installInput();
-  installAudio();
+  const audio = new AudioSys();
+  const input = new Input(canvas);
+  const g = createGame(audio, input, seedStr);
+  window.G = g; // debugging hook
 
-  fitCanvas(canvas);
-  window.addEventListener('resize', () => fitCanvas(canvas));
+  // audio may only wake on a gesture; when muted from the start, never wake it
+  let gestureSeen = muted;
+  const wake = () => {
+    if (gestureSeen) return;
+    gestureSeen = true;
+    audio.start(false);
+    audio.ensure();
+    if (g.state === 'play') audio.musicOn(true);
+  };
+  window.addEventListener('keydown', wake, { once: true });
+  canvas.addEventListener('mousedown', wake, { once: true });
+  if (muted) audio.start(true); // stays at gain 0 forever
 
-  initGame(seed);
-  if (shot && ['start', 'play', 'end', 'chaos'].includes(shot)) stageShot(shot, seed);
-
-  const loader = document.getElementById('boot');
-  if (loader) loader.remove();
-
-  G.running = true;
-  window.VP = G;   // debug/testing handle
-  last = performance.now();
-  acc = 0;
-  requestAnimationFrame(frame);
-}
-
-let last = 0, acc = 0;
-const STEP = 1 / 60;
-
-function frame(now) {
-  if (!G.running) return;
-  let dt = (now - last) / 1000;
-  last = now;
-  if (dt > 0.25) dt = 0.25;
-  acc += dt;
-  let steps = 0;
-  while (acc >= STEP && steps < 4) {
-    update(STEP);
-    updateShot(STEP);
-    acc -= STEP;
-    steps++;
+  // staged screenshot scenes
+  if (shot) {
+    newGame(g, false);
+    applyShot(g, shot, params.get('seed'));
   }
-  renderGame();
+
+  // fixed-step loop
+  let last = performance.now();
+  let acc = 0;
+  const STEP = 1 / 60;
+
+  function frame(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > CFG.MAX_DT) dt = CFG.MAX_DT;
+    acc += dt;
+    let steps = 0;
+    while (acc >= STEP && steps < 4) {
+      update(g, STEP);
+      acc -= STEP;
+      steps++;
+    }
+    draw(g, ctx);
+    requestAnimationFrame(frame);
+  }
   requestAnimationFrame(frame);
 }
 
-function fitCanvas(canvas) {
-  const ww = window.innerWidth, wh = window.innerHeight;
-  const s = Math.min(ww / G.W, wh / G.H);
-  canvas.style.width = Math.floor(G.W * s) + 'px';
-  canvas.style.height = Math.floor(G.H * s) + 'px';
+function draw(g, ctx) {
+  if (g.state === 'title') {
+    drawTitle(g, ctx);
+  } else if (g.state === 'controls') {
+    drawControls(g, ctx);
+  } else {
+    render(g, ctx);
+    drawHud(g, ctx);
+    drawOverlays(g, ctx);
+    if (g.state === 'pause') drawPause(g, ctx);
+    if (g.state === 'end') drawFinale(g, ctx);
+  }
 }
 
 boot();

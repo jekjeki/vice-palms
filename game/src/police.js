@@ -1,305 +1,323 @@
-// VICE PALMS — the Vice Palms PD: wanted stars 1-5, cruiser pursuit with
-// ramming, roadblocks at 3+ stars, foot cops that shoot, LOS decay and the
-// BUSTED arrest flow.
+// police.js — the VP Metro PD: wanted stars 1-5, pursuit cruisers that ram,
+// roadblocks at 3+, foot cops that open fire, out-of-sight decay, BUSTED.
 
 import { CFG } from './config.js';
-import { G, addStars, toast, say, addMoney, damagePlayer, resetPlayer } from './state.js';
-import { dist, dist2, angTo, clamp, burst, normAng } from './util.js';
-import { runRNG } from './rng.js';
-import { roadAhead, nearestRoadPoint, isWater, onPiers, resolveCircleSolids } from './world.js';
-import { makeCar, driveCar, damageCar } from './cars.js';
-import { failMission, failSideMission } from './missions.js';
-import { makePed } from './peds.js';
-import { play } from './audio.js';
+import { clamp, dist, angDiff, resolveCircleSolids } from './util.js';
+import { makeCar, carSpeed, damageCar, mkPart } from './cars.js';
+import { randomLanePoint, dirVec, isWater, ROAD_V, ROAD_H, ROAD_HALF } from './world.js';
+import { makePed, hurtPed } from './peds.js';
 
-const COP_COLS = '#1e3a5c';
-
-export function makeCruiser(x, y, ang) {
-  const car = makeCar('interceptor', x, y, ang, { driver: 'ai' });
-  car.ai = { kind: 'cop', state: 'pursuit', shootT: 0, ramT: 0 };
-  car.siren = true;
-  return car;
+export function initPolice(g) {
+  g.wanted = 0;
+  g.wantedHeat = 0;
+  g.heatT = 0;
+  g.cruiserSpawnCd = 0;
+  g.roadblockCd = 8;
+  g.copSpawnCd = 0;
+  g.lastWantedReason = '';
 }
 
-export function makeFootCop(x, y) {
-  const cop = makePed(x, y, { shirt: '#2f5f9e', col: COP_COLS, state: 'walk' });
-  cop.cop = true;
-  cop.hp = 55;
-  cop.state = 'cop';
-  cop.shootCd = 0.8;
-  cop.aimT = 0;
-  return cop;
+export function addWanted(g, n, reason) {
+  if (n <= 0) return;
+  const before = g.wanted;
+  g.wanted = Math.min(CFG.WANTED_MAX, g.wanted + n);
+  g.wantedHeat = 0;
+  g.heatT = 0;
+  if (reason) g.lastWantedReason = reason;
+  if (g.wanted > before) {
+    g.audio.star();
+    g.toasts.push({ text: reason ? `WANTED ${g.wanted}★ — ${reason}` : `WANTED ${g.wanted}★`, t: 2.6, col: '#ffd24a' });
+  }
 }
 
-export function updatePolice(dt) {
-  const p = G.player;
-  const px = p.car ? p.car.x : p.x;
-  const py = p.car ? p.car.y : p.y;
-  const stars = p.stars;
+export function raiseHeat(g, amount) {
+  if (g.wanted >= CFG.WANTED_MAX) return;
+  g.wantedHeat += amount;
+  if (g.wantedHeat >= 1) {
+    addWanted(g, 1, 'public gunfire');
+  }
+}
 
-  // ---- LOS decay: hide from the PD long enough to shed a star -------------
-  let seen = false;
-  for (const c of G.cars) {
-    if (c.ai && c.ai.kind === 'cop' && !c.dead && dist2(c.x, c.y, px, py) < 560 * 560) { seen = true; break; }
-  }
-  if (!seen) {
-    for (const cop of G.cops) {
-      if (!cop.dead && dist2(cop.x, cop.y, px, py) < 440 * 440) { seen = true; break; }
-    }
-  }
-  if (!seen) {
-    // no roadblocks/cruisers nearby at all also count as hidden
-    G.losTimer += dt;
-    if (G.losTimer > CFG.STAR_DECAY_S) {
-      G.losTimer = 0;
-      if (p.stars > 0) {
-        p.stars--;
-        toast(p.stars === 0 ? 'You lost the cops' : 'Heat cooling down…');
+// ------------------------------------------------------------------ update
+
+export function updatePolice(g, dt) {
+  const p = g.player;
+  if (!p) return;
+
+  // ---- wanted 0: stand down
+  if (g.wanted === 0) {
+    g.siren = false;
+    g.audio.sirenOn(false);
+    for (let i = g.cars.length - 1; i >= 0; i--) {
+      const c = g.cars[i];
+      if (c.kind === 'police' && c.copMode !== 'parked' && dist(c.x, c.y, p.x, p.y) > 1500) {
+        g.cars.splice(i, 1);
       }
     }
-  } else {
-    G.losTimer = Math.max(0, G.losTimer - dt * 2);
-  }
-
-  if (stars === 0) {
-    // stand down: cop cars drive off / disappear when far
-    for (let i = G.cars.length - 1; i >= 0; i--) {
-      const c = G.cars[i];
-      if (c.ai && c.ai.kind === 'cop' && !c.dead && dist(c.x, c.y, px, py) > 900) G.cars.splice(i, 1);
+    for (let i = g.peds.length - 1; i >= 0; i--) {
+      const pd = g.peds[i];
+      if (pd.kind === 'cop' && !pd.dead && dist(pd.x, pd.y, p.x, p.y) > 900) g.peds.splice(i, 1);
     }
-    for (let i = G.cops.length - 1; i >= 0; i--) {
-      if (dist(G.cops[i].x, G.cops[i].y, px, py) > 800) G.cops.splice(i, 1);
-    }
-    G.bustT = 0;
     return;
   }
 
-  // ---- cruiser spawns -----------------------------------------------------
-  G.copTimer -= dt;
-  const activeCops = G.cars.filter(c => c.ai && c.ai.kind === 'cop' && !c.dead).length;
-  if (G.copTimer <= 0 && activeCops < Math.min(CFG.COP_MAX, stars * 2)) {
-    G.copTimer = 3.2 - stars * 0.4;
-    const a = runRNG.next() * Math.PI * 2;
-    const sx = px + Math.cos(a) * CFG.COP_SPAWN_R;
-    const sy = py + Math.sin(a) * CFG.COP_SPAWN_R;
-    const snapped = nearestRoadPoint(G.world, sx, sy);
-    if (!isWater(snapped.x, snapped.y)) {
-      G.cars.push(makeCruiser(snapped.x, snapped.y, angTo(snapped.x, snapped.y, px, py)));
-      play('siren2');
+  // ---- contact & decay
+  let contact = false;
+  for (const c of g.cars) {
+    if (c.kind === 'police' && !c.dead && dist(c.x, c.y, p.x, p.y) < 640) { contact = true; break; }
+  }
+  if (!contact) {
+    for (const pd of g.peds) {
+      if (pd.kind === 'cop' && !pd.dead && dist(pd.x, pd.y, p.x, p.y) < 500) { contact = true; break; }
     }
   }
-
-  // ---- roadblocks at 3+ stars --------------------------------------------
-  if (stars >= CFG.ROADBLOCK_AT) {
-    G.roadblockTimer -= dt;
-    if (G.roadblockTimer <= 0) {
-      G.roadblockTimer = 14 - stars;
-      placeRoadblock(px, py);
-    }
-  }
-
-  // ---- drive cop cars, deploy foot cops ----------------------------------
-  for (const c of G.cars) {
-    if (!c.ai || c.ai.kind !== 'cop') continue;
-    if (c.dead) continue;
-    copBrain(c, dt, px, py);
-  }
-
-  // foot cops
-  for (let i = G.cops.length - 1; i >= 0; i--) {
-    const cop = G.cops[i];
-    if (cop.dead) { cop.deadT += dt; if (cop.deadT > 14) G.cops.splice(i, 1); continue; }
-    copBrainFoot(cop, dt, px, py, i);
-  }
-
-  // ---- busted check -------------------------------------------------------
-  if (!p.car && !p.dead) {
-    let holding = false;
-    for (const cop of G.cops) {
-      if (cop.dead) continue;
-      if (dist2(cop.x, cop.y, p.x, p.y) < 30 * 30) { holding = true; break; }
-    }
-    if (!holding) {
-      for (const c of G.cars) {
-        if (c.ai && c.ai.kind === 'cop' && !c.dead && Math.hypot(c.vx, c.vy) < 30 && dist2(c.x, c.y, p.x, p.y) < 55 * 55) { holding = true; break; }
+  if (contact) g.heatT = 0;
+  else {
+    g.heatT += dt;
+    if (g.heatT > CFG.OUT_OF_SIGHT_T) {
+      g.heatT = 0;
+      g.wanted = Math.max(0, g.wanted - 1);
+      g.wantedHeat = 0;
+      if (g.wanted === 0) {
+        g.toasts.push({ text: 'You lost the heat.', t: 2.5, col: '#8fdc8f' });
+        g.audio.sirenOn(false);
+        return;
+      } else {
+        g.toasts.push({ text: `Heat dropping… ${g.wanted}★`, t: 2, col: '#8fdc8f' });
       }
     }
-    if (holding) {
-      G.bustT += dt;
-      if (G.bustT > CFG.BUST_HOLD && p.stars > 0) busted();
-    } else {
-      G.bustT = Math.max(0, G.bustT - dt * 2);
+  }
+
+  // ---- cruisers
+  let cruisers = 0;
+  for (const c of g.cars) if (c.kind === 'police' && !c.dead && c.copMode === 'pursuit') cruisers++;
+  const wantCruisers = Math.min(1 + g.wanted, 7);
+  g.cruiserSpawnCd -= dt;
+  if (cruisers < wantCruisers && g.cruiserSpawnCd <= 0) {
+    g.cruiserSpawnCd = 2.2;
+    const spot = randomLanePoint(g.rng, p, 1500);
+    const d = dist(spot.x, spot.y, p.x, p.y);
+    if (d > 500) {
+      makeCar(g, spot.x, spot.y, dirAngle(spot.dir), 'police', {
+        kind: 'police', driver: 'npc', dir: spot.dir, siren: true, copMode: 'pursuit',
+      });
+    }
+  }
+
+  // ---- roadblocks at 3+
+  if (g.wanted >= CFG.ROADBLOCK_STARS) {
+    g.roadblockCd -= dt;
+    if (g.roadblockCd <= 0) {
+      g.roadblockCd = 9;
+      spawnRoadblock(g, p);
     }
   } else {
-    G.bustT = 0;
+    g.roadblockCd = Math.min(g.roadblockCd, 6);
+  }
+
+  // ---- per-cruiser AI
+  let anySirenNear = false;
+  for (const c of g.cars) {
+    if (c.kind !== 'police' || c.dead) continue;
+    const d = dist(c.x, c.y, p.x, p.y);
+    if (d < 1300) anySirenNear = true;
+    if (c.driver !== 'npc' && c.driver !== null) continue; // stolen cruiser
+    if (c.driver === 'player') continue;
+    if (c.copMode === 'block') {
+      blockerAI(g, c, dt);
+    } else {
+      pursuitAI(g, c, p, dt);
+      maybeDeployCops(g, c, p, dt);
+    }
+  }
+  g.siren = anySirenNear;
+  g.audio.sirenOn(anySirenNear);
+
+  // ---- foot cop AI
+  for (const pd of g.peds) {
+    if (pd.kind !== 'cop' || pd.dead) continue;
+    copFootAI(g, pd, p, dt);
+  }
+
+  // ---- BUSTED check
+  if (!p.car && !p.dead) {
+    for (const pd of g.peds) {
+      if (pd.kind === 'cop' && !pd.dead && dist(pd.x, pd.y, p.x, p.y) < 44) {
+        g.hooks.busted();
+        return;
+      }
+    }
   }
 }
 
-function copBrain(car, dt, px, py) {
-  const ai = car.ai;
-  const d = dist(car.x, car.y, px, py);
+function dirAngle(dir) {
+  return [0, Math.PI / 2, Math.PI, -Math.PI / 2][dir & 3];
+}
 
-  // stopped cruiser near a player on foot: bail out an officer
-  if (!G.player.car && d < 220 && Math.hypot(car.vx, car.vy) < 40 && ai.deployT === undefined) {
-    ai.deployT = 0.4;
+// ------------------------------------------------------------------ cruisers
+
+function pursuitAI(g, c, p, dt) {
+  const tx = p.x, ty = p.y;
+  const want = Math.atan2(ty - c.y, tx - c.x);
+  const diff = angDiff(c.ang, want);
+  c.steer = clamp(diff * 2.2, -1, 1);
+  const sp = carSpeed(c);
+  const d = dist(c.x, c.y, p.x, p.y);
+  if (d < 90 && Math.abs(diff) < 0.7) {
+    // ram
+    c.throttle = 1;
+    c.brake = 0;
+  } else if (Math.abs(diff) > 2.0 && sp > 120) {
+    c.throttle = 0;
+    c.brake = 1; // turn around using reverse-ish braking
+  } else {
+    c.throttle = 1;
+    c.brake = 0;
   }
-  if (ai.deployT !== undefined) {
-    ai.deployT -= dt;
-    if (ai.deployT <= 0 && G.cops.length < 6) {
-      ai.deployT = 2.2;
-      const cop = makeFootCop(car.x, car.y);
-      G.cops.push(cop);
-      burst(car.x, car.y, 3, { spMin: 5, spMax: 30, lifeMin: 0.2, lifeMax: 0.4, col: '#8fa8c8' });
-    }
+  c.handbrake = Math.abs(diff) > 1.4 && sp > 200;
+
+  // stuck wobble
+  if (sp < 18) c.stuckT += dt;
+  else c.stuckT = 0;
+  if (c.stuckT > 1.6) {
+    c.stuckT = 0;
+    c.brake = 1;
+    c.throttle = 0;
+    c.reverseT = 0.7;
   }
+  if (c.reverseT > 0) {
+    c.reverseT -= dt;
+    c.throttle = 0;
+    c.brake = 1;
+    c.steer = -c.steer;
+  }
+  c.siren = true;
+  c.lightbar = true;
+}
 
-  // pursuit: steer toward an intercept point, full throttle, ram
-  const p = G.player;
-  const tx = px + (p.car ? p.car.vx * 0.5 : 0);
-  const ty = py + (p.car ? p.car.vy * 0.5 : 0);
-  const targetAng = angTo(car.x, car.y, tx, ty);
-  let diff = normAng(targetAng - car.ang);
-  car.steer = clamp(diff * 2.4, -1, 1);
-  car.throttle = d > 130 ? 1 : (Math.abs(diff) < 1.2 ? 0.85 : 0.35);
-  if (d < 60) car.throttle = 1;        // ram through
-  car.hand = Math.abs(diff) > 2.2 && d < 260;
-
-  // stuck detection: back up
-  if (Math.hypot(car.vx, car.vy) < 12) {
-    ai.stuckT = (ai.stuckT || 0) + dt;
-    if (ai.stuckT > 1.2) { car.throttle = -0.9; car.steer = -car.steer; if (ai.stuckT > 2.2) ai.stuckT = 0; }
-  } else ai.stuckT = 0;
-
-  // shoot from the cruiser at 4+ stars
-  if (p.stars >= 4 && d < 320) {
-    ai.shootT = (ai.shootT || 0) - dt;
-    if (ai.shootT <= 0) {
-      ai.shootT = 1.6 - p.stars * 0.15;
-      const a = angTo(car.x, car.y, px, py) + runRNG.range(-0.12, 0.12);
-      G.bullets.push({ x: car.x + Math.cos(a) * 20, y: car.y + Math.sin(a) * 20, vx: Math.cos(a) * 560, vy: Math.sin(a) * 560, life: 0.9, from: 'cop', dmg: 8 });
-      G.gunfireT = 3;
-      play('shot');
-    }
+function blockerAI(g, c, dt) {
+  // parked sideways across the road until the player is close, then pursue
+  const p = g.player;
+  c.throttle = 0;
+  c.brake = 0;
+  c.steer = 0;
+  c.siren = true;
+  if (dist(c.x, c.y, p.x, p.y) < 200) {
+    c.copMode = 'pursuit';
   }
 }
 
-function copBrainFoot(cop, dt, px, py, idx) {
-  const p = G.player;
-  const d = dist(cop.x, cop.y, px, py);
-  cop.aimT = angTo(cop.x, cop.y, px, py);
-
-  if (!p.car) {
-    // close in and arrest / shoot
-    if (d > 26) {
-      const s = d < 90 ? 120 : 150;
-      cop.vx += (Math.cos(cop.aimT) * s - cop.vx) * Math.min(1, dt * 5);
-      cop.vy += (Math.sin(cop.aimT) * s - cop.vy) * Math.min(1, dt * 5);
-    } else { cop.vx *= 0.7; cop.vy *= 0.7; }
-  } else {
-    // player in a car: shoot at it
-    if (d < 260) {
-      cop.vx *= 0.8; cop.vy *= 0.8;
-    } else {
-      cop.vx += (Math.cos(cop.aimT) * 100 - cop.vx) * Math.min(1, dt * 4);
-      cop.vy += (Math.sin(cop.aimT) * 100 - cop.vy) * Math.min(1, dt * 4);
+function maybeDeployCops(g, c, p, dt) {
+  const d = dist(c.x, c.y, p.x, p.y);
+  const playerOnFoot = !p.car;
+  if (d < 300 && (playerOnFoot || carSpeed(c) < 60)) {
+    let cops = 0;
+    for (const pd of g.peds) if (pd.kind === 'cop' && !pd.dead) cops++;
+    const maxCops = Math.min(g.wanted + 1, 6);
+    if (cops < maxCops && c.copDeployCd <= 0) {
+      c.copDeployCd = 2.5;
+      const n = Math.min(2, maxCops - cops);
+      for (let i = 0; i < n; i++) {
+        const sideAng = c.ang - Math.PI / 2 + i * Math.PI;
+        const cop = makePed(g, c.x + Math.cos(sideAng) * 26, c.y + Math.sin(sideAng) * 26, 'cop');
+        cop.shotgun = g.wanted >= CFG.COP_SHOTGUN_STARS;
+      }
+      c.driver = null; // the officer left the cruiser
+      c.copMode = 'pursuit';
     }
   }
+  c.copDeployCd = (c.copDeployCd || 0) - dt;
+}
 
-  cop.x += cop.vx * dt; cop.y += cop.vy * dt;
-  const hit = resolveCircleSolids(cop, 9);
-  if (hit) { cop.vx *= -0.3; cop.vy *= -0.3; }
-  if (isWater(cop.x, cop.y) && !onPiers(cop.x, cop.y)) {
-    cop.x -= cop.vx * dt * 1.4; cop.y -= cop.vy * dt * 1.4;
+function spawnRoadblock(g, p) {
+  // find a road point ~600-800 ahead of the player's velocity
+  const v = p.car ? { x: p.car.vx, y: p.car.vy } : { x: Math.cos(p.ang) * 100, y: Math.sin(p.ang) * 100 };
+  const vl = Math.hypot(v.x, v.y) || 1;
+  const ax = p.x + (v.x / vl) * 700;
+  const ay = p.y + (v.y / vl) * 700;
+  // snap to the nearest road line
+  let bestV = ROAD_V[0], bdV = Math.abs(ax - bestV);
+  for (const vx of ROAD_V) { const d = Math.abs(ax - vx); if (d < bdV) { bdV = d; bestV = vx; } }
+  let bestH = ROAD_H[0], bdH = Math.abs(ay - bestH);
+  for (const hy of ROAD_H) { const d = Math.abs(ay - hy); if (d < bdH) { bdH = d; bestH = hy; } }
+  let bx, by, cross;
+  if (bdV < bdH) { bx = bestV; by = clamp(ay, 480, 3340); cross = 'v'; }
+  else { bx = clamp(ax, 460, 4340); by = bestH; cross = 'h'; }
+  if (Math.hypot(bx - p.x, by - p.y) < 320) return; // too close, don't spawn on top of the player
+  const n = 2 + (g.wanted >= 4 ? 1 : 0);
+  for (let i = 0; i < n; i++) {
+    const off = (i - (n - 1) / 2) * 44;
+    const x = cross === 'v' ? bx + off : bx;
+    const y = cross === 'v' ? by : by + off;
+    makeCar(g, x, y, cross === 'v' ? Math.PI / 2 : 0, 'police', {
+      kind: 'police', driver: 'npc', siren: true, copMode: 'block', spawnT: 0,
+    });
+    const cop = makePed(g, x + 30, y + 30, 'cop');
+    cop.shotgun = g.wanted >= CFG.COP_SHOTGUN_STARS;
+  }
+  g.toasts.push({ text: 'Roadblock ahead!', t: 2, col: '#ff6a6a' });
+}
+
+// ------------------------------------------------------------------ foot cops
+
+function copFootAI(g, cop, p, dt) {
+  const d = dist(cop.x, cop.y, p.x, p.y);
+  const want = Math.atan2(p.y - cop.y, p.x - cop.x);
+
+  if (d > 240) {
+    // chase
+    const sp = 205;
+    moveCop(g, cop, Math.cos(want) * sp * dt, Math.sin(want) * sp * dt);
+    cop.ang = want;
+    cop.shootCd -= dt;
+  } else if (d < 60) {
+    // back off a bit and shoot
+    moveCop(g, cop, -Math.cos(want) * 80 * dt, -Math.sin(want) * 80 * dt);
+    cop.ang = want;
+    copShoot(g, cop, p, dt);
+  } else {
+    // hold and shoot
+    cop.ang += angDiff(cop.ang, want) * clamp(dt * 8, 0, 1);
+    copShoot(g, cop, p, dt);
   }
 
+  // keep cops out of walls/water
+  if (isWater(cop.x, cop.y)) {
+    cop.fleeAng = Math.PI;
+    moveCop(g, cop, -120 * dt, 0);
+  }
+}
+
+function copShoot(g, cop, p, dt) {
   cop.shootCd -= dt;
-  if (cop.shootCd <= 0 && d < 300) {
-    cop.shootCd = 1.25 - p.stars * 0.08;
-    const a = cop.aimT + runRNG.range(-0.1, 0.1);
-    G.bullets.push({ x: cop.x + Math.cos(a) * 12, y: cop.y + Math.sin(a) * 12, vx: Math.cos(a) * 560, vy: Math.sin(a) * 560, life: 0.8, from: 'cop', dmg: p.car ? 6 : 10 });
-    G.gunfireT = 3;
-    play('shot');
+  if (cop.shootCd > 0) return;
+  cop.shootCd = CFG.COP_SHOOT_CD * (cop.shotgun ? 1.5 : 1);
+  const pellets = cop.shotgun ? 3 : 1;
+  const spread = cop.shotgun ? 0.16 : 0.07;
+  for (let i = 0; i < pellets; i++) {
+    const a = Math.atan2(p.y - cop.y, p.x - cop.x) + g.rng.range(-spread, spread);
+    g.bullets.push({
+      x: cop.x + Math.cos(a) * 14,
+      y: cop.y + Math.sin(a) * 14,
+      vx: Math.cos(a) * CFG.BULLET_SPEED * 0.8,
+      vy: Math.sin(a) * CFG.BULLET_SPEED * 0.8,
+      ttl: CFG.BULLET_TTL,
+      src: 'cop',
+      dmg: cop.shotgun ? 11 : CFG.COP_BULLET_DMG,
+    });
   }
+  g.parts.push(mkPart(cop.x + Math.cos(cop.ang) * 15, cop.y + Math.sin(cop.ang) * 15, 0, 0, 0.07, 'muzzle'));
+  if (dist(cop.x, cop.y, g.player.x, g.player.y) < 900) g.audio.gunshot();
+}
 
-  // run over by the player's car
-  const pc = p.car;
-  if (pc && dist2(pc.x, pc.y, cop.x, cop.y) < (pc.type.w * 0.45) ** 2 && Math.hypot(pc.vx, pc.vy) > 60) {
-    killCop(cop, 'car');
-    addStars(2);
+function moveCop(g, cop, dx, dy) {
+  let nx = cop.x + dx, ny = cop.y + dy;
+  const res = resolveCircleSolids(nx, ny, 7, g.world.solids);
+  if (!isWater(res.x, res.y)) {
+    cop.x = res.x;
+    cop.y = res.y;
+  } else {
+    cop.x = clamp(res.x, 60, CFG.WORLD_W - 60);
+    cop.y = clamp(res.y, 230, CFG.WORLD_H - 40);
   }
-}
-
-export function damageCopFoot(cop, n, src) {
-  if (cop.dead) return;
-  cop.hp -= n;
-  burst(cop.x, cop.y, 3, { spMin: 10, spMax: 60, lifeMin: 0.2, lifeMax: 0.5, col: '#a11a2a', kind: 'blood' });
-  if (cop.hp <= 0) killCop(cop, src);
-}
-
-export function killCop(cop, src) {
-  if (cop.dead) return;
-  cop.dead = true;
-  cop.deadT = 0;
-  burst(cop.x, cop.y, 8, { spMin: 20, spMax: 110, lifeMin: 0.3, lifeMax: 0.7, col: '#a11a2a', kind: 'blood' });
-  G.stats.copKills++;
-  if (src === 'player') { addStars(2); toast('Officer down — heavy heat incoming'); }
-}
-
-function placeRoadblock(px, py) {
-  const p = G.player;
-  const car = p.car;
-  if (!car) return;                       // roadblocks only chase drivers
-  const spot = roadAhead(G.world, car.x, car.y, car.ang, 520);
-  if (isWater(spot.x, spot.y)) return;
-  const vertical = spot.axis === 'v';
-  const off = 40;
-  for (const s of [-1, 1]) {
-    const x = vertical ? spot.x + s * off : spot.x;
-    const y = vertical ? spot.y : spot.y + s * off;
-    if (isWater(x, y)) continue;
-    const c = makeCar('interceptor', x, y, vertical ? Math.PI / 2 * -Math.sign(s) : 0, { driver: 'ai' });
-    c.ai = { kind: 'cop', state: 'roadblock', shootT: 1.2 };
-    G.cars.push(c);
-    if (runRNG.chance(0.7)) G.cops.push(makeFootCop(vertical ? x : x + s * 46, vertical ? y + s * 46 : y));
-  }
-  toast('Roadblock ahead!');
-}
-
-// ---- busted / wasted flows -------------------------------------------------
-
-export function busted() {
-  const p = G.player;
-  G.screen = 'busted';
-  G.screenT = 0;
-  play('fail');
-  addMoney(-CFG.BUSTED_FEE);
-  toast('Busted! Bail and processing: ' + CFG.BUSTED_FEE + '$');
-}
-
-export function wasted() {
-  // screen switch handled by damagePlayer
-}
-
-export function respawn(kind) {
-  const p = G.player;
-  const at = kind === 'busted' ? G.world.poi.policeStation : G.world.poi.hospital;
-  resetPlayer(at.x, at.y);
-  p.armor = 0;
-  if (kind === 'wasted') { addMoney(-CFG.WASTED_FEE); toast('Hospital bill: $' + CFG.WASTED_FEE); }
-  G.cops.length = 0;
-  for (let i = G.cars.length - 1; i >= 0; i--) {
-    const c = G.cars[i];
-    if (c.ai && c.ai.kind === 'cop' && !c.dead) G.cars.splice(i, 1);
-  }
-  // fail any active mission
-  if (G.mission) { failMission('You got ' + (kind === 'busted' ? 'busted' : 'wasted') + '.'); }
-  if (G.sideMission) { failSideMission(); }
-  G.screen = 'play';
-  G.screenT = 0;
-  G.cam.x = p.x; G.cam.y = p.y;
-}
-
-// bullets vs cop cars helper used in game.js
-export function bulletHitsCopCar(b, c) {
-  return c.type && dist2(b.x, b.y, c.x, c.y) < (c.type.w * 0.5) ** 2;
 }

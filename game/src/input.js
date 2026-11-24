@@ -1,54 +1,82 @@
-// VICE PALMS — keyboard input with edge detection. Mouse reserved for menus.
+// input.js — keyboard + mouse. Edge-detect via pressed sets cleared each frame.
 
-import { G } from './state.js';
+import { CFG } from './config.js';
 
-const down = new Set();
-const pressed = new Set();   // consumed once per frame
+export class Input {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.keys = new Set();
+    this.down = new Set();
+    this.pressed = new Set();
+    this.mouse = { x: 640, y: 360, down: false, pressed: false };
+    this.ignored = false;
 
-const MAP = {
-  up: ['ArrowUp', 'KeyW'],
-  down: ['ArrowDown', 'KeyS'],
-  left: ['ArrowLeft', 'KeyA'],
-  right: ['ArrowRight', 'KeyD'],
-  hand: ['Space'],
-  attack: ['Space', 'KeyJ'],
-  sprint: ['ShiftLeft', 'ShiftRight'],
-  enter: ['Enter', 'NumpadEnter', 'KeyF'],
-  pause: ['Escape', 'KeyP'],
-  horn: ['KeyH'],
-  switch: ['KeyQ'],
-};
+    window.addEventListener('keydown', (e) => {
+      if (e.repeat) return;
+      const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      this.keys.add(k);
+      this.pressed.add(k);
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'Tab'].includes(e.key)) e.preventDefault();
+    });
+    window.addEventListener('keyup', (e) => {
+      const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      this.keys.delete(k);
+    });
+    window.addEventListener('blur', () => {
+      this.keys.clear();
+      this.mouse.down = false;
+    });
+    canvas.addEventListener('mousemove', (e) => {
+      const r = canvas.getBoundingClientRect();
+      const sx = CFG.VIEW_W / r.width, sy = CFG.VIEW_H / r.height;
+      this.mouse.x = (e.clientX - r.left) * sx;
+      this.mouse.y = (e.clientY - r.top) * sy;
+    });
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 0) { this.mouse.down = true; this.mouse.pressed = true; }
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 0) this.mouse.down = false;
+    });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
 
-const ACTION_OF = new Map();
-for (const [act, keys] of Object.entries(MAP)) for (const k of keys) ACTION_OF.set(k, act);
+  /** continuous action values */
+  axis() {
+    let x = 0, y = 0;
+    if (this.keys.has('a') || this.keys.has('ArrowLeft')) x -= 1;
+    if (this.keys.has('d') || this.keys.has('ArrowRight')) x += 1;
+    if (this.keys.has('w') || this.keys.has('ArrowUp')) y -= 1;
+    if (this.keys.has('s') || this.keys.has('ArrowDown')) y += 1;
+    return { x, y };
+  }
 
-export function isDown(act) {
-  for (const k of MAP[act]) if (down.has(k)) return true;
-  return false;
+  carControls() {
+    return {
+      throttle: (this.keys.has('w') || this.keys.has('ArrowUp')) ? 1 : 0,
+      brake: (this.keys.has('s') || this.keys.has('ArrowDown')) ? 1 : 0,
+      steer: ((this.keys.has('a') || this.keys.has('ArrowLeft')) ? -1 : 0) + ((this.keys.has('d') || this.keys.has('ArrowRight')) ? 1 : 0),
+      handbrake: this.keys.has(' '),
+      horn: this.keys.has('h'),
+    };
+  }
+
+  /** consume one edge */
+  took(k) {
+    if (this.pressed.has(k)) {
+      this.pressed.delete(k);
+      return true;
+    }
+    return false;
+  }
+
+  /** true while held */
+  held(k) {
+    return this.keys.has(k);
+  }
+
+  endFrame() {
+    this.pressed.clear();
+    this.mouse.pressed = false;
+  }
 }
-export function wasPressed(act) { return pressed.has(act); }
-export function consumeAll() { pressed.clear(); }
-
-function keyOf(e) { return e.code; }
-
-export function installInput() {
-  window.addEventListener('keydown', (e) => {
-    const act = ACTION_OF.get(e.code);
-    if (act && ['up', 'down', 'left', 'right', 'hand', 'attack', 'sprint', 'enter', 'pause', 'horn', 'switch'].includes(act)) e.preventDefault();
-    if (e.repeat) return;
-    down.add(e.code);
-    pressed.add(act);
-    G.userGesture = true;
-  });
-  window.addEventListener('keyup', (e) => { down.delete(e.code); });
-  window.addEventListener('blur', () => { down.clear(); });
-}
-
-// fake-input channel used by shots.js to stage scenes deterministically
-export function injectAction(act) { pressed.add(act); }
-export function injectHold(act, on) {
-  const k = MAP[act] && MAP[act][0];
-  if (!k) return;
-  if (on) down.add(k); else down.delete(k);
-}
-export function clearInput() { down.clear(); pressed.clear(); }

@@ -1,205 +1,194 @@
-// VICE PALMS — pedestrians: wander the sidewalks, sunbathe on the sand, and
-// flee screaming when the shooting starts. Getting hit by a car is fatal.
+// peds.js — pedestrians: sidewalk wandering, panic fleeing, run-overs, deaths.
+// Cop foot-peds live in the same array (kind 'cop') but their AI lives in police.js.
 
 import { CFG } from './config.js';
-import { G, addStars, toast } from './state.js';
-import { clamp, dist, dist2, angTo, burst } from './util.js';
-import { runRNG } from './rng.js';
-import { resolveCircleSolids, isWater, onPiers, terrainAt } from './world.js';
-import { carHitsPed } from './cars.js';
-import { play } from './audio.js';
+import { RNG } from './rng.js';
+import { clamp, resolveCircleSolids, TAU } from './util.js';
+import { randomSidewalkPoint, isWater } from './world.js';
+import { carSpeed } from './cars.js';
 
-const PED_COLS = ['#e8b88a', '#c98a5e', '#8a5e3c', '#f0d0b0'];
-const SHIRT_COLS = ['#ff6e9e', '#5ad0ff', '#ffe36e', '#7dff9e', '#c084ff', '#ff8a5c', '#e8e8ee'];
+let nextPedId = 1;
 
-export function makePed(x, y, opts = {}) {
-  return {
-    x, y, ang: runRNG.next() * Math.PI * 2,
-    vx: 0, vy: 0,
-    col: opts.col || PED_COLS[Math.floor(runRNG.next() * PED_COLS.length)],
-    shirt: opts.shirt || SHIRT_COLS[Math.floor(runRNG.next() * SHIRT_COLS.length)],
-    state: opts.state || 'walk',   // walk | sunbathe | flee | dead | gang | mission
-    speed: CFG.PED_SPEED,
-    fear: 0,
-    walkT: runRNG.next() * 10,
+const SKINS = ['#c8a284', '#8a6a4f', '#6a4a34', '#e0b89a', '#9a7a5f'];
+const SHIRTS = ['#c84a5a', '#4a8ac8', '#4ac88a', '#c8b44a', '#8a4ac8', '#c88a4a', '#e0e0e0', '#5a5a6a', '#3a8a6a'];
+const PANTS = ['#2a2a3a', '#3a3a4a', '#4a4258', '#2a3a2a', '#3a2a2a'];
+
+export function makePed(g, x, y, kind = 'civ') {
+  const p = {
+    id: nextPedId++,
+    kind,
+    x, y,
+    ang: g.rng.range(0, TAU),
+    hp: kind === 'cop' ? 70 : CFG.PED_HP,
     dead: false,
     deadT: 0,
-    hp: 30,
-    gang: !!opts.gang,
-    target: null,       // gang attacker focus
-    shootCd: 0,
-    missionTag: opts.missionTag || null,
-    home: { x, y },
+    fleeT: 0,
+    fleeAng: 0,
+    walkT: g.rng.range(1, 4),
+    dir: g.rng.int(0, 3),
+    skin: g.rng.pick(SKINS),
+    shirt: kind === 'cop' ? '#1c2a52' : g.rng.pick(SHIRTS),
+    pants: kind === 'cop' ? '#151d38' : g.rng.pick(PANTS),
+    panicT: 0,
+    screamT: 0,
+    // cop fields (used by police.js)
+    copState: null,
+    shootCd: g.rng.range(0.5, 1.4),
+    garrison: false,
   };
+  g.peds.push(p);
+  return p;
 }
 
-export function spawnPedRandom(rng, near, minD, maxD, opts = {}) {
-  for (let tries = 0; tries < 16; tries++) {
-    let x, y;
-    const t = rng.next();
-    if (t < 0.35) {
-      // sidewalk of a random road
-      const vertical = rng.chance(0.5);
-      if (vertical) {
-        const rx = rng.pick(G.world.roadsX);
-        x = rx + rng.sign() * (CFG.ROAD_HALF + 12);
-        y = rng.range(230, CFG.BEACH_Y - 40);
-      } else {
-        const ry = rng.pick(G.world.roadsY);
-        y = ry + rng.sign() * (CFG.ROAD_HALF + 12);
-        x = rng.range(230, 4040);
-      }
-    } else if (t < 0.6) {
-      x = rng.range(300, CFG.WORLD_W - 300);
-      y = rng.range(CFG.BEACH_Y + 20, 3080);       // beach
-    } else {
-      x = rng.range(300, 4000); y = rng.range(240, 2900);
-      if (terrainAt(x, y) !== 'city') continue;
-    }
-    if (isWater(x, y) && !onPiers(x, y)) continue;
-    const d = dist(x, y, near.x, near.y);
-    if (d < minD || d > maxD) continue;
-    return makePed(x, y, opts);
+export function spawnPeds(g) {
+  let n = 0;
+  for (const p of g.peds) if (!p.dead && p.kind === 'civ') n++;
+  while (n < CFG.PED_N) {
+    const s = randomSidewalkPoint(g.rng, g.world.solids);
+    if (g.player && Math.hypot(s.x - g.player.x, s.y - g.player.y) > 1900) continue;
+    makePed(g, s.x, s.y);
+    n++;
   }
-  return null;
 }
 
-export function updatePeds(dt) {
-  const p = G.player;
-  const px = p.car ? p.car.x : p.x, py = p.car ? p.car.y : p.y;
+export function hurtPed(g, p, dmg, cause) {
+  if (p.dead) return;
+  p.hp -= dmg;
+  if (p.hp <= 0) {
+    p.dead = true;
+    p.deadT = 0;
+    g.decals.push({ x: p.x, y: p.y, r: 10 + g.rng.range(0, 6), col: 'rgba(120,16,24,0.7)', life: 30 });
+    panicNear(g, p.x, p.y, 340);
+    if (g.hooks.pedKilled) g.hooks.pedKilled(p, cause);
+  } else {
+    // wounded: flee from the shooter
+    p.fleeT = Math.max(p.fleeT, 4);
+    p.panicT = 6;
+    panicNear(g, p.x, p.y, 260);
+  }
+}
 
-  for (let i = G.peds.length - 1; i >= 0; i--) {
-    const pd = G.peds[i];
-    if (pd.dead) {
-      pd.deadT += dt;
-      if (pd.deadT > 16) G.peds.splice(i, 1);
+export function panicNear(g, x, y, r) {
+  g.panicOrigin = { x, y };
+  g.panicT = Math.max(g.panicT, 2.2);
+  for (const p of g.peds) {
+    if (p.dead || p.kind === 'cop') continue;
+    if (Math.hypot(p.x - x, p.y - y) < r) {
+      p.panicT = Math.max(p.panicT, 3 + g.rng.range(0, 2));
+      p.fleeAng = Math.atan2(p.y - y, p.x - x) + g.rng.range(-0.5, 0.5);
+      p.screamT = 1.2;
+    }
+  }
+}
+
+export function updatePeds(g, dt) {
+  // population maintenance
+  let alive = 0;
+  for (const p of g.peds) if (!p.dead && p.kind === 'civ') alive++;
+  if (alive < CFG.PED_N) {
+    const s = randomSidewalkPoint(g.rng, g.world.solids);
+    if (!g.player || Math.hypot(s.x - g.player.x, s.y - g.player.y) < 1700) makePed(g, s.x, s.y);
+  }
+
+  for (let i = g.peds.length - 1; i >= 0; i--) {
+    const p = g.peds[i];
+    if (p.dead) {
+      p.deadT += dt;
+      if (p.deadT > 22 || Math.hypot(p.x - g.player.x, p.y - g.player.y) > 2300) {
+        g.peds.splice(i, 1);
+      }
       continue;
     }
-    const dPlayer = dist(pd.x, pd.y, px, py);
-    if (dPlayer > CFG.PED_DESPAWN_R) { G.peds.splice(i, 1); continue; }
+    // cull the far ones (civs only; cops managed by police.js)
+    if (p.kind === 'civ' && g.player && Math.hypot(p.x - g.player.x, p.y - g.player.y) > 2200) {
+      g.peds.splice(i, 1);
+      continue;
+    }
+    if (p.kind === 'cop') continue; // police.js drives cops
 
-    // panic from recent gunfire anywhere nearby
-    if (pd.state !== 'gang' && pd.fear <= 0 && G.gunfireT > 0 && dPlayer < 420) panic(pd);
-
-    pd.shootCd -= dt;
-    pd.fear -= dt;
-
-    if (pd.state === 'gang') updateGangPed(pd, dt, px, py);
-    else if (pd.state === 'flee') {
-      const a = angTo(px, py, pd.x, pd.y);
-      steer(pd, a, CFG.PED_FLEE_SPEED, dt);
-      if (pd.fear <= 0 && dPlayer > 380) pd.state = 'walk';
-    } else if (pd.state === 'sunbathe') {
-      pd.vx = 0; pd.vy = 0;
-      if (pd.fear > 0) pd.state = 'flee';
+    // ---- civ AI
+    if (p.panicT > 0) {
+      p.panicT -= dt;
+      p.screamT = Math.max(0, p.screamT - dt);
+      p.fleeT = Math.max(p.fleeT, 0.8);
+    }
+    if (p.fleeT > 0) {
+      p.fleeT -= dt;
+      // run away, jitter the heading a little
+      p.fleeAng += g.rng.range(-1.6, 1.6) * dt;
+      const sp = CFG.PED_RUN;
+      movePed(g, p, Math.cos(p.fleeAng) * sp * dt, Math.sin(p.fleeAng) * sp * dt, sp);
+      p.ang = p.fleeAng;
     } else {
-      // stroll: random wander, hug sidewalks occasionally
-      pd.walkT += dt;
-      if (Math.random() < dt * 0.6) pd.ang += runRNG.range(-1.2, 1.2);
-      steer(pd, pd.ang, pd.speed, dt);
-      if (Math.random() < dt * 0.05) pd.state = 'sunbathe';
+      // sidewalk wander on the 4 axes
+      p.walkT -= dt;
+      if (p.walkT <= 0) {
+        p.walkT = g.rng.range(2, 6);
+        p.dir = (p.dir + (g.rng.chance(0.5) ? 1 : 3)) & 3;
+        if (g.rng.chance(0.2)) p.dir = (p.dir + 2) & 3;
+      }
+      const ax = [[1, 0], [0, 1], [-1, 0], [0, -1]][p.dir];
+      const nx = p.x + ax[0] * CFG.PED_WALK * dt;
+      const ny = p.y + ax[1] * CFG.PED_WALK * dt;
+      const res = tryMove(g, p, nx, ny);
+      if (res.blocked) p.walkT = 0; // pick a new direction next frame
+      p.ang = Math.atan2(ax[1], ax[0]);
     }
 
-    movePed(pd, dt);
+    // keep off water
+    if (isWater(p.x, p.y)) {
+      p.x = clamp(p.x, 60, CFG.WORLD_W - 60);
+      p.y = clamp(p.y, 220, CFG.WORLD_H - 60);
+      p.fleeAng = Math.PI; // run back west
+      p.fleeT = 1;
+    }
+  }
 
-    // run over by any car
-    for (const c of G.cars) {
-      if (c.dead) continue;
-      if (carHitsPed(c, pd)) {
-        killPed(pd, 'car');
-        if (c.driver === 'player') {
-          addStars(pd.gang ? 1 : 2);
-          toast(pd.gang ? 'Gang member down' : 'Pedestrian down — the PD saw that');
+  // run-overs: cars (moving fast) vs every living ped
+  for (const c of g.cars) {
+    const sp = carSpeed(c);
+    if (sp < 55 || c.dead) continue;
+    for (const p of g.peds) {
+      if (p.dead) continue;
+      const dx = p.x - c.x, dy = p.y - c.y;
+      if (dx * dx + dy * dy < 26 * 26) {
+        hurtPed(g, p, sp * 1.4, 'car');
+        // fling the body
+        if (p.dead) {
+          p.x += c.vx * 0.09;
+          p.y += c.vy * 0.09;
         }
-        break;
+        c.vx *= 0.96;
+        c.vy *= 0.96;
+        if (c.driver === 'player' && sp > 90) {
+          g.audio && g.audio.punch();
+        }
       }
     }
-    if (pd.dead) continue;
-
-    // gang peds and mission peds shoot
-    if ((pd.state === 'gang') && pd.shootCd <= 0 && dPlayer < 300) {
-      gangShoot(pd);
-    }
   }
 }
 
-function steer(pd, ang, speed, dt) {
-  pd.vx += (Math.cos(ang) * speed - pd.vx) * Math.min(1, dt * 6);
-  pd.vy += (Math.sin(ang) * speed - pd.vy) * Math.min(1, dt * 6);
-  pd.ang = ang;
-  pd.walkT += dt * 6;
-}
-
-function movePed(pd, dt) {
-  pd.x += pd.vx * dt; pd.y += pd.vy * dt;
-  const hit = resolveCircleSolids(pd, 9);
-  if (hit) { pd.ang += 2.4; pd.vx *= -0.3; pd.vy *= -0.3; }
-  if (isWater(pd.x, pd.y) && !onPiers(pd.x, pd.y)) {
-    // don't drown; turn back to the nearest land
-    pd.ang = angTo(pd.x, pd.y, pd.home.x, pd.home.y);
-    pd.x -= pd.vx * dt * 1.2; pd.y -= pd.vy * dt * 1.2;
+/** axis move with solid/water blocking; returns whether it was blocked */
+function tryMove(g, p, nx, ny) {
+  const r = 7;
+  const res = resolveCircleSolids(nx, ny, r, g.world.solids);
+  let blocked = res.hit;
+  if (isWater(res.x, res.y)) blocked = true;
+  if (!blocked) {
+    p.x = clamp(res.x, 24, CFG.WORLD_W - 24);
+    p.y = clamp(res.y, 24, CFG.WORLD_H - 24);
   }
+  return { blocked };
 }
 
-export function panic(pd) {
-  if (pd.state === 'gang' || pd.dead) return;
-  pd.state = 'flee';
-  pd.fear = 6;
-}
-
-export function panicArea(x, y, r) {
-  for (const pd of G.peds) {
-    if (!pd.dead && dist2(x, y, pd.x, pd.y) < r * r) panic(pd);
+function movePed(g, p, dx, dy, sp) {
+  const res = tryMove(g, p, p.x + dx, p.y + dy);
+  if (res.blocked) {
+    // slide along whichever axis still works
+    const r1 = tryMove(g, p, p.x + dx, p.y);
+    const r2 = tryMove(g, p, p.x, p.y + dy);
+    if (!r1.blocked) p.x += dx;
+    else if (!r2.blocked) p.y += dy;
+    else p.fleeAng += Math.PI / 2;
   }
-}
-
-export function damagePed(pd, n, src) {
-  if (pd.dead) return;
-  pd.hp -= n;
-  burst(pd.x, pd.y, 4, { spMin: 10, spMax: 60, lifeMin: 0.2, lifeMax: 0.5, rMin: 1, rMax: 3, col: '#a11a2a', kind: 'blood' });
-  if (pd.hp <= 0) killPed(pd, src);
-  else if (pd.state !== 'gang') panic(pd);
-}
-
-export function killPed(pd, src) {
-  if (pd.dead) return;
-  pd.dead = true;
-  pd.deadT = 0;
-  pd.vx = 0; pd.vy = 0;
-  burst(pd.x, pd.y, 10, { spMin: 20, spMax: 120, lifeMin: 0.3, lifeMax: 0.8, rMin: 1.5, rMax: 3.5, col: '#a11a2a', kind: 'blood' });
-  play('punch');
-  panicArea(pd.x, pd.y, 320);
-  G.stats.kills++;
-  if (src === 'player') addStars(pd.gang ? 1 : 2);
-}
-
-function updateGangPed(pd, dt, px, py) {
-  const d = dist(pd.x, pd.y, px, py);
-  if (d > 240) {
-    steer(pd, angTo(pd.x, pd.y, px, py), CFG.PED_FLEE_SPEED * 0.8, dt);
-  } else if (d < 120) {
-    steer(pd, angTo(px, py, pd.x, pd.y), CFG.PED_FLEE_SPEED * 0.6, dt); // keep distance
-  } else {
-    pd.vx *= 0.8; pd.vy *= 0.8;
-    pd.ang = angTo(pd.x, pd.y, px, py);
-  }
-  if (pd.shootCd <= 0 && d < 320) gangShoot(pd);
-}
-
-function gangShoot(pd) {
-  pd.shootCd = 1.4 + runRNG.next() * 0.9;
-  const p = G.player;
-  const px = p.car ? p.car.x : p.x, py = p.car ? p.car.y : p.y;
-  const a = angTo(pd.x, pd.y, px, py) + runRNG.range(-0.14, 0.14);
-  G.bullets.push({ x: pd.x + Math.cos(a) * 12, y: pd.y + Math.sin(a) * 12, vx: Math.cos(a) * 500, vy: Math.sin(a) * 500, life: 1.0, from: 'gang', dmg: 7 });
-  G.gunfireT = 3;
-  play('shot');
-}
-
-export function spawnGang(x, y, tag) {
-  const pd = makePed(x, y, { state: 'gang', gang: true, shirt: '#3aa14a' });
-  pd.missionTag = tag || null;
-  pd.home = { x, y };
-  G.peds.push(pd);
-  return pd;
 }

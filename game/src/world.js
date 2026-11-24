@@ -1,415 +1,481 @@
-// VICE PALMS — the night city: coastal grid, neon strip, beach + Ocean Drive,
-// Palm Park, the North Docks (piers, containers, cranes, a cargo ship) and the
-// Palm Airfield (runway, hangars, tower). Fully seeded / deterministic.
+// world.js — deterministic night-coastal city: grid, blocks, buildings, park,
+// NORTH DOCKS (piers, containers, cranes, ship) and PALM AIRFIELD (runway,
+// hangars, tower). Also collision solids, traffic lights, landmarks, spawns
+// and the minimap underlay.
 
 import { CFG } from './config.js';
 import { RNG } from './rng.js';
-import { clamp, rectHit } from './util.js';
+import { shade } from './util.js';
 
-export const WATER_S = 3140;   // ocean south of the beach sand
-export const BOARDWALK_Y = 2975;
+// ---------------------------------------------------------------- geometry
 
-const NEON_COLS = ['#ff4fa3', '#3ae7ff', '#ffe36e', '#7dff9e', '#c084ff', '#ff8a5c'];
-const BLD_COLS = ['#1b2342', '#222a4e', '#2a1f45', '#182f3c', '#251d33', '#1d2a50', '#301f38', '#16283f'];
-const ROOF_COLS = ['#2c3560', '#343e6e', '#3d2c5e', '#254a5a', '#38294f', '#2d3d6e', '#4a2e4c', '#253a58'];
-const SIGNS = ['HOTEL ROSA', 'PALMS CLUB', 'EL BANCO', 'MALIBU', 'V-ROCK', 'CAFÉ RIO', 'NOODLES', 'TIKI BAR', 'MOTEL AZUL', 'LAUNDRY', 'PAWN', 'DENTAL', 'KARAOKE', '24H', 'TATTOO', 'RADIO VICE'];
+export const ROAD_V = [500, 1100, 1700, 2300, 2900, 3500, 4100, 4300];
+export const ROAD_H = [500, 1100, 1700, 2300, 2900, 3300];
+export const ROAD_HALF = CFG.ROAD_HALF;
+export const V_SPAN = { min: 440, max: 3360 };   // y extent of vertical roads
+export const H_SPAN = { min: 440, max: 4360 };   // x extent of horizontal roads
 
-// ---------------------------------------------------------------------------
-// world construction
+export const WATER = [
+  { x: 0, y: 0, w: CFG.WORLD_W, h: 200 },
+  { x: 4480, y: 0, w: CFG.WORLD_W - 4480, h: CFG.WORLD_H },
+  { x: 0, y: 3480, w: CFG.WORLD_W, h: CFG.WORLD_H - 3480 },
+];
 
-export function buildWorld(seed) {
-  const rng = new RNG(seed >>> 0);
-  const w = {
-    seed,
-    W: CFG.WORLD_W, H: CFG.WORLD_H,
-    buildings: [],     // {x,y,w,h,col,roof,neon,sign,trim}
-    solids: [],        // {x,y,w,h,kind}
-    palms: [],         // {x,y,s}
-    props: [],         // {x,y,kind} lamps, hydrants, benches, umbrellas
-    roadsX: CFG.ROAD_XS.slice(),
-    roadsY: CFG.ROAD_YS.slice(),
-    lights: [],        // traffic lights at intersections {x,y}
-    poi: {},
-    piers: [],
-    containers: [],
-    cranes: [],
-    ship: null,
-    runway: null,
-    parkPond: null,
-    staticCanvas: null, // filled by render.js prerender
-    miniCanvas: null,
-  };
+export const SAND = [
+  { x: 120, y: 200, w: 4360, h: 200 },
+  { x: 4300, y: 200, w: 180, h: 3280 },
+  { x: 120, y: 3380, w: 4360, h: 100 },
+];
 
-  buildBeach(w, rng);
-  buildBlocks(w, rng);
-  buildPark(w, rng);
-  buildDocks(w, rng);
-  buildAirfield(w, rng);
-  buildLights(w);
-  buildProps(w, rng);
-  buildPOI(w);
+export const PARK = { x: 1794, y: 1194, w: 412, h: 412 };
+export const DOCKS = { x: 2900, y: 440, w: 1340, h: 660 };
+export const AIRFIELD = { x: 2900, y: 2300, w: 1340, h: 960 };
+export const RUNWAY = { x: 2980, y: 2760, w: 1240, h: 200 };
 
-  // every building becomes a collision solid
-  for (const b of w.buildings) w.solids.push({ x: b.x, y: b.y, w: b.w, h: b.h, kind: 'building' });
+// landmarks (marker anchors + respawns)
+export const LANDMARKS = {
+  safehouse: { x: 596, y: 2600, name: 'Safehouse' },
+  diner: { x: 2600, y: 1400, name: "Rico's Diner" },
+  garage: { x: 3200, y: 2000, name: 'Sunrise Garage' },
+  hospital: { x: 1400, y: 800, name: 'Palm General Hospital' },
+  police: { x: 2600, y: 2600, name: 'VP Metro Police' },
+  warehouse: { x: 3600, y: 700, name: 'Rival Warehouse' },
+  docksGate: { x: 3300, y: 900, name: 'North Docks' },
+  airfieldPkg: { x: 3700, y: 2860, name: 'Palm Airfield' },
+  beachLot: { x: 4260, y: 1800, name: 'Ocean Drive Lot' },
+  taxiStand: { x: 1150, y: 620, name: 'Taxi Stand' },
+  shipDeck: { x: 3560, y: 100, name: 'The Coral Maiden' },
+};
 
-  return w;
+// parked cars the world starts with (missions add their own)
+export const PARKED = [
+  { type: 'sedan', x: 575, y: 2560, ang: 0, color: '#8a3b46' },
+  { type: 'sports', x: 3080, y: 2016, ang: Math.PI / 2, color: '#b46bff' },
+  { type: 'taxi', x: 1150, y: 560, ang: 0, color: CFG.TAXI_COL },
+  { type: 'van', x: 2360, y: 1116, ang: Math.PI, color: '#5a6272' },
+  { type: 'sedan', x: 2915, y: 1500, ang: -Math.PI / 2, color: '#2f7a4f' },
+  { type: 'buggy', x: 4200, y: 1700, ang: 0, color: '#ffd24a' },
+  { type: 'truck', x: 3050, y: 2960, ang: 0, color: '#5a3b8a' },
+  { type: 'sedan', x: 2240, y: 2240, ang: Math.PI / 2, color: '#c8a23c' },
+];
+
+// ---------------------------------------------------------------- builders
+
+function districtHeight(cx, cy) {
+  // downtown = tall towers, elsewhere mid/low
+  const d = Math.abs(cx - 2300) + Math.abs(cy - 1200);
+  if (d < 1400) return { h: 34, jitter: 16 };
+  if (d < 2600) return { h: 20, jitter: 12 };
+  return { h: 12, jitter: 8 };
 }
 
-function buildBeach(w, rng) {
-  // palms + umbrellas on the sand, piers into the ocean
-  for (let x = 320; x < CFG.WORLD_W - 400; x += rng.range(150, 260)) {
-    const north = rng.chance(0.62);
-    const y = north ? rng.range(CFG.BEACH_Y + 24, 2986) : rng.range(3092, 3128);
-    w.palms.push({ x, y, s: rng.range(0.9, 1.35) });
-    if (rng.chance(0.3)) w.props.push({ x: x + rng.range(-40, 40), y: y + (north ? 14 : -14), kind: 'umbrella', col: rng.pick(NEON_COLS) });
-  }
-  for (const px of [1120, 2560]) {
-    w.piers.push({ x: px - 40, y: WATER_S - 40, w: 80, h: 150 });
-  }
-  // boardwalk lamps
-  for (let x = 200; x < 4000; x += 190) w.props.push({ x, y: BOARDWALK_Y, kind: 'lamp' });
-}
-
-function blockRects(w) {
-  const R = CFG.ROAD_HALF + CFG.SIDEWALK;
-  const out = [];
-  const xs = w.roadsX, ys = w.roadsY;
-  for (let i = 0; i < xs.length - 1; i++) {
-    for (let j = 0; j < ys.length - 1; j++) {
-      const x0 = xs[i] + R, x1 = xs[i + 1] - R;
-      const y0 = ys[j] + R, y1 = ys[j + 1] - R;
-      if (x1 - x0 < 60 || y1 - y0 < 60) continue;
-      out.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0, i, j });
-    }
-  }
-  return out;
-}
-
-function inRegion(r, reg) {
-  return r.x + r.w > reg.x0 && r.x < reg.x1 && r.y + r.h > reg.y0 && r.y < reg.y1;
-}
-
-function buildBlocks(w, rng) {
-  const park = { x0: CFG.PARK.x0 - 90, y0: CFG.PARK.y0 - 90, x1: CFG.PARK.x1 + 90, y1: CFG.PARK.y1 + 90 };
-  const dock = { x0: CFG.DOCKS.x0 - 90, y0: 0, x1: CFG.DOCKS.x1 + 90, y1: CFG.DOCKS.y1 + 90 };
-  const air = { x0: CFG.AIRFIELD.x0 - 90, y0: CFG.AIRFIELD.y0 - 90, x1: CFG.AIRFIELD.x1 + 90, y1: CFG.AIRFIELD.y1 + 90 };
-
-  for (const b of blockRects(w)) {
-    // south blocks on the beach side keep low neon strip buildings
-    const beachSide = b.y + b.h > CFG.BEACH_Y - 100;
-    if (inRegion(b, park) || inRegion(b, dock) || inRegion(b, air)) continue;
-
-    // split block into 1-4 lots
-    const lots = [];
-    const twoX = b.w > 240 && rng.chance(0.65);
-    const twoY = b.h > 240 && rng.chance(0.65);
-    const mx = twoX ? rng.range(0.35, 0.65) : 1;
-    const my = twoY ? rng.range(0.35, 0.65) : 1;
-    const xw = [0, mx].map(t => t * b.w);
-    const yh = [0, my].map(t => t * b.h);
-    for (let ix = 0; ix < (twoX ? 2 : 1); ix++) {
-      for (let iy = 0; iy < (twoY ? 2 : 1); iy++) {
-        const lx = b.x + xw[ix];
-        const ly = b.y + yh[iy];
-        const lw = ix === 0 && twoX ? xw[1] : b.w - xw[ix];
-        const lh = iy === 0 && twoY ? yh[1] : b.h - yh[iy];
-        lots.push({ x: lx, y: ly, w: lw, h: lh });
-      }
-    }
-
-    for (const lot of lots) {
-      const inset = rng.range(8, 26);
-      const bw = lot.w - inset * 2, bh = lot.h - inset * 2;
-      if (bw < 40 || bh < 40) continue;
-      const bx = lot.x + inset, by = lot.y + inset;
-      const col = rng.pick(BLD_COLS), roof = rng.pick(ROOF_COLS);
-      const neon = rng.chance(beachSide ? 0.55 : 0.3);
-      const sign = neon && rng.chance(0.55) ? rng.pick(SIGNS) : null;
-      const bld = {
-        x: bx, y: by, w: bw, h: bh, col, roof,
-        neon: neon ? rng.pick(NEON_COLS) : null,
-        sign,
-        trim: rng.chance(0.35),
-        beach: beachSide,
-      };
-      w.buildings.push(bld);
-    }
-  }
-}
-
-function buildPark(w, rng) {
-  const P = CFG.PARK;
-  w.parkPond = { x: P.x0 + (P.x1 - P.x0) / 2, y: P.y0 + (P.y1 - P.y0) / 2, rx: 78, ry: 58 };
-  for (let i = 0; i < 16; i++) {
-    const x = rng.range(P.x0 + 20, P.x1 - 20), y = rng.range(P.y0 + 20, P.y1 - 20);
-    if (Math.hypot(x - w.parkPond.x, (y - w.parkPond.y) * 1.2) < 110) continue;
-    w.palms.push({ x, y, s: rng.range(0.8, 1.2) });
-  }
-  for (let i = 0; i < 6; i++) {
-    w.props.push({ x: rng.range(P.x0 + 30, P.x1 - 30), y: rng.range(P.y0 + 30, P.y1 - 30), kind: 'bench' });
-  }
-  w.solids.push({ x: P.x0 + 10, y: P.y0 + 10, w: 0, h: 0, kind: 'none' }); // placeholder no-op
-}
-
-function buildDocks(w, rng) {
-  const D = CFG.DOCKS;
-  // container stacks
-  for (let i = 0; i < 14; i++) {
-    const cx = rng.range(D.x0 + 60, D.x1 - 140);
-    const cy = rng.range(D.y0 + 60, D.y1 - 60);
-    if (Math.abs(cx - 3040) < 90 || Math.abs(cx - 3520) < 90 || Math.abs(cx - 4000) < 90) continue;
-    const stackW = 96, stackH = 44;
-    w.containers.push({ x: cx, y: cy, w: stackW, h: stackH, col: rng.pick(['#b3402e', '#2e6ab3', '#c9a02e', '#3a9a4e', '#8a3ab3']) });
-    w.solids.push({ x: cx, y: cy, w: stackW, h: stackH, kind: 'container' });
-    if (rng.chance(0.5)) {
-      w.containers.push({ x: cx + rng.range(-4, 4), y: cy - 40, w: stackW, h: stackH, col: rng.pick(['#b3402e', '#2e6ab3', '#c9a02e', '#3a9a4e']) });
-    }
-  }
-  // cranes (two)
-  for (const cx of [3160, 3810]) {
-    w.cranes.push({ x: cx, y: D.y0 + 40, arm: 150, side: rng.sign() });
-    w.solids.push({ x: cx - 26, y: D.y0 + 10, w: 52, h: 60, kind: 'crane' });
-  }
-  // piers into the ocean
-  for (const px of [2760, 3260, 3760]) {
-    w.piers.push({ x: px - 36, y: 30, w: 72, h: 130 });
-  }
-  // the cargo ship moored at the middle pier
-  w.ship = { x: 3260 - 60, y: -18, w: 120, h: 210 };
-  w.solids.push({ x: w.ship.x, y: w.ship.y, w: w.ship.w, h: w.ship.h, kind: 'ship' });
-  // dockside lamps
-  for (let x = D.x0; x < D.x1; x += 220) w.props.push({ x, y: D.y1 - 30, kind: 'lamp' });
-  // warehouse shed
-  w.buildings.push({ x: 2560, y: 470, w: 210, h: 110, col: '#20304a', roof: '#33486b', neon: '#7dff9e', sign: 'PALM EXPORT', trim: false, beach: false });
-  w.solids.push({ x: 2560, y: 470, w: 210, h: 110, kind: 'building' });
-}
-
-function buildAirfield(w, rng) {
-  const A = CFG.AIRFIELD;
-  w.runway = { x: A.x0 + 40, y: 1900, w: A.x1 - A.x0 - 60, h: 84 };
-  // hangars
-  for (const hx of [A.x0 + 60, A.x0 + 300]) {
-    const hb = { x: hx, y: 2080, w: 170, h: 120, col: '#223146', roof: '#39506e', neon: rng.pick(NEON_COLS), sign: rng.pick(['AIR CARGO', 'HANGAR 2', 'CHARTER']), trim: false, beach: false };
-    w.buildings.push(hb);
-    w.solids.push({ x: hb.x, y: hb.y, w: hb.w, h: hb.h, kind: 'building' });
-  }
-  // tower
-  const tb = { x: A.x0 + 70, y: 1620, w: 64, h: 64, col: '#2a3450', roof: '#4a5570', neon: '#3ae7ff', sign: 'ATC', trim: true, beach: false };
-  w.buildings.push(tb);
-  w.solids.push({ x: tb.x, y: tb.y, w: tb.w, h: tb.h, kind: 'building' });
-  // perimeter fence posts
-  for (let x = A.x0; x < A.x1; x += 120) w.props.push({ x, y: A.y1 - 10, kind: 'fence' });
-}
-
-function buildLights(w) {
-  for (const x of w.roadsX) {
-    for (const y of w.roadsY) {
-      if (y >= CFG.BEACH_Y - 100) continue;                 // no signals on Ocean Drive
-      if (y <= CFG.DOCKS.y1 && x >= CFG.DOCKS.x0) continue;  // none in the docks
-      w.lights.push({ x, y, phase: 0 });
-    }
-  }
-}
-
-function buildProps(w, rng) {
-  // street lamps along roads, hydrants, benches in blocks
-  for (let i = 0; i < w.roadsX.length; i++) {
-    const x = w.roadsX[i];
-    for (let y = 260; y < CFG.BEACH_Y; y += rng.range(260, 380)) {
-      w.props.push({ x: x + CFG.ROAD_HALF + 8, y, kind: 'lamp' });
-    }
-  }
-  for (let j = 0; j < w.roadsY.length; j++) {
-    const y = w.roadsY[j];
-    if (y > CFG.BEACH_Y - 60) continue;
-    for (let x = 300; x < 4000; x += rng.range(300, 420)) {
-      w.props.push({ x, y: y + CFG.ROAD_HALF + 8, kind: 'lamp' });
-    }
-  }
-  for (let i = 0; i < 40; i++) {
-    const x = rng.range(300, 3900), y = rng.range(260, 2800);
-    if (isOnRoad(w, x, y)) continue;
-    w.props.push({ x, y, kind: rng.chance(0.5) ? 'hydrant' : 'bench' });
-  }
-}
-
-function buildPOI(w) {
-  w.poi = {
-    playerStart: { x: 1120, y: 1745 },
-    hospital: { x: 660, y: 706 },
-    policeStation: { x: 2605, y: 2135 },
-    rico: { x: 1660, y: 2995 },
-    garage: { x: 1185, y: 2135 },
-    docksGate: { x: 3070, y: 640 },
-    gangHideout: { x: 3930, y: 620 },
-    shipDeck: { x: 3260, y: 140 },
-    diner: { x: 2135, y: 1660 },
-    taxiRank: { x: 1660, y: 1165 },
-    airfieldPad: { x: 3620, y: 1860 },
-    bank: { x: 1655, y: 1655 },
-    penthouse: { x: 2620, y: 2600 },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// queries
-
-export function isOnRoad(w, x, y) {
-  for (const rx of w.roadsX) if (Math.abs(x - rx) <= CFG.ROAD_HALF) return true;
-  for (const ry of w.roadsY) if (Math.abs(y - ry) <= CFG.ROAD_HALF) return true;
-  return false;
-}
-
-export function isWater(x, y) {
-  // pier decks are walkable over water
-  for (const p of G_world().piers) {
-    if (x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) return false;
-  }
-  return y < CFG.WATER_TOP || x > CFG.WATER_RIGHT || y > WATER_S;
-}
-
-export function onPiers(x, y) {
-  const w = G_world();
-  for (const p of w.piers) if (x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) return true;
-  return false;
-}
-
-export function terrainAt(x, y) {
-  if (isWater(x, y)) return 'water';
-  const w = G_world();
-  if (y > CFG.BEACH_Y) return 'sand';
-  const A = CFG.AIRFIELD;
-  if (x >= A.x0 && x <= A.x1 && y >= A.y0 && y <= A.y1) {
-    const r = w.runway;
-    if (r && y >= r.y && y <= r.y + r.h) return 'runway';
-    return 'tarmac';
-  }
-  if (x >= CFG.DOCKS.x0 && x <= CFG.DOCKS.x1 && y >= CFG.DOCKS.y0 && y <= CFG.DOCKS.y1) return 'concrete';
-  const P = CFG.PARK;
-  if (x >= P.x0 - 20 && x <= P.x1 + 20 && y >= P.y0 - 20 && y <= P.y1 + 20) return 'grass';
-  return 'city';
-}
-
-// world singleton ref used by query helpers (set by game.js on boot)
-let _world = null;
-export function setWorld(w) { _world = w; }
-function G_world() { return _world; }
-
-export function solidNear(x, y, r) {
-  const w = G_world();
-  for (const s of w.solids) {
-    if (s.w === 0 && s.h === 0) continue;
-    if (circleRectSolid(x, y, r, s)) return s;
-  }
+function isSpecial(bx, by, bw, bh) {
+  const c = { x: bx + bw / 2, y: by + bh / 2 };
+  if (rectsContain(DOCKS, c)) return 'docks';
+  if (rectsContain(AIRFIELD, c)) return 'airfield';
+  if (rectsContain(PARK, c)) return 'park';
   return null;
 }
 
-function circleRectSolid(cx, cy, r, s) {
-  const nx = clamp(cx, s.x, s.x + s.w), ny = clamp(cy, s.y, s.y + s.h);
-  const dx = cx - nx, dy = cy - ny;
-  return dx * dx + dy * dy < r * r;
+function rectsContain(r, p) {
+  return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 }
 
-// push a circle out of every solid it overlaps; returns hit normal info
-export function resolveCircleSolids(ent, r) {
-  const w = G_world();
-  let hit = null;
-  for (const s of w.solids) {
-    if (s.w === 0 && s.h === 0) continue;
-    const nx = clamp(ent.x, s.x, s.x + s.w), ny = clamp(ent.y, s.y, s.y + s.h);
-    const dx = ent.x - nx, dy = ent.y - ny;
-    const d2 = dx * dx + dy * dy;
-    if (d2 < r * r) {
-      let d = Math.sqrt(d2);
-      if (d < 0.0001) {
-        // center inside solid: push out along the shallowest axis
-        const l = ent.x - s.x, rr = s.x + s.w - ent.x, t = ent.y - s.y, b = s.y + s.h - ent.y;
-        const m = Math.min(l, rr, t, b);
-        if (m === l) ent.x = s.x - r; else if (m === rr) ent.x = s.x + s.w + r;
-        else if (m === t) ent.y = s.y - r; else ent.y = s.y + s.h + r;
-        hit = { nx: 0, ny: 0, s };
-        continue;
-      }
-      const push = r - d;
-      ent.x += (dx / d) * push;
-      ent.y += (dy / d) * push;
-      if (!hit) hit = { nx: dx / d, ny: dy / d, s };
+export function buildWorld(seed) {
+  const rng = new RNG(seed >>> 0);
+  const world = {
+    seed,
+    roadV: ROAD_V,
+    roadH: ROAD_H,
+    vSpan: V_SPAN,
+    hSpan: H_SPAN,
+    water: WATER,
+    sand: SAND,
+    park: PARK,
+    docks: DOCKS,
+    airfield: AIRFIELD,
+    runway: RUNWAY,
+    landmarks: LANDMARKS,
+    parkedSpawns: PARKED.slice(),
+    buildings: [],
+    props: [],          // palms, benches, crates (non-solid decoration + small solids)
+    solids: [],         // axis-aligned rects blocking cars+peds+player
+    piers: [],
+    containers: [],
+    cranes: [],
+    ship: { x: 3320, y: 30, w: 460, h: 130 },
+    hangars: [
+      { x: 3050, y: 2480, w: 190, h: 130 },
+      { x: 3330, y: 2480, w: 190, h: 130 },
+    ],
+    tower: { x: 3960, y: 2470, w: 64, h: 64 },
+    lights: [],
+    minimap: null,
+  };
+
+  // ---- traffic lights at interior intersections
+  for (const vx of ROAD_V) {
+    for (const hy of ROAD_H) {
+      world.lights.push({ x: vx, y: hy, t: rng.range(0, CFG.LIGHT_CYCLE) });
     }
   }
-  return hit;
+
+  // ---- city blocks with buildings
+  const inset = CFG.ROAD_HALF + CFG.SIDEWALK + 8;
+  for (let i = 0; i < ROAD_V.length - 1; i++) {
+    for (let j = 0; j < ROAD_H.length - 1; j++) {
+      const bx = ROAD_V[i] + inset;
+      const by = ROAD_H[j] + inset;
+      const bw = ROAD_V[i + 1] - ROAD_V[i] - inset * 2;
+      const bh = ROAD_H[j + 1] - ROAD_H[j] - inset * 2;
+      if (bw < 160 || bh < 160) continue;
+      const kind = isSpecial(bx, by, bw, bh);
+      if (kind === 'park' || kind === 'docks') continue;
+      if (kind === 'airfield') continue;
+      fillBlock(world, rng, bx, by, bw, bh, ROAD_H[j], ROAD_V[i]);
+    }
+  }
+
+  // ---- landmark buildings (replace/guarantee key structures)
+  placeLandmarkBuildings(world, rng);
+
+  // ---- palms along the beach + streets
+  scatterPalms(world, rng);
+
+  // ---- docks
+  buildDocks(world, rng);
+
+  // ---- airfield
+  buildAirfield(world, rng);
+
+  // ---- park details
+  buildPark(world, rng);
+
+  world.minimap = buildMinimap(world);
+  return world;
 }
 
-// road helpers for spawning / roadblocks -------------------------------
+function fillBlock(world, rng, bx, by, bw, bh, hy, vx) {
+  const dh = districtHeight(bx + bw / 2, by + bh / 2);
+  const cols = bw > 460 && rng.chance(0.7) ? 2 : 1;
+  const rows = bh > 460 && rng.chance(0.7) ? 2 : 1;
+  const cw = bw / cols, ch = bh / rows;
+  for (let c = 0; c < cols; c++) {
+    for (let r = 0; r < rows; r++) {
+      if (rng.chance(0.08)) continue; // occasional empty lot
+      const pad = rng.range(10, 26);
+      const x = bx + c * cw + pad;
+      const y = by + r * ch + pad;
+      const w = cw - pad * 2 - rng.range(0, 14);
+      const h = ch - pad * 2 - rng.range(0, 14);
+      if (w < 70 || h < 70) continue;
+      const base = rng.pick(['#262733', '#2b2c3a', '#232430', '#2f3040', '#262637']);
+      const neon = rng.chance(0.42) ? rng.pick(CFG.NEON) : null;
+      const hgt = Math.round(dh.h + rng.range(0, dh.jitter));
+      world.buildings.push({
+        x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h),
+        z: hgt, base, roof: shade(base, 0.16), neon,
+        trim: rng.chance(0.3) ? rng.pick(CFG.NEON) : null,
+        ac: rng.chance(0.6),
+      });
+      world.solids.push({ x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) });
+    }
+  }
+}
 
-export function randomRoadPoint(rng, w, opts = {}) {
-  for (let tries = 0; tries < 24; tries++) {
-    let x, y;
-    if (rng.chance(0.5)) {
-      x = rng.pick(w.roadsX) + (rng.chance(0.5) ? -1 : 1) * CFG.LANE_OFF;
-      y = rng.range(200, CFG.BEACH_Y - 60);
+function placeLandmarkBuildings(world, rng) {
+  const put = (x, y, w, h, z, base, roof, neon, trim) => {
+    // remove overlapping generic buildings/solids first
+    world.buildings = world.buildings.filter((b) => !(x < b.x + b.w && x + w > b.x && y < b.y + b.h && y + h > b.y));
+    world.solids = world.solids.filter((b) => !(x < b.x + b.w && x + w > b.x && y < b.y + b.h && y + h > b.y));
+    world.buildings.push({ x, y, w, h, z, base, roof, neon, trim, ac: true, tag: true });
+    world.solids.push({ x, y, w, h });
+  };
+  put(1300, 700, 200, 150, 10, '#3c3140', '#4a3d50', '#ff2d78', null);        // hospital (palm cross neon)
+  put(2500, 2500, 190, 150, 10, '#27304a', '#2f3a5c', '#00e5ff', null);       // police station
+  put(2500, 1300, 170, 130, 8, '#3a2b28', '#4a3833', '#ffd24a', null);        // Rico's diner
+  put(3100, 1900, 200, 150, 9, '#2b332c', '#374437', '#7cff4f', null);        // Sunrise Garage
+  put(700, 2500, 180, 140, 8, '#2f2a38', '#3a3446', '#b46bff', null);         // safehouse
+  put(3470, 640, 260, 170, 14, '#33302a', '#413d34', '#ff7a1a', null);        // rival warehouse
+}
+
+function scatterPalms(world, rng) {
+  // beach rows
+  for (let x = 300; x < 4200; x += rng.range(120, 260)) {
+    world.props.push(mkPalm(x, rng.range(240, 380), rng));
+    world.props.push(mkPalm(x + rng.range(40, 90), rng.range(3400, 3460), rng));
+  }
+  // ocean drive (east sand)
+  for (let y = 500; y < 3200; y += rng.range(150, 300)) {
+    world.props.push(mkPalm(rng.range(4330, 4460), y, rng));
+  }
+  // a few street palms near corners
+  for (const vx of ROAD_V) {
+    for (const hy of ROAD_H) {
+      if (rng.chance(0.35)) world.props.push(mkPalm(vx + 84, hy + 84, rng));
+      if (rng.chance(0.35)) world.props.push(mkPalm(vx - 84, hy - 84, rng));
+    }
+  }
+}
+
+function mkPalm(x, y, rng) {
+  return { kind: 'palm', x: Math.round(x), y: Math.round(y), r: 9, s: rng.range(0.85, 1.2), sway: rng.range(0, TAU6()) };
+}
+
+function TAU6() { return Math.PI * 2; }
+
+// ---------------------------------------------------------------- districts
+
+function buildDocks(world, rng) {
+  world.piers = [
+    { x: 3060, y: 120, w: 84, h: 400 },
+    { x: 3480, y: 120, w: 84, h: 400 },
+    { x: 3900, y: 120, w: 84, h: 400 },
+  ];
+  // container stacks
+  const spots = [
+    [2960, 560], [2960, 640], [3040, 560], [3160, 700], [3160, 780],
+    [3560, 560], [3560, 860], [3640, 560], [3760, 720], [3760, 800],
+    [3860, 560], [4060, 560], [4060, 640], [4140, 560], [4140, 980],
+    [2960, 900], [3240, 940], [3980, 900], [4060, 900],
+  ];
+  for (const [x, y] of spots) {
+    const cont = { x, y, w: 84, h: 34, col: rng.pick(['#8a3b46', '#2f5f8a', '#c8a23c', '#2f7a4f', '#b46bff']) };
+    world.containers.push(cont);
+    world.solids.push({ x, y, w: 84, h: 34 });
+    if (rng.chance(0.4)) {
+      const c2 = { x: x + 8, y: y - 30, w: 70, h: 28, col: rng.pick(['#c85a2f', '#5a6272', '#8a2f5f']) };
+      world.containers.push(c2);
+    }
+  }
+  // cranes at pier roots
+  world.cranes = [
+    { x: 3040, y: 520, dir: 1 },
+    { x: 3940, y: 520, dir: -1 },
+  ];
+  for (const cr of world.cranes) world.solids.push({ x: cr.x - 20, y: cr.y - 20, w: 40, h: 40 });
+  // gate booths
+  world.solids.push({ x: 3270, y: 470, w: 26, h: 26 });
+  world.solids.push({ x: 3330, y: 470, w: 26, h: 26 });
+  world.props.push({ kind: 'gate', x: 3300, y: 470 });
+}
+
+function buildAirfield(world, rng) {
+  for (const hg of world.hangars) {
+    world.solids.push({ x: hg.x, y: hg.y, w: hg.w, h: hg.h });
+    hg.col = rng.pick(['#3a3f4c', '#34404a']);
+  }
+  world.solids.push({ x: world.tower.x, y: world.tower.y, w: world.tower.w, h: world.tower.h });
+  // windsock prop
+  world.props.push({ kind: 'windsock', x: 4120, y: 2700 });
+  // a couple of parked crates
+  world.containers.push({ x: 3500, y: 2620, w: 84, h: 34, col: '#8a3b46' });
+  world.solids.push({ x: 3500, y: 2620, w: 84, h: 34 });
+}
+
+function buildPark(world, rng) {
+  // pond (solid for cars/peds)
+  world.pond = { x: 1930, y: 1330, w: 200, h: 150 };
+  world.solids.push(world.pond);
+  for (let i = 0; i < 8; i++) {
+    world.props.push(mkPalm(rng.range(PARK.x + 30, PARK.x + PARK.w - 30), rng.range(PARK.y + 30, PARK.y + PARK.h - 30), rng));
+  }
+  for (let i = 0; i < 5; i++) {
+    world.props.push({ kind: 'bench', x: rng.range(PARK.x + 40, PARK.x + PARK.w - 40), y: rng.range(PARK.y + 40, PARK.y + PARK.h - 40) });
+  }
+}
+
+// ---------------------------------------------------------------- minimap
+
+function buildMinimap(world) {
+  const scale = 0.13;
+  const cv = document.createElement('canvas');
+  cv.width = Math.ceil(CFG.WORLD_W * scale);
+  cv.height = Math.ceil(CFG.WORLD_H * scale);
+  const c = cv.getContext('2d');
+  c.fillStyle = '#20242c';
+  c.fillRect(0, 0, cv.width, cv.height);
+  // sand + water
+  c.fillStyle = '#5a4c30';
+  for (const s of world.sand) c.fillRect(s.x * scale, s.y * scale, s.w * scale, s.h * scale);
+  c.fillStyle = '#123a5e';
+  for (const w of world.water) c.fillRect(w.x * scale, w.y * scale, w.w * scale, w.h * scale);
+  // park
+  c.fillStyle = '#1c4a2e';
+  c.fillRect(world.park.x * scale, world.park.y * scale, world.park.w * scale, world.park.h * scale);
+  // roads
+  c.strokeStyle = '#4a4c56';
+  c.lineWidth = Math.max(1.4, CFG.ROAD_HALF * 2 * scale);
+  c.beginPath();
+  for (const vx of world.roadV) {
+    c.moveTo(vx * scale, world.vSpan.min * scale);
+    c.lineTo(vx * scale, world.vSpan.max * scale);
+  }
+  for (const hy of world.roadH) {
+    c.moveTo(world.hSpan.min * scale, hy * scale);
+    c.lineTo(world.hSpan.max * scale, hy * scale);
+  }
+  c.stroke();
+  // runway
+  c.fillStyle = '#3a3d46';
+  c.fillRect(world.runway.x * scale, world.runway.y * scale, world.runway.w * scale, world.runway.h * scale);
+  // buildings
+  c.fillStyle = '#171821';
+  for (const b of world.buildings) c.fillRect(b.x * scale, b.y * scale, b.w * scale, b.h * scale);
+  for (const b of world.hangars) c.fillRect(b.x * scale, b.y * scale, b.w * scale, b.h * scale);
+  c.fillRect(world.tower.x * scale, world.tower.y * scale, world.tower.w * scale, world.tower.h * scale);
+  c.fillStyle = '#41352a';
+  for (const ct of world.containers) c.fillRect(ct.x * scale, ct.y * scale, ct.w * scale, ct.h * scale);
+  return { canvas: cv, scale };
+}
+
+// ---------------------------------------------------------------- queries
+
+export function isWater(x, y) {
+  for (const w of WATER) {
+    if (x >= w.x && x <= w.x + w.w && y >= w.y && y <= w.y + w.h) return true;
+  }
+  return false;
+}
+
+export function isWaterPoint(x, y) {
+  return isWater(x, y);
+}
+
+export function isOnRoad(x, y) {
+  if (y >= V_SPAN.min - 10 && y <= V_SPAN.max + 10) {
+    for (const vx of ROAD_V) if (Math.abs(x - vx) <= CFG.ROAD_HALF + 2) return true;
+  }
+  if (x >= H_SPAN.min - 10 && x <= H_SPAN.max + 10) {
+    for (const hy of ROAD_H) if (Math.abs(y - hy) <= CFG.ROAD_HALF + 2) return true;
+  }
+  return false;
+}
+
+/** dir: 0=E 1=S 2=W 3=N */
+export function dirVec(dir) {
+  return [{ x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 0, y: -1 }][dir & 3];
+}
+
+/** lateral lane offset keeping right-hand traffic */
+export function laneShift(dir) {
+  return [{ x: 0, y: CFG.LANE_OFF }, { x: -CFG.LANE_OFF, y: 0 }, { x: 0, y: -CFG.LANE_OFF }, { x: CFG.LANE_OFF, y: 0 }][dir & 3];
+}
+
+/** next intersection ahead in dir from (x,y); null when none. */
+export function nextIntersection(x, y, dir) {
+  if (dir === 0) {
+    for (const vx of ROAD_V) if (vx > x + CFG.ROAD_HALF + 4) return { x: vx, y: snapRoadH(y) };
+    return null;
+  }
+  if (dir === 2) {
+    for (let i = ROAD_V.length - 1; i >= 0; i--) if (ROAD_V[i] < x - CFG.ROAD_HALF - 4) return { x: ROAD_V[i], y: snapRoadH(y) };
+    return null;
+  }
+  if (dir === 1) {
+    for (const hy of ROAD_H) if (hy > y + CFG.ROAD_HALF + 4) return { x: snapRoadV(x), y: hy };
+    return null;
+  }
+  for (let i = ROAD_H.length - 1; i >= 0; i--) if (ROAD_H[i] < y - CFG.ROAD_HALF - 4) return { x: snapRoadV(x), y: ROAD_H[i] };
+  return null;
+}
+
+function snapRoadH(y) {
+  let best = ROAD_H[0], bd = Math.abs(y - best);
+  for (const hy of ROAD_H) {
+    const d = Math.abs(y - hy);
+    if (d < bd) { bd = d; best = hy; }
+  }
+  return best;
+}
+
+function snapRoadV(x) {
+  let best = ROAD_V[0], bd = Math.abs(x - best);
+  for (const vx of ROAD_V) {
+    const d = Math.abs(x - vx);
+    if (d < bd) { bd = d; best = vx; }
+  }
+  return best;
+}
+
+/** can a dir continue past intersection (ix,iy)? */
+export function dirExists(dir, ix, iy) {
+  if (dir === 0) return ix < ROAD_V[ROAD_V.length - 1] - 4;
+  if (dir === 2) return ix > ROAD_V[0] + 4;
+  if (dir === 1) return iy < ROAD_H[ROAD_H.length - 1] - 4;
+  return iy > ROAD_H[0] + 4;
+}
+
+/** random point on a lane, biased to stay near `near` when given. */
+export function randomLanePoint(rng, near, maxD) {
+  for (let tries = 0; tries < 40; tries++) {
+    const vertical = rng.chance(0.5);
+    let dir, x, y;
+    if (vertical) {
+      const vx = rng.pick(ROAD_V);
+      dir = rng.chance(0.5) ? 1 : 3;
+      y = rng.range(V_SPAN.min + 80, V_SPAN.max - 80);
+      x = vx + laneShift(dir).x;
     } else {
-      y = rng.pick(w.roadsY) + (rng.chance(0.5) ? -1 : 1) * CFG.LANE_OFF;
-      x = rng.range(200, 4050);
+      const hy = rng.pick(ROAD_H);
+      dir = rng.chance(0.5) ? 0 : 2;
+      x = rng.range(H_SPAN.min + 80, H_SPAN.max - 80);
+      y = hy + laneShift(dir).y;
     }
-    if (opts.near) {
-      const d = Math.hypot(x - opts.near.x, y - opts.near.y);
-      if (d < (opts.min || 400) || d > (opts.max || 900)) continue;
+    if (near && maxD && Math.hypot(x - near.x, y - near.y) > maxD) continue;
+    return { x, y, dir };
+  }
+  return { x: 2300 + CFG.LANE_OFF, y: 1100, dir: 1 };
+}
+
+/** random sidewalk point (for peds) inside the city, avoiding solids. */
+export function randomSidewalkPoint(rng, solids) {
+  for (let tries = 0; tries < 50; tries++) {
+    const vertical = rng.chance(0.5);
+    let x, y;
+    if (vertical) {
+      const vx = rng.pick(ROAD_V);
+      const side = rng.chance(0.5) ? 1 : -1;
+      x = vx + side * (CFG.ROAD_HALF + rng.range(4, CFG.SIDEWALK - 2));
+      y = rng.range(V_SPAN.min + 60, V_SPAN.max - 60);
+    } else {
+      const hy = rng.pick(ROAD_H);
+      const side = rng.chance(0.5) ? 1 : -1;
+      y = hy + side * (CFG.ROAD_HALF + rng.range(4, CFG.SIDEWALK - 2));
+      x = rng.range(H_SPAN.min + 60, H_SPAN.max - 60);
     }
-    if (terrainAt(x, y) === 'water') continue;
+    if (isWater(x, y)) continue;
+    let bad = false;
+    for (const s of solids) {
+      if (x > s.x - 6 && x < s.x + s.w + 6 && y > s.y - 6 && y < s.y + s.h + 6) { bad = true; break; }
+    }
+    if (bad) continue;
     return { x, y };
   }
-  return { x: opts.near ? opts.near.x : 1120, y: opts.near ? opts.near.y : 1745 };
+  return { x: 2360, y: 1160 };
 }
 
-// point on the road ahead of an entity (for roadblocks / spawn-ahead)
-export function roadAhead(w, x, y, ang, dist) {
-  // snap to the nearest road line the entity is traveling along
-  let bestAxis = null, bestCoord = 0, bestDist = 1e9;
-  for (const rx of w.roadsX) {
-    const d = Math.abs(x - rx);
-    if (d < bestDist) { bestDist = d; bestAxis = 'v'; bestCoord = rx; }
+/** is there a traffic light at (x,y) and is `dir` red right now? */
+export function lightRed(world, ix, iy, dir, time) {
+  for (const l of world.lights) {
+    if (l.x === ix && l.y === iy) {
+      const phase = Math.floor((l.t + time) / CFG.LIGHT_CYCLE) % 2;
+      // phase 0: N-S green (dirs 1,3); phase 1: E-W green (dirs 0,2)
+      const dirNS = dir === 1 || dir === 3;
+      const frac = ((l.t + time) % CFG.LIGHT_CYCLE) / CFG.LIGHT_CYCLE;
+      const amber = frac > 1 - CFG.LIGHT_AMBER / CFG.LIGHT_CYCLE;
+      const green = dirNS ? phase === 0 : phase === 1;
+      return !green || amber;
+    }
   }
-  for (const ry of w.roadsY) {
-    const d = Math.abs(y - ry);
-    if (d < bestDist) { bestDist = d; bestAxis = 'h'; bestCoord = ry; }
-  }
-  const horizontalMotion = Math.abs(Math.cos(ang)) > Math.abs(Math.sin(ang));
-  let px, py;
-  if (bestAxis === 'v' && !horizontalMotion) {
-    py = y + Math.sign(Math.sin(ang) || 1) * dist;
-    px = bestCoord;
-  } else {
-    px = x + Math.sign(Math.cos(ang) || 1) * dist;
-    py = bestAxis === 'h' ? bestCoord : y;
-  }
-  px = clamp(px, 120, CFG.WORLD_W - 120);
-  py = clamp(py, 150, CFG.BEACH_Y + 60);
-  return { x: px, y: py, axis: bestAxis, coord: bestCoord };
+  return false;
 }
 
-// nearest road centerline point (cops returning to pursuit etc.)
-export function nearestRoadPoint(w, x, y) {
-  let bx = x, by = y, bd = 1e9;
-  for (const rx of w.roadsX) {
-    const d = Math.abs(x - rx);
-    if (d < bd) { bd = d; bx = rx; by = y; }
-  }
-  for (const ry of w.roadsY) {
-    const d = Math.abs(y - ry);
-    if (d < bd) { bd = d; bx = x; by = ry; }
-  }
-  return { x: bx, y: by };
+export function buildSpawns(world) {
+  return {
+    playerStart: { x: 575, y: 2440 },
+    hospital: { x: 1430, y: 880 },
+    police: { x: 2600, y: 2680 },
+    safehouse: { x: 640, y: 2600 },
+  };
 }
-
-// light phase: 0 = NS green, 1 = EW green (global cycle)
-export function lightPhase() {
-  return Math.floor(G_time() / CFG.LIGHT_CYCLE) % 2;
-}
-
-let _t0 = 0;
-export function setTimeRef(t0) { _t0 = t0; }
-function G_time() { return (typeof G_state_time === 'function' ? G_state_time() : 0) + _t0; }
-function G_state_time() { return 0; }
-
-// real phase pulled from state lazily to avoid an import cycle at module init
-export function phaseNow(t) { return Math.floor(t / CFG.LIGHT_CYCLE) % 2; }
