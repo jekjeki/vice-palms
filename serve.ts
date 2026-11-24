@@ -1,54 +1,70 @@
-// Vice Palms — static file server for game/ (Node 22, stdlib only).
+// serve.ts — stdlib static file server for game/ on http://localhost:8080
+// Node 22: node serve.ts [--port N]
+
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { join, normalize, resolve, extname } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
-const args = process.argv.slice(2);
-const flag = args.indexOf('--port');
-const port = flag >= 0 ? Number(args[flag + 1]) || 8080 : 8080;
-const root = resolve('game');
+const root = resolve(new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), 'game');
+let port = 8080;
+const pi = process.argv.indexOf('--port');
+if (pi > 0 && process.argv[pi + 1]) port = parseInt(process.argv[pi + 1], 10) || 8080;
+
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json',
+  '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.txt': 'text/plain; charset=utf-8',
+  '.ts': 'text/plain; charset=utf-8',
 };
 
 const server = createServer(async (req, res) => {
   try {
-    const url = new URL(req.url ?? '/', 'http://localhost');
+    const url = new URL(req.url || '/', 'http://localhost');
     let p = decodeURIComponent(url.pathname);
     if (p.endsWith('/')) p += 'index.html';
-    const file = resolve(join(root, normalize(p).replace(/^([/\\])+/, '')));
-    if (!file.startsWith(root)) { res.writeHead(403); res.end('forbidden'); return; }
-    const s = await stat(file).catch(() => null);
-    if (!s || s.isDirectory()) { res.writeHead(404); res.end('not found'); return; }
-    const body = await readFile(file);
+    const file = resolve(join(root, p));
+    if (file !== root && !file.startsWith(root + sep)) {
+      res.writeHead(403).end('forbidden');
+      return;
+    }
+    const st = await stat(file).catch(() => null);
+    if (!st || !st.isFile()) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' }).end('404');
+      return;
+    }
+    const body = req.method === 'HEAD' ? null : await readFile(file);
     res.writeHead(200, {
-      'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
-      'content-length': body.length,
+      'Content-Type': MIME[file.slice(file.lastIndexOf('.')).toLowerCase()] || 'application/octet-stream',
+      'Content-Length': st.size,
+      'Cache-Control': 'no-store',
     });
-    if (req.method === 'HEAD') res.end(); else res.end(body);
+    res.end(body);
   } catch {
-    res.writeHead(500); res.end('error');
+    res.writeHead(500).end('500');
   }
 });
 
 server.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
-    console.error(`Port ${port} is busy — try: node serve.ts --port ${port + 1}`);
+    console.error(`serve: port ${port} is busy — try --port ${port + 1}`);
     process.exit(1);
   }
   throw err;
 });
-server.listen(port, () => console.log(`Vice Palms serving game/ at http://localhost:${port}`));
+
+server.listen(port, () => {
+  console.log(`serve: Vice Palms on http://localhost:${port} (Ctrl+C to stop)`);
+});
+
 process.on('SIGINT', () => {
-  console.log('\nVice Palms: shutting down.');
   server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 200).unref();
+  setTimeout(() => process.exit(0), 500);
 });

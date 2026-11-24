@@ -1,212 +1,294 @@
-// screens.js — title, pause, WASTED/BUSTED overlays, localStorage save/load.
-import { S, VW, VH, clamp, dist } from './core.js';
-import { render, drawBigMap } from './render.js';
-import { drawHud, drawZoneCard, resetHelp } from './hud.js';
-import { newGame } from './game.js';
+// screens.js — title, pause, wasted/busted, mission-passed, end credits.
+// Also owns localStorage save / continue / delete.
 
-const SAVE_KEY = 'vicepalms.save1';
+import { CFG } from './config.js';
+import { G, clamp } from './util.js';
+import { hit, onAnyKey } from './input.js';
+import { startMusic, stopMusic, initAudio, resumeAudio, setMuted } from './audio.js';
+import { drawStats } from './stats.js';
 
-export function hasSave() { try { return !!localStorage.getItem(SAVE_KEY); } catch { return false; } }
+const menu = { titleSel: 0, pauseSel: 0 };
+let keyReady = false;
 
-export function saveGame() {
-  const p = S.player;
-  if (!p) return false;
-  const data = {
-    v: 3, x: p.x, y: p.y, hp: p.hp, armor: p.armor, money: S.money, ammo: p.ammo,
-    weapon: p.weapon, missionIndex: S.mission.index, kills: S.totalKills, t: Date.now(),
-  };
-  try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); return true; } catch { return false; }
+export function initScreens() {
+  // audio needs a gesture; any key or click will do (muted builds skip it)
+  onAnyKey(() => {
+    if (keyReady) return;
+    keyReady = true;
+    if (!G.muted) { initAudio(); resumeAudio(); startMusic(); }
+  });
 }
 
-export function loadGame() {
+export function hasSave() {
+  try { return !!localStorage.getItem(CFG.SAVE_KEY); } catch { return false; }
+}
+
+export function saveGame() {
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) return false;
-    const d = JSON.parse(raw);
-    const p = S.player;
-    p.x = d.x; p.y = d.y; p.hp = d.hp; p.armor = d.armor ?? 0;
-    p.ammo = d.ammo ?? 40; p.weapon = d.weapon === 'pistol' && p.ammo > 0 ? 'pistol' : 'fist';
-    p.inCar = null; p.dead = false;
-    S.money = d.money ?? 0; S.moneyShow = S.money;
-    S.totalKills = d.kills ?? 0;
-    S.mission.index = clamp(d.missionIndex ?? 0, 0, 6);
-    S.wanted = 0; S.seenT = 0; S.bustT = 0;
+    const P = G.player;
+    const data = {
+      money: G.money,
+      storyIdx: G.missions ? G.missions.storyIdx : 0,
+      sideDone: G.missions ? G.missions.sideDone : [false, false, false, false, false],
+      x: P ? P.x : 0, y: P ? P.y : 0,
+      hp: P ? P.hp : 100, armor: P ? P.armor : 0,
+      weapon: P ? P.weapon : 'pistol',
+      hasShotgun: P ? P.hasShotgun : false,
+      pistolMag: P ? P.weapons.pistol.mag : 17,
+      pistolRes: P ? P.weapons.pistol.reserve : 51,
+      sgMag: P ? P.weapons.shotgun.mag : 0,
+      sgRes: P ? P.weapons.shotgun.reserve : 0,
+      garage: G.garageData || null,
+      seed: G.seed,
+      t: G.t,
+    };
+    localStorage.setItem(CFG.SAVE_KEY, JSON.stringify(data));
     return true;
   } catch { return false; }
 }
 
-export function deleteSave() { try { localStorage.removeItem(SAVE_KEY); } catch {} }
+export function loadSave() {
+  try {
+    const raw = localStorage.getItem(CFG.SAVE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
 
-// ---------------------------------------------------------------- title
-let menuSel = 0;
-export const TITLE_ITEMS = () => ['New Game', ...(hasSave() ? ['Continue', 'Delete Save'] : []), 'How to Play'];
+export function deleteSave() {
+  try { localStorage.removeItem(CFG.SAVE_KEY); } catch {}
+}
 
-export function titleUpdate(dt, input) {
-  S.demo += dt;
-  // slow cinematic pan along Ocean Drive
-  S.cam.x = 2400 + Math.sin(S.demo * 0.11) * 1500;
-  S.cam.y = 4020 + Math.cos(S.demo * 0.07) * 40;
-  S.cam.zoom = 0.85;
-  const items = TITLE_ITEMS();
-  if (input.hit('ArrowUp', 'KeyW')) menuSel = (menuSel + items.length - 1) % items.length;
-  if (input.hit('ArrowDown', 'KeyS')) menuSel = (menuSel + 1) % items.length;
-  if (input.hit('Enter', 'Space', 'NumpadEnter')) pick(input);
-  if (input.mclicked) {
-    // click hit-test
-    for (let i = 0; i < items.length; i++) {
-      const r = itemRect(i, items.length);
-      if (input.mx >= r.x && input.mx <= r.x + r.w && input.my >= r.y && input.my <= r.y + r.h) { menuSel = i; pick(input); break; }
+// ---------------------------------------------------------------- updates
+export function updateScreens(game) {
+  const st = G.state;
+  if (st === 'title') {
+    const n = titleItems().length;
+    if (hit('ArrowUp') || hit('KeyW')) menu.titleSel = (menu.titleSel + n - 1) % n;
+    if (hit('ArrowDown') || hit('KeyS')) menu.titleSel = (menu.titleSel + 1) % n;
+    if (hit('Enter') || hit('Space') || hit('NumpadEnter')) {
+      const items = titleItems();
+      const act = items[menu.titleSel];
+      if (act === 'NEW GAME') game.newGame(null);
+      else if (act === 'CONTINUE') game.continueGame();
+      else if (act === 'DELETE SAVE') { deleteSave(); menu.titleSel = 0; }
     }
+    if (hit('KeyM')) setMuted(!G.muted);
+  } else if (st === 'paused') {
+    if (hit('Escape')) { game.setState('playing'); return; }
+    if (hit('KeyM')) setMuted(!G.muted);
+    if (hit('ArrowUp') || hit('KeyW')) menu.pauseSel = (menu.pauseSel + 2) % 3;
+    if (hit('ArrowDown') || hit('KeyS')) menu.pauseSel = (menu.pauseSel + 1) % 3;
+    if (hit('Enter') || hit('NumpadEnter')) {
+      if (menu.pauseSel === 0) game.setState('playing');
+      else if (menu.pauseSel === 1) { saveGame(); game.setState('playing'); }
+      else { stopMusic(); game.toTitle(); }
+    }
+  } else if (st === 'end') {
+    if (hit('Enter') || hit('Escape')) { stopMusic(); game.toTitle(); }
+  }
+  // wasted / busted advance on their own timers inside game.js
+}
+
+function titleItems() {
+  const items = ['NEW GAME'];
+  if (hasSave()) items.push('CONTINUE');
+  if (hasSave()) items.push('DELETE SAVE');
+  return items;
+}
+
+// ---------------------------------------------------------------- drawing
+export function drawScreens(c) {
+  const st = G.state;
+  if (st === 'title') drawTitle(c);
+  else if (st === 'paused') drawPause(c);
+  else if (st === 'wasted') drawWasted(c);
+  else if (st === 'busted') drawBusted(c);
+  else if (st === 'end') drawEnd(c);
+  // mission-start title card rides on top of everything
+  if (G.hud.cut) drawCutscene(c, G.hud.cut);
+  // 'passed' banner lives in hud.js
+}
+
+function drawCutscene(c, cut) {
+  const k = clamp(cut.t / 0.4, 0, 1) * clamp((3.2 - cut.t) / 0.4, 0, 1);
+  const barH = 54 * k;
+  c.fillStyle = 'rgba(2,0,8,0.9)';
+  c.fillRect(0, 0, G.w, barH);
+  c.fillRect(0, G.h - barH, G.w, barH);
+  if (cut.t > 0.5) {
+    const a = clamp((cut.t - 0.5) / 1.2, 0, 1);
+    c.textAlign = 'center';
+    c.font = 'bold 38px "Arial Black", sans-serif';
+    c.fillStyle = `rgba(255,210,74,${a})`;
+    c.fillText(cut.name.toUpperCase(), G.w / 2, G.h - barH - 46);
+    c.font = '15px sans-serif';
+    c.fillStyle = `rgba(232,230,227,${a * 0.85})`;
+    c.fillText(cut.brief, G.w / 2, G.h - barH - 20);
+    c.font = 'bold 11px "Consolas", monospace';
+    c.fillStyle = `rgba(0,229,255,${a * 0.9})`;
+    c.fillText(cut.isSide ? 'SIDE HUSTLE' : 'STORY JOB ' + (G.missions ? Math.min(6, G.missions.storyIdx + 1) : '') + '/6', G.w / 2, barH + 24);
+    c.textAlign = 'left';
   }
 }
 
-function itemRect(i, n) {
-  const w = 320, h = 44;
-  return { x: VW / 2 - w / 2, y: VH / 2 + 58 + i * 54, w, h };
+function dim(c, a = 0.6) {
+  c.fillStyle = `rgba(4,2,12,${a})`;
+  c.fillRect(0, 0, G.w, G.h);
 }
 
-function pick(input) {
-  const items = TITLE_ITEMS();
-  const what = items[menuSel];
-  if (what === 'New Game') newGame();
-  else if (what === 'Continue') { newGame(true); loadGame(); }
-  else if (what === 'Delete Save') { deleteSave(); menuSel = 0; }
-  else if (what === 'How to Play') { S.toasts.push({ text: 'WASD move · F carjack · LMB shoot · SPACE handbrake · 1/2 weapons', t: 0, dur: 6 }); }
-}
-
-export function drawTitle(ctx) {
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  // dim the world behind
-  ctx.fillStyle = 'rgba(6,7,20,0.62)';
-  ctx.fillRect(0, 0, VW, VH);
-  ctx.textAlign = 'center';
+function drawTitle(c) {
+  dim(c, 0.42);
+  const t = G.t;
   // neon logo
-  const t = S.time;
-  ctx.font = 'bold 88px Arial Black, Arial';
-  const glow = 0.75 + Math.sin(t * 2) * 0.15;
-  ctx.fillStyle = 'rgba(0,0,0,0.4)';
-  ctx.fillText('VICE PALMS', VW / 2 + 5, 195 + 5);
-  ctx.shadowColor = '#ff3fd4'; ctx.shadowBlur = 42 * glow;
-  ctx.fillStyle = '#ff9be8';
-  ctx.fillText('VICE PALMS', VW / 2, 195);
-  ctx.shadowColor = '#00e5ff'; ctx.shadowBlur = 30;
-  ctx.fillStyle = '#a9f4ff';
-  ctx.font = 'bold 24px Arial Black, Arial';
-  ctx.fillText('—  W E L C O M E   T O   T H E   G R I N D  —', VW / 2, 238);
-  ctx.shadowBlur = 0;
-  ctx.font = '14px Arial';
-  ctx.fillStyle = '#9aa4b8';
-  ctx.fillText('a make.fun gta6-01 bounty entry · vanilla JS · no libraries', VW / 2, 268);
-  // menu
-  const items = TITLE_ITEMS();
-  ctx.font = 'bold 24px Arial Black, Arial';
-  items.forEach((it, i) => {
-    const r = itemRect(i, items.length);
-    const sel = i === menuSel;
-    ctx.fillStyle = sel ? 'rgba(255,63,212,0.16)' : 'rgba(10,12,26,0.66)';
-    roundRect(ctx, r.x, r.y, r.w, r.h, 10); ctx.fill();
-    if (sel) { ctx.strokeStyle = '#ff3fd4'; ctx.lineWidth = 2; roundRect(ctx, r.x, r.y, r.w, r.h, 10); ctx.stroke(); }
-    ctx.fillStyle = sel ? '#ffd9f6' : '#b9c2d4';
-    ctx.fillText(it, VW / 2, r.y + 30);
-  });
-  ctx.font = '13px Arial';
-  ctx.fillStyle = '#8a93a8';
-  ctx.fillText('↑/↓ + ENTER · or click', VW / 2, VH - 28);
-  ctx.textAlign = 'left';
-  ctx.shadowBlur = 0;
-}
+  c.textAlign = 'center';
+  const glow = 0.75 + 0.25 * Math.sin(t * 2.2);
+  c.font = 'bold 86px "Arial Black", sans-serif';
+  c.fillStyle = `rgba(255,47,125,${0.18 * glow})`;
+  c.fillText('VICE PALMS', G.w / 2 + 4, 208 + 4);
+  c.fillStyle = `rgba(0,229,255,${0.22 * glow})`;
+  c.fillText('VICE PALMS', G.w / 2 - 3, 208 - 3);
+  c.fillStyle = '#ffe9f4';
+  c.fillText('VICE PALMS', G.w / 2, 208);
+  c.font = 'bold 17px sans-serif';
+  c.fillStyle = '#ffd24a';
+  c.fillText('A  N E O N  N I G H T - C O A S T  S A N D B O X', G.w / 2, 244);
 
-// ---------------------------------------------------------------- pause
-let pauseSel = 0;
-let lastToggle = -9;
-const PAUSE_ITEMS = ['Resume', 'Save Game', 'Load Game', 'Quit to Title'];
-
-export function pauseToggle() {
-  if (S.time - lastToggle < 0.3) return; // ignore same-frame re-triggers from multi-step ticks
-  lastToggle = S.time;
-  S.mode = S.mode === 'paused' ? 'playing' : 'paused';
-  pauseSel = 0;
-}
-
-export function pauseUpdate(dt, input) {
-  if (input.hit('Escape', 'KeyP')) { pauseToggle(); return; }
-  if (input.hit('ArrowUp', 'KeyW')) pauseSel = (pauseSel + PAUSE_ITEMS.length - 1) % PAUSE_ITEMS.length;
-  if (input.hit('ArrowDown', 'KeyS')) pauseSel = (pauseSel + 1) % PAUSE_ITEMS.length;
-  if (input.hit('Enter', 'Space', 'NumpadEnter')) pickPause();
-  if (input.mclicked) {
-    for (let i = 0; i < PAUSE_ITEMS.length; i++) {
-      const r = itemRect(i, PAUSE_ITEMS.length);
-      if (input.mx >= r.x && input.mx <= r.x + r.w && input.my >= r.y && input.my <= r.y + r.h) { pauseSel = i; pickPause(); break; }
+  // palms flanking
+  for (const px of [190, G.w - 190]) {
+    c.strokeStyle = '#2f7a44';
+    c.lineWidth = 5;
+    for (let a = 0; a < 7; a++) {
+      const ang = (a / 7) * Math.PI * 2 + Math.sin(t * 1.4 + px) * 0.06;
+      c.beginPath();
+      c.moveTo(px, 300);
+      c.quadraticCurveTo(px + Math.cos(ang) * 26, 300 + Math.sin(ang) * 26 - 12,
+        px + Math.cos(ang) * 44, 300 + Math.sin(ang) * 44 - 6);
+      c.stroke();
     }
+    c.fillStyle = '#5a4028';
+    c.fillRect(px - 4, 300, 8, 60);
   }
-}
 
-function pickPause() {
-  const what = PAUSE_ITEMS[pauseSel];
-  if (what === 'Resume') S.mode = 'playing';
-  else if (what === 'Save Game') { const ok = saveGame(); S.toasts.push({ text: ok ? 'Game saved.' : 'Save failed.', t: 0, dur: 2.5 }); }
-  else if (what === 'Load Game') { const ok = loadGame(); S.toasts.push({ text: ok ? 'Game loaded.' : 'No save found.', t: 0, dur: 2.5 }); if (ok) S.mode = 'playing'; }
-  else if (what === 'Quit to Title') { S.mode = 'title'; S.demo = 0; }
-}
-
-export function drawPause(ctx) {
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = 'rgba(4,5,14,0.66)';
-  ctx.fillRect(0, 0, VW, VH);
-  ctx.textAlign = 'center';
-  ctx.font = 'bold 52px Arial Black, Arial';
-  ctx.fillStyle = '#a9f4ff';
-  ctx.fillText('PAUSED', VW / 2, 170);
-  ctx.font = 'bold 22px Arial Black, Arial';
-  PAUSE_ITEMS.forEach((it, i) => {
-    const r = itemRect(i, PAUSE_ITEMS.length);
-    const sel = i === pauseSel;
-    ctx.fillStyle = sel ? 'rgba(0,229,255,0.14)' : 'rgba(10,12,26,0.66)';
-    roundRect(ctx, r.x, r.y, r.w, r.h, 10); ctx.fill();
-    if (sel) { ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 2; roundRect(ctx, r.x, r.y, r.w, r.h, 10); ctx.stroke(); }
-    ctx.fillStyle = sel ? '#d9f6ff' : '#b9c2d4';
-    ctx.fillText(it, VW / 2, r.y + 30);
+  // menu
+  const items = titleItems();
+  c.font = 'bold 24px "Consolas", monospace';
+  items.forEach((it, i) => {
+    const y = 420 + i * 44;
+    const sel = i === menu.titleSel;
+    if (sel) {
+      c.fillStyle = 'rgba(255,47,125,0.22)';
+      const wid = c.measureText(it).width + 60;
+      c.fillRect(G.w / 2 - wid / 2, y - 27, wid, 36);
+      c.fillStyle = '#ffd24a';
+      c.fillText('\u25B8 ' + it + ' \u25C2', G.w / 2, y);
+    } else {
+      c.fillStyle = 'rgba(232,230,227,0.65)';
+      c.fillText(it, G.w / 2, y);
+    }
   });
-  ctx.textAlign = 'left';
+
+  c.font = '13px sans-serif';
+  c.fillStyle = 'rgba(255,255,255,0.55)';
+  c.fillText('WASD drive/walk \u00b7 F enter/jack \u00b7 Space handbrake \u00b7 LMB shoot \u00b7 M sound', G.w / 2, G.h - 46);
+  c.fillStyle = 'rgba(255,255,255,0.35)';
+  c.fillText('seed ' + G.seed + ' \u00b7 make.fun gta6-01', G.w / 2, G.h - 26);
+  // two-column control sheet, left side
+  c.font = '12px "Consolas", monospace';
+  c.textAlign = 'left';
+  const colX = 60;
+  let cy = G.h - 250;
+  c.fillStyle = 'rgba(0,229,255,0.8)';
+  c.fillText('ON FOOT', colX, cy); cy += 20;
+  for (const line of ['WASD — walk', 'Shift — sprint', 'LMB / Ctrl — shoot', 'R — reload', 'Q — swap weapon', 'V — punch', 'F — take a car']) {
+    c.fillStyle = 'rgba(232,230,227,0.55)';
+    c.fillText(line, colX, cy); cy += 18;
+  }
+  // right column
+  c.textAlign = 'right';
+  const rx = G.w - 60;
+  cy = G.h - 250;
+  c.fillStyle = 'rgba(255,47,125,0.85)';
+  c.fillText('BEHIND THE WHEEL', rx, cy); cy += 20;
+  for (const line of ['WASD — drive', 'Space — handbrake', 'Shift — nitro (drift to refill)', 'LMB — drive-by', 'F — get out', 'H — horn', 'E — shops & garage']) {
+    c.fillStyle = 'rgba(232,230,227,0.55)';
+    c.fillText(line, rx, cy); cy += 18;
+  }
+  c.textAlign = 'center';
 }
 
-// ---------------------------------------------------------------- wasted / busted
-export function drawDead(ctx) {
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  const t = S.modeT;
-  const a = clamp(t / 0.8, 0, 1);
-  ctx.fillStyle = S.mode === 'wasted' ? `rgba(40,0,0,${0.62 * a})` : `rgba(0,10,40,${0.62 * a})`;
-  ctx.fillRect(0, 0, VW, VH);
-  ctx.textAlign = 'center';
-  ctx.font = 'bold 92px Arial Black, Arial';
-  ctx.fillStyle = S.mode === 'wasted' ? `rgba(230,40,40,${a})` : `rgba(70,140,255,${a})`;
-  ctx.fillText(S.mode === 'wasted' ? 'WASTED' : 'BUSTED', VW / 2, VH / 2 - 10);
-  ctx.font = '18px Arial';
-  ctx.fillStyle = `rgba(235,235,240,${a})`;
-  const fee = S.mode === 'wasted' ? 100 : 150;
-  ctx.fillText(S.mode === 'wasted' ? `Hospital bill: -$${fee}` : `Bail posted: -$${fee}`, VW / 2, VH / 2 + 34);
-  ctx.fillText('Respawning...', VW / 2, VH / 2 + 66);
-  ctx.textAlign = 'left';
+function drawPause(c) {
+  dim(c, 0.55);
+  c.textAlign = 'center';
+  c.font = 'bold 54px "Arial Black", sans-serif';
+  c.fillStyle = '#00e5ff';
+  c.fillText('PAUSED', G.w / 2, 210);
+  const items = ['RESUME', 'SAVE GAME', 'QUIT TO TITLE'];
+  c.font = 'bold 22px "Consolas", monospace';
+  items.forEach((it, i) => {
+    const y = 290 + i * 44;
+    if (i === menu.pauseSel) {
+      c.fillStyle = 'rgba(0,229,255,0.18)';
+      const wid = c.measureText(it).width + 60;
+      c.fillRect(G.w / 2 - wid / 2, y - 25, wid, 34);
+      c.fillStyle = '#ffd24a';
+      c.fillText('\u25B8 ' + it + ' \u25C2', G.w / 2, y);
+    } else {
+      c.fillStyle = 'rgba(232,230,227,0.65)';
+      c.fillText(it, G.w / 2, y);
+    }
+  });
+  drawStats(c, G.w / 2 + 150, 190, 220);
+  c.font = '12px sans-serif';
+  c.fillStyle = 'rgba(255,255,255,0.4)';
+  c.fillText('N — radio · H — horn · weather comes and goes', G.w / 2, G.h - 60);
+  c.textAlign = 'left';
 }
 
-// ---------------------------------------------------------------- big map
-export function bigMapUpdate(dt, input) {
-  if (input.hit('Tab', 'Escape')) S.bigMap = false;
+function drawWasted(c) {
+  const k = clamp((G.wastedT || 0) / 2.6, 0, 1);
+  c.fillStyle = `rgba(120,0,20,${0.4 * k})`;
+  c.fillRect(0, 0, G.w, G.h);
+  c.textAlign = 'center';
+  c.font = 'bold 84px "Arial Black", sans-serif';
+  c.fillStyle = '#ff4055';
+  c.fillText('WASTED', G.w / 2, G.h / 2 + 10);
+  c.font = '16px sans-serif';
+  c.fillStyle = 'rgba(255,255,255,0.8)';
+  c.fillText('The Paramedics of Vice Palms thank you for your donation.', G.w / 2, G.h / 2 + 52);
+  c.textAlign = 'left';
 }
 
-export function toggleBigMap(on) { S.bigMap = on; }
-
-// ---------------------------------------------------------------- helpers
-export function endFrameCleanup() {
-  // fade/kill transient overlays shared with game.js
+function drawBusted(c) {
+  const k = clamp((G.bustedT || 0) / 2.6, 0, 1);
+  c.fillStyle = `rgba(10,20,120,${0.4 * k})`;
+  c.fillRect(0, 0, G.w, G.h);
+  c.textAlign = 'center';
+  c.font = 'bold 84px "Arial Black", sans-serif';
+  c.fillStyle = '#4c7dff';
+  c.fillText('BUSTED', G.w / 2, G.h / 2 + 10);
+  c.font = '16px sans-serif';
+  c.fillStyle = 'rgba(255,255,255,0.8)';
+  c.fillText('The VCPD impound also thanks you for your donation.', G.w / 2, G.h / 2 + 52);
+  c.textAlign = 'left';
 }
 
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
+function drawEnd(c) {
+  dim(c, 0.72);
+  c.textAlign = 'center';
+  c.font = 'bold 64px "Arial Black", sans-serif';
+  c.fillStyle = '#ffd24a';
+  c.fillText('THE PALMS REMEMBER', G.w / 2, 280);
+  c.font = '19px sans-serif';
+  c.fillStyle = '#e8e6e3';
+  c.fillText('Rico Vargas is home. The neon hums. The tide keeps its schedule.', G.w / 2, 330);
+  c.fillStyle = '#7cffa0';
+  c.fillText('Six jobs, three favors, one city that never asks questions.', G.w / 2, 358);
+  c.font = 'bold 20px "Consolas", monospace';
+  c.fillStyle = '#ffd9f2';
+  c.fillText('ENTER \u2014 keep cruising     \u00b7     credits roll forever tonight', G.w / 2, 430);
+  c.font = '14px sans-serif';
+  c.fillStyle = 'rgba(255,255,255,0.5)';
+  c.fillText('final balance: $' + Math.floor(G.money).toLocaleString(), G.w / 2, 470);
+  drawStats(c, G.w / 2 - 110, 520, 220, 'THE FINAL LEDGER');
+  c.textAlign = 'left';
 }

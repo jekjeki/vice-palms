@@ -4,68 +4,52 @@
 
 # Vice Palms
 
-A top-down open-world crime sandbox in the spirit of the classic GTA era — built from
-scratch in vanilla JavaScript (Canvas 2D, WebAudio, zero libraries, zero network calls).
-Night-time neon coastal city, drivable traffic, carjacking, a 5-star wanted system,
-6 chained story missions ("Rico returns to Vice Palms"), 3 side missions, and a
-synthwave radio — all in one `game/` folder of static files.
+A neon night-coast crime sandbox in one HTML page — no libraries, no network, no build step.
+Top-down 2.5D city, arcade cars with drift and handbrakes, a five-star VCPD, pedestrians with
+survival instincts, and six chained story jobs for Rico Vargas plus three side hustles.
 
 ## Play
 
-```sh
-node serve.ts            # serves game/ at http://localhost:8080
-node serve.ts --port 8090
+```bash
+node serve.ts            # http://localhost:8080
+# or any static server pointed at game/
 ```
-
-Then open <http://localhost:8080>.
 
 ## Controls
 
 | Key | Action |
 | --- | --- |
-| `W A S D` | Walk / drive |
-| `Shift` | Sprint |
-| `F` | Carjack / enter / exit vehicle |
-| `Mouse` | Aim |
-| `Left click` | Punch / shoot |
-| `1 / 2` | Fists / pistol |
-| `Space` | Handbrake |
-| `M` | Mute audio |
-| `Esc` | Pause menu (save / load / quit) |
-| `Tab` | Big map |
+| WASD / arrows | walk / drive |
+| Shift | sprint |
+| F | enter, jack or leave a car |
+| Space | handbrake |
+| Left mouse / Ctrl | shoot (pistol, ammo limited) |
+| R | reload |
+| V | throw a punch |
+| Esc | pause |
+| M | mute |
 
-## Features
+## The city
 
-- **World** — a deterministic, seeded 6400×4800 night city: downtown high-rises with lit
-  windows and neon signs, residential blocks, a palm park, an Ocean Drive beach strip,
-  the **North Docks** (container yard, gantry cranes, cargo ship) and **Palm Airfield**
-  (runway, hangars, control tower).
-- **Driving** — 8 vehicle types with arcade drift physics, handbrake, damage model
-  (scratches → smoke → fire → explosion), headlights, and traffic that obeys lights
-  and queues behind you.
-- **Wanted system** — 1–5 stars, cruiser pursuit and ramming, foot cops that shoot,
-  roadblocks at 3★+, out-of-sight decay, WASTED / BUSTED with respawn fees.
-- **Missions** — 6 chained story missions plus 3 repeatable side gigs (Fare Rush,
-  Express Post, Beach Rampage) with markers, timers, checkpoints, fail/retry and payouts.
-- **Presentation** — neon glow, headlight cones, wet-road sheen, explosion flash and
-  camera shake, circular minimap, speedometer, synthesized synthwave radio, engine,
-  sirens, gunshots and explosions — all generated in WebAudio.
+Seeded and deterministic: a road-grid downtown with neon towers, Palm Park, a south beach
+boardwalk, the North Docks (container yards, cranes, piers and the *Coral Maid*), and Palm
+Airfield with runway, hangars and control tower. Traffic follows lanes, obeys lights and
+queues; cops ram, set roadblocks at three stars, and shoot on foot. WASTED and BUSTED cost
+money. Progress saves to `localStorage` from the pause menu.
 
 ## Staged screenshots
 
-`shots.json` lists the four deterministic staged scenes used for `screenshots/`
-(`?shot=start|play|end|chaos&seed=1337`).
+`?shot=start|play|end|chaos&seed=N&mute=1` builds the four deterministic scenes captured in
+`screenshots/` (see `shots.json`). `node main.ts` assembles the make.fun dossier into
+`$MAKEFUN_OUTPUT_DIR` (default `/output`).
 
-## Repo layout
+## Structure
 
 ```
-game/            the game (index.html + src/*.js, no dependencies)
-screenshots/     4 rendered screenshots (≤256 KiB each)
-serve.ts         static server for game/
-main.ts          builds out/dossier.json via vendor/makefun-game.ts
-vendor/          make.fun kit (untouched)
+game/index.html        shell
+game/src/*.js          config, util(+RNG), input, audio (all WebAudio-synthesized),
+                       world, cars, traffic, peds, player, police, missions,
+                       render, hud, screens, shots, game, main
+serve.ts               stdlib static server (Node 22)
+main.ts                dossier builder (Node 22 type stripping)
 ```
-
-## License
-
-MIT — see [LICENSE](LICENSE).

@@ -1,6 +1,6 @@
 [
-  { "name": "1-start", "file": "screenshots/1-start.jpg", "url": "http://localhost:8080/?shot=start&seed=1337&mute=1", "size": "1280x720" },
-  { "name": "2-play", "file": "screenshots/2-play.jpg", "url": "http://localhost:8080/?shot=play&seed=1337&mute=1", "size": "1280x720" },
-  { "name": "3-end", "file": "screenshots/3-end.jpg", "url": "http://localhost:8080/?shot=end&seed=1337&mute=1", "size": "1280x720" },
-  { "name": "4-chaos", "file": "screenshots/4-chaos.jpg", "url": "http://localhost:8080/?shot=chaos&seed=1337&mute=1", "size": "1280x720" }
+  { "file": "screenshots/1-start.jpg", "shot": "start", "url": "/?shot=start&seed=7&mute=1", "label": "Vice Palms title — neon beachfront cover" },
+  { "file": "screenshots/2-play.jpg", "shot": "play", "url": "/?shot=play&seed=7&mute=1", "label": "Night drive downtown with one star of heat" },
+  { "file": "screenshots/3-end.jpg", "shot": "end", "url": "/?shot=end&seed=7&mute=1", "label": "The Last Ride passed — story complete" },
+  { "file": "screenshots/4-chaos.jpg", "shot": "chaos", "url": "/?shot=chaos&seed=7&mute=1", "label": "Four-alarm chaos: fire, booms and the VCPD" }
 ]
