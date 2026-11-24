@@ -1,16 +1,18 @@
-// serve.ts — stdlib static file server for game/ on http://localhost:8080
-// Node 22: node serve.ts [--port N]
+// serve.ts — static dev server for game/ on http://localhost:8080
+// Node 22 stdlib only. Usage: node serve.ts [--port N]
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { join, resolve, sep } from 'node:path';
+import { join, normalize, extname, resolve } from 'node:path';
 
-const root = resolve(new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), 'game');
-let port = 8080;
-const pi = process.argv.indexOf('--port');
-if (pi > 0 && process.argv[pi + 1]) port = parseInt(process.argv[pi + 1], 10) || 8080;
+const ROOT = resolve('game');
+const argPort = (() => {
+  const i = process.argv.indexOf('--port');
+  if (i >= 0 && process.argv[i + 1]) return parseInt(process.argv[i + 1], 10);
+  return 8080;
+})();
 
-const MIME: Record<string, string> = {
+const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
@@ -21,50 +23,37 @@ const MIME: Record<string, string> = {
   '.jpeg': 'image/jpeg',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.wasm': 'application/wasm',
   '.txt': 'text/plain; charset=utf-8',
-  '.ts': 'text/plain; charset=utf-8',
 };
 
+let port = argPort;
 const server = createServer(async (req, res) => {
   try {
-    const url = new URL(req.url || '/', 'http://localhost');
-    let p = decodeURIComponent(url.pathname);
-    if (p.endsWith('/')) p += 'index.html';
-    const file = resolve(join(root, p));
-    if (file !== root && !file.startsWith(root + sep)) {
-      res.writeHead(403).end('forbidden');
-      return;
-    }
-    const st = await stat(file).catch(() => null);
-    if (!st || !st.isFile()) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' }).end('404');
-      return;
-    }
-    const body = req.method === 'HEAD' ? null : await readFile(file);
-    res.writeHead(200, {
-      'Content-Type': MIME[file.slice(file.lastIndexOf('.')).toLowerCase()] || 'application/octet-stream',
-      'Content-Length': st.size,
-      'Cache-Control': 'no-store',
-    });
+    let url = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    if (url === '/') url = '/index.html';
+    const path = normalize(join(ROOT, url));
+    if (!path.startsWith(ROOT)) { res.writeHead(403); res.end('forbidden'); return; }
+    const st = await stat(path).catch(() => null);
+    if (!st || st.isDirectory()) { res.writeHead(404); res.end('not found'); return; }
+    const body = await readFile(path);
+    res.writeHead(200, { 'content-type': MIME[extname(path).toLowerCase()] || 'application/octet-stream', 'content-length': body.length });
+    if (req.method === 'HEAD') { res.end(); return; }
     res.end(body);
   } catch {
-    res.writeHead(500).end('500');
+    res.writeHead(500);
+    res.end('error');
   }
 });
 
-server.on('error', (err: NodeJS.ErrnoException) => {
+server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    console.error(`serve: port ${port} is busy — try --port ${port + 1}`);
+    console.log(`Port ${port} is busy — pick another with: node serve.ts --port N`);
     process.exit(1);
   }
   throw err;
 });
 
-server.listen(port, () => {
-  console.log(`serve: Vice Palms on http://localhost:${port} (Ctrl+C to stop)`);
-});
+server.listen(port, () => console.log(`Vice Palms serving game/ at http://localhost:${port}`));
 
-process.on('SIGINT', () => {
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 500);
-});
+process.on('SIGINT', () => { server.close(); process.exit(0); });

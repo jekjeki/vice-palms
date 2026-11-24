@@ -2,54 +2,66 @@
 [![rank](https://make.fun/badge/gta6-01/jekjeki/vice-palms/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/jekjeki/vice-palms/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-# Vice Palms
+# VICE PALMS
 
-A neon night-coast crime sandbox in one HTML page — no libraries, no network, no build step.
-Top-down 2.5D city, arcade cars with drift and handbrakes, a five-star VCPD, pedestrians with
-survival instincts, and six chained story jobs for Rico Vargas plus three side hustles.
+A neon-coastal top-down crime story for the make.fun **gta6-01** bounty. Pure
+Canvas 2D + WebAudio, zero libraries, zero network — everything is synthesized
+in the browser.
 
 ## Play
 
 ```bash
-node serve.ts            # http://localhost:8080
-# or any static server pointed at game/
+node serve.ts            # http://localhost:8080  (--port N for another port)
 ```
-
-## Controls
-
-| Key | Action |
-| --- | --- |
-| WASD / arrows | walk / drive |
-| Shift | sprint |
-| F | enter, jack or leave a car |
-| Space | handbrake |
-| Left mouse / Ctrl | shoot (pistol, ammo limited) |
-| R | reload |
-| V | throw a punch |
-| Esc | pause |
-| M | mute |
 
 ## The city
 
-Seeded and deterministic: a road-grid downtown with neon towers, Palm Park, a south beach
-boardwalk, the North Docks (container yards, cranes, piers and the *Coral Maid*), and Palm
-Airfield with runway, hangars and control tower. Traffic follows lanes, obeys lights and
-queues; cops ram, set roadblocks at three stars, and shoot on foot. WASTED and BUSTED cost
-money. Progress saves to `localStorage` from the pause menu.
+- **Vice Palms strip** — a road-grid night city with neon signs, street lamps
+  and a wet-asphalt sheen.
+- **Ocean Drive & the beach** — sand, boardwalk, palms, umbrellas and piers.
+- **Palm Park** — grass, paths, a pond, palm groves.
+- **The North Docks** — piers, container stacks, cranes and the cargo ship
+  *Palm Star*.
+- **Palm Airfield** — runway, hangars and an ATC tower.
 
-## Staged screenshots
+## Features
 
-`?shot=start|play|end|chaos&seed=N&mute=1` builds the four deterministic scenes captured in
-`screenshots/` (see `shots.json`). `node main.ts` assembles the make.fun dossier into
-`$MAKEFUN_OUTPUT_DIR` (default `/output`).
+- 8 vehicle types with arcade physics: drift, handbrake, skid marks,
+  progressive damage (smoke → fire → explosion), headlights, water sinking.
+- Lane-following traffic that obeys the two-phase lights and queues.
+- Pedestrians that stroll, sunbathe and flee gunfire; gang lookouts that shoot.
+- Wanted system 1–5 stars: cruiser pursuit with ramming, roadblocks at 3+,
+  foot cops that shoot, line-of-sight decay, WASTED and BUSTED respawns with fees.
+- Player: walk / sprint, fists + pistol (with soft auto-aim), carjacking (F),
+  health / armor / money.
+- 6 chained story missions (Rico is back in Vice Palms) + 3 repeatable side
+  gigs (taxi fares, vigilante, hot delivery) with markers, timers, payouts,
+  fail/retry and subtitles.
+- HUD with circular minimap, speedo, wanted stars, objective text and toasts.
+- Full synthesized audio: engine, sirens, gunshots, explosions and a
+  synthwave bass loop.
+- Save / continue via `localStorage` (title menu and pause menu).
 
-## Structure
+## Controls
 
-```
-game/index.html        shell
-game/src/*.js          config, util(+RNG), input, audio (all WebAudio-synthesized),
-                       world, cars, traffic, peds, player, police, missions,
-                       render, hud, screens, shots, game, main
-serve.ts               stdlib static server (Node 22)
-main.ts                dossier builder (Node 22 type stripping)
+| key | action |
+| --- | --- |
+| WASD / arrows | drive / walk |
+| SPACE | attack on foot / handbrake in a car |
+| SHIFT | sprint |
+| F | enter or jack the nearest car |
+| Q | switch weapon (fists ↔ pistol) |
+| H | horn |
+| ESC / P | pause |
+
+## Staged scenes
+
+`?shot=start|play|end|chaos&seed=N` renders the four deterministic scenes used
+for `screenshots/` (also with `&mute=1` to silence audio).
+
+## Build the dossier
+
+```bash
+node main.ts   # copies game/ + screenshots/ into $MAKEFUN_OUTPUT_DIR (or /output)
+               # and writes dossier.json via the vendored makefun kit
 ```

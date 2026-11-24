@@ -1,82 +1,67 @@
-// main.js — boot: canvas, query params (?shot=start|play|end|chaos &seed=N
-// &mute=1), fixed-timestep loop, and the draw order: world → HUD → screens.
+// VICE PALMS — boot: canvas setup, query params (?shot=&seed=&mute=), fixed
+// timestep loop.
 
-import { G } from './util.js';
-import { initInput, endFrame } from './input.js';
-import { Game } from './game.js';
-import { Renderer } from './render.js';
-import { drawHUD } from './hud.js';
-import { drawScreens, updateScreens, initScreens } from './screens.js';
-import { setupShot } from './shots.js';
-import { setMuted } from './audio.js';
+import { G } from './state.js';
+import { installInput } from './input.js';
+import { installAudio, updateAudio } from './audio.js';
+import { initGame, update, renderGame } from './game.js';
+import { stageShot, updateShot } from './shots.js';
 
-const canvas = document.getElementById('game');
-canvas.width = 1280;
-canvas.height = 720;
-G.w = 1280;
-G.h = 720;
+function boot() {
+  const canvas = document.getElementById('game');
+  G.canvas = canvas;
+  G.ctx = canvas.getContext('2d');
 
-// ------------------------------------------------------------- query params
-const q = new URLSearchParams(location.search);
-if (q.get('mute') === '1' || q.get('mute') === 'true') {
-  setMuted(true);
-}
-const shotName = q.get('shot');
-const seedParam = parseInt(q.get('seed') || '', 10);
+  const q = new URLSearchParams(location.search);
+  const shot = q.get('shot');
+  const seed = parseInt(q.get('seed') || '1337', 10) >>> 0 || 1337;
+  if (q.get('mute') === '1' || q.get('mute') === 'true') G.muted = true;
+  if (shot) G.shotMode = shot;
 
-// ------------------------------------------------------------- boot
-initInput(canvas);
-initScreens();
+  installInput();
+  installAudio();
 
-const game = new Game(canvas);
-const renderer = new Renderer(canvas);
+  fitCanvas(canvas);
+  window.addEventListener('resize', () => fitCanvas(canvas));
 
-let shotOk = false;
-if (shotName) {
-  shotOk = setupShot(shotName, Number.isFinite(seedParam) ? seedParam : 7, game);
-}
-if (!shotOk) {
-  // fresh world behind the title menu
-  game.newGame(Number.isFinite(seedParam) ? seedParam : 7, { silent: true });
-  game.toTitle();
-  G.t = 0;
-}
+  initGame(seed);
+  if (shot && ['start', 'play', 'end', 'chaos'].includes(shot)) stageShot(shot, seed);
 
-// ------------------------------------------------------------- loop
-const DT = 1 / 60;
-let last = performance.now();
-let acc = 0;
+  const loader = document.getElementById('boot');
+  if (loader) loader.remove();
 
-function frame(now) {
-  try {
-    let dt = (now - last) / 1000;
-    last = now;
-    if (dt > 0.1) dt = 0.1;         // tab-switch guard
-    acc += dt;
-    let steps = 0;
-    while (acc >= DT && steps < 4) {
-      game.update(DT);
-      acc -= DT;
-      steps++;
-    }
-    if (steps === 0) acc = Math.min(acc, DT);
-
-    updateScreens(game);
-    renderer.updateCamera(dt);
-    renderer.frame();
-
-    const c = renderer.c;
-    if (G.state !== 'title' && G.world && !G.photo) drawHUD(c);
-    drawScreens(c);
-  } catch (err) {
-    // one bad frame must not kill the night — log it and keep rolling
-    console.error('VP frame error:', err && err.message, err && err.stack ? String(err.stack).split('\n')[1] : '');
-  }
-
-  endFrame();
+  G.running = true;
+  window.VP = G;   // debug/testing handle
+  last = performance.now();
+  acc = 0;
   requestAnimationFrame(frame);
 }
 
-// test hook: lets the build agent (and curious players) inspect the sim
-window.__VP = { G, game };
-requestAnimationFrame(frame);
+let last = 0, acc = 0;
+const STEP = 1 / 60;
+
+function frame(now) {
+  if (!G.running) return;
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.25) dt = 0.25;
+  acc += dt;
+  let steps = 0;
+  while (acc >= STEP && steps < 4) {
+    update(STEP);
+    updateShot(STEP);
+    acc -= STEP;
+    steps++;
+  }
+  renderGame();
+  requestAnimationFrame(frame);
+}
+
+function fitCanvas(canvas) {
+  const ww = window.innerWidth, wh = window.innerHeight;
+  const s = Math.min(ww / G.W, wh / G.H);
+  canvas.style.width = Math.floor(G.W * s) + 'px';
+  canvas.style.height = Math.floor(G.H * s) + 'px';
+}
+
+boot();

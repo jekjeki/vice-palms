@@ -1,220 +1,205 @@
-// peds.js — pedestrians: wander the sidewalks, soak up the neon, and run
-// screaming from gunfire, explosions and curb-hopping maniacs.
+// VICE PALMS — pedestrians: wander the sidewalks, sunbathe on the sand, and
+// flee screaming when the shooting starts. Getting hit by a car is fatal.
 
 import { CFG } from './config.js';
-import { G, RNG, clamp, dist, angNorm } from './util.js';
-import { addStat } from './stats.js';
+import { G, addStars, toast } from './state.js';
+import { clamp, dist, dist2, angTo, burst } from './util.js';
+import { runRNG } from './rng.js';
+import { resolveCircleSolids, isWater, onPiers, terrainAt } from './world.js';
+import { carHitsPed } from './cars.js';
+import { play } from './audio.js';
 
-const SKINS = ['#c99b76', '#8a5a3b', '#e8b98f', '#6b4226', '#d9a06b'];
-const SHIRTS = ['#ff6f9c', '#6fd8ff', '#ffd76f', '#9cff6f', '#c46fff', '#ff8f5c', '#e8e6e3', '#5c6fff'];
-const PANTS = ['#2a2a3a', '#3a2a2a', '#22343a', '#3a3a2a'];
-const SWIM = ['#ff6f9c', '#ffd76f', '#6fd8ff', '#18e0b4'];
+const PED_COLS = ['#e8b88a', '#c98a5e', '#8a5e3c', '#f0d0b0'];
+const SHIRT_COLS = ['#ff6e9e', '#5ad0ff', '#ffe36e', '#7dff9e', '#c084ff', '#ff8a5c', '#e8e8ee'];
 
-export class Ped {
-  constructor(x, y, rng) {
-    this.x = x; this.y = y;
-    this.h = rng ? rng.range(0, Math.PI * 2) : Math.random() * Math.PI * 2;
-    // street casting: joggers, beach walkers, drunks, and everyone else
-    const roll = rng ? rng.f() : Math.random();
-    this.role = roll < 0.14 ? 'jogger' : roll < 0.24 ? 'drunk' : roll < 0.36 ? 'beach' : 'walker';
-    this.skin = rng ? rng.pick(SKINS) : SKINS[(Math.random() * SKINS.length) | 0];
-    this.shirt = this.role === 'beach'
-      ? (rng ? rng.pick(SWIM) : SWIRL())
-      : (rng ? rng.pick(SHIRTS) : SHIRTS[(Math.random() * SHIRTS.length) | 0]);
-    this.pants = this.role === 'jogger' ? '#e8e6e3' : (rng ? rng.pick(PANTS) : PANTS[(Math.random() * PANTS.length) | 0]);
-    const base = this.role === 'jogger' ? 96 : this.role === 'drunk' ? 26 : 34;
-    this.speed = base + (rng ? rng.f() : Math.random()) * (this.role === 'jogger' ? 40 : 16);
-    this.state = 'walk';
-    this.stateT = 0;
-    this.walkT = Math.random() * 6;
-    this.deadT = 0;
-    this.panicT = 0;
-    this.emote = 0;      // "!" bubble timer
-    this.threat = null;  // {x,y} to flee from
-    this.tx = x; this.ty = y;
-    this.pickTarget();
-  }
+export function makePed(x, y, opts = {}) {
+  return {
+    x, y, ang: runRNG.next() * Math.PI * 2,
+    vx: 0, vy: 0,
+    col: opts.col || PED_COLS[Math.floor(runRNG.next() * PED_COLS.length)],
+    shirt: opts.shirt || SHIRT_COLS[Math.floor(runRNG.next() * SHIRT_COLS.length)],
+    state: opts.state || 'walk',   // walk | sunbathe | flee | dead | gang | mission
+    speed: CFG.PED_SPEED,
+    fear: 0,
+    walkT: runRNG.next() * 10,
+    dead: false,
+    deadT: 0,
+    hp: 30,
+    gang: !!opts.gang,
+    target: null,       // gang attacker focus
+    shootCd: 0,
+    missionTag: opts.missionTag || null,
+    home: { x, y },
+  };
+}
 
-  pickTarget() {
-    // pick a nearby sidewalk-ish point to stroll toward
-    const rng = Math.random;
-    this.tx = this.x + (rng() - 0.5) * 260;
-    this.ty = this.y + (rng() - 0.5) * 260;
-  }
-
-  panic(t = 4, threat = null) {
-    this.panicT = Math.max(this.panicT, t);
-    if (this.state === 'walk') {
-      this.emote = 1.2;
-      this.state = 'flee';
-    }
-    if (threat) this.threat = { x: threat.x, y: threat.y };
-  }
-
-  kill() {
-    if (this.state === 'dead') return;
-    this.state = 'dead';
-    this.deadT = 0;
-    addStat('pedsBumped', 1);
-  }
-
-  update(dt) {
-    if (this.state === 'dead') {
-      this.deadT += dt;
-      return;
-    }
-    this.walkT += dt;
-    this.panicT -= dt;
-    this.emote -= dt;
-    if (this.panicT <= 0 && this.state === 'flee') {
-      this.state = 'walk';
-      this.threat = null;
-      this.pickTarget();
-    }
-
-    let spd = this.speed;
-    let dirx, diry;
-    let wobble = 0;
-    if (this.role === 'drunk') wobble = Math.sin(this.walkT * 2.2) * 0.5;
-
-    if (this.state === 'flee' && this.threat) {
-      // run directly away from the threat, screaming (silently — we're muted)
-      const dx = this.x - this.threat.x, dy = this.y - this.threat.y;
-      const d = Math.max(0.001, Math.hypot(dx, dy));
-      dirx = dx / d; diry = dy / d;
-      spd = this.speed * (this.role === 'jogger' ? 2.6 : 3.4);
+export function spawnPedRandom(rng, near, minD, maxD, opts = {}) {
+  for (let tries = 0; tries < 16; tries++) {
+    let x, y;
+    const t = rng.next();
+    if (t < 0.35) {
+      // sidewalk of a random road
+      const vertical = rng.chance(0.5);
+      if (vertical) {
+        const rx = rng.pick(G.world.roadsX);
+        x = rx + rng.sign() * (CFG.ROAD_HALF + 12);
+        y = rng.range(230, CFG.BEACH_Y - 40);
+      } else {
+        const ry = rng.pick(G.world.roadsY);
+        y = ry + rng.sign() * (CFG.ROAD_HALF + 12);
+        x = rng.range(230, 4040);
+      }
+    } else if (t < 0.6) {
+      x = rng.range(300, CFG.WORLD_W - 300);
+      y = rng.range(CFG.BEACH_Y + 20, 3080);       // beach
     } else {
-      const dx = this.tx - this.x, dy = this.ty - this.y;
-      const d = Math.hypot(dx, dy);
-      if (d < 12) { this.pickTarget(); return; }
-      dirx = dx / d; diry = dy / d;
-      if (this.role === 'drunk') {
-        // drunks consult an inner compass
-        const a = Math.atan2(diry, dirx) + wobble;
-        dirx = Math.cos(a); diry = Math.sin(a);
-      }
+      x = rng.range(300, 4000); y = rng.range(240, 2900);
+      if (terrainAt(x, y) !== 'city') continue;
+    }
+    if (isWater(x, y) && !onPiers(x, y)) continue;
+    const d = dist(x, y, near.x, near.y);
+    if (d < minD || d > maxD) continue;
+    return makePed(x, y, opts);
+  }
+  return null;
+}
+
+export function updatePeds(dt) {
+  const p = G.player;
+  const px = p.car ? p.car.x : p.x, py = p.car ? p.car.y : p.y;
+
+  for (let i = G.peds.length - 1; i >= 0; i--) {
+    const pd = G.peds[i];
+    if (pd.dead) {
+      pd.deadT += dt;
+      if (pd.deadT > 16) G.peds.splice(i, 1);
+      continue;
+    }
+    const dPlayer = dist(pd.x, pd.y, px, py);
+    if (dPlayer > CFG.PED_DESPAWN_R) { G.peds.splice(i, 1); continue; }
+
+    // panic from recent gunfire anywhere nearby
+    if (pd.state !== 'gang' && pd.fear <= 0 && G.gunfireT > 0 && dPlayer < 420) panic(pd);
+
+    pd.shootCd -= dt;
+    pd.fear -= dt;
+
+    if (pd.state === 'gang') updateGangPed(pd, dt, px, py);
+    else if (pd.state === 'flee') {
+      const a = angTo(px, py, pd.x, pd.y);
+      steer(pd, a, CFG.PED_FLEE_SPEED, dt);
+      if (pd.fear <= 0 && dPlayer > 380) pd.state = 'walk';
+    } else if (pd.state === 'sunbathe') {
+      pd.vx = 0; pd.vy = 0;
+      if (pd.fear > 0) pd.state = 'flee';
+    } else {
+      // stroll: random wander, hug sidewalks occasionally
+      pd.walkT += dt;
+      if (Math.random() < dt * 0.6) pd.ang += runRNG.range(-1.2, 1.2);
+      steer(pd, pd.ang, pd.speed, dt);
+      if (Math.random() < dt * 0.05) pd.state = 'sunbathe';
     }
 
-    this.h = angNorm(Math.atan2(diry, dirx));
-    this.x += dirx * spd * dt;
-    this.y += diry * spd * dt;
+    movePed(pd, dt);
 
-    // collide with the world (buildings, palms, containers)
-    const hit = G.world.collide(this.x, this.y, 6);
-    if (hit.power > 0.01) {
-      this.x = hit.x; this.y = hit.y;
-      if (this.state === 'walk') this.pickTarget();
-      else { // slide along the wall
-        this.x += -diry * spd * dt;
-        this.y += dirx * spd * dt;
+    // run over by any car
+    for (const c of G.cars) {
+      if (c.dead) continue;
+      if (carHitsPed(c, pd)) {
+        killPed(pd, 'car');
+        if (c.driver === 'player') {
+          addStars(pd.gang ? 1 : 2);
+          toast(pd.gang ? 'Gang member down' : 'Pedestrian down — the PD saw that');
+        }
+        break;
       }
     }
-    // stay in the map
-    this.x = clamp(this.x, 20, CFG.W - 20);
-    this.y = clamp(this.y, 20, CFG.H - 20);
+    if (pd.dead) continue;
+
+    // gang peds and mission peds shoot
+    if ((pd.state === 'gang') && pd.shootCd <= 0 && dPlayer < 300) {
+      gangShoot(pd);
+    }
   }
 }
 
-export class Peds {
-  constructor(seed) {
-    this.rng = new RNG(seed ^ 0x9ed0);
-  }
+function steer(pd, ang, speed, dt) {
+  pd.vx += (Math.cos(ang) * speed - pd.vx) * Math.min(1, dt * 6);
+  pd.vy += (Math.sin(ang) * speed - pd.vy) * Math.min(1, dt * 6);
+  pd.ang = ang;
+  pd.walkT += dt * 6;
+}
 
-  update(dt) {
-    const cam = G.cam;
-    let n = 0;
-    for (const p of G.peds) if (p.state !== 'dead') n++;
-    if (n < CFG.PEDS_N) {
-      for (let k = 0; k < 2 && n < CFG.PEDS_N; k++) {
-        const pt = G.world.randomSidewalkPoint(this.rng);
-        const d = dist(pt.x, pt.y, cam.x, cam.y);
-        if (d < 260 || d > 1100) continue;
-        G.peds.push(new Ped(pt.x, pt.y, this.rng));
-        n++;
-      }
-    }
-    for (let i = G.peds.length - 1; i >= 0; i--) {
-      const p = G.peds[i];
-      p.update(dt);
-      const d = dist(p.x, p.y, cam.x, cam.y);
-      if ((p.state === 'dead' && p.deadT > 22) || d > CFG.DESPAWN_R + 200) {
-        G.peds.splice(i, 1);
-      }
-    }
-  }
-
-  // everyone within r of (x,y) freaks out
-  panicAt(x, y, r = 320) {
-    for (const p of G.peds) {
-      if (p.state === 'dead') continue;
-      const d = dist(p.x, p.y, x, y);
-      if (d < r) p.panic(4.5, { x, y });
-    }
+function movePed(pd, dt) {
+  pd.x += pd.vx * dt; pd.y += pd.vy * dt;
+  const hit = resolveCircleSolids(pd, 9);
+  if (hit) { pd.ang += 2.4; pd.vx *= -0.3; pd.vy *= -0.3; }
+  if (isWater(pd.x, pd.y) && !onPiers(pd.x, pd.y)) {
+    // don't drown; turn back to the nearest land
+    pd.ang = angTo(pd.x, pd.y, pd.home.x, pd.home.y);
+    pd.x -= pd.vx * dt * 1.2; pd.y -= pd.vy * dt * 1.2;
   }
 }
 
-export function drawPed(c, p) {
-  c.save();
-  c.translate(p.x, p.y);
-  if (p.state === 'dead') {
-    c.rotate(p.h);
-    c.fillStyle = 'rgba(90,10,20,0.5)';
-    c.beginPath(); c.ellipse(4, 0, 12, 7, 0, 0, Math.PI * 2); c.fill();
-    c.fillStyle = p.shirt;
-    c.beginPath(); c.ellipse(0, 0, 9, 5, 0, 0, Math.PI * 2); c.fill();
-    c.fillStyle = p.skin;
-    c.beginPath(); c.arc(9, 0, 3.4, 0, Math.PI * 2); c.fill();
-    c.restore();
-    return;
-  }
-  c.rotate(p.h);
-  // shadow
-  c.fillStyle = 'rgba(0,0,0,0.35)';
-  c.beginPath(); c.ellipse(1, 2, 7, 5, 0, 0, Math.PI * 2); c.fill();
-  // legs
-  const step = Math.sin(p.walkT * 11) * 3.4;
-  c.fillStyle = p.pants;
-  c.fillRect(-2, -4 + step * 0.4, 5, 3);
-  c.fillRect(-2, 1 - step * 0.4, 5, 3);
-  // body
-  c.fillStyle = p.shirt;
-  c.beginPath(); c.ellipse(0, 0, 5.4, 4.2, 0, 0, Math.PI * 2); c.fill();
-  if (p.role === 'jogger') {
-    c.fillStyle = 'rgba(255,255,255,0.5)';
-    c.fillRect(-2, -1, 5, 2);
-  }
-  if (p.role === 'beach') {
-    c.fillStyle = 'rgba(0,0,0,0.25)';                 // swimwear stripe
-    c.fillRect(-1.5, -4.2, 2, 8.4);
-  }
-  // arms
-  c.fillStyle = p.skin;
-  const swing = p.state === 'flee' ? step : step * 0.5;
-  c.fillRect(2, -5 - swing * 0.3, 3.4, 2.4);
-  c.fillRect(2, 2.6 + swing * 0.3, 3.4, 2.4);
-  // head
-  c.beginPath(); c.arc(1.5, 0, 3.2, 0, Math.PI * 2); c.fill();
-  // hair / cap
-  c.fillStyle = p.role === 'jogger' ? '#e8e6e3' : '#1c1410';
-  c.beginPath(); c.arc(0.6, 0, 2.6, Math.PI * 0.4, Math.PI * 1.6); c.fill();
-  c.restore();
-  // rain gear: beach walkers and drunks carry umbrellas when it pours
-  if (G.weather && G.weather.rain > 0.35 && (p.role === 'walker' || p.role === 'drunk')) {
-    c.save();
-    c.translate(-3, -10);
-    c.fillStyle = p.role === 'drunk' ? '#8b5cf6' : '#ff8f5c';
-    c.beginPath(); c.ellipse(0, 0, 8, 3, 0, 0, Math.PI * 2); c.fill();
-    c.fillRect(0, 0, 1.4, 6);
-    c.restore();
-  }
-  // panic emote
-  if (p.emote > 0 && p.state === 'flee') {
-    c.font = 'bold 13px sans-serif';
-    c.textAlign = 'center';
-    c.fillStyle = `rgba(255,220,80,${Math.min(1, p.emote)})`;
-    c.fillText('!', p.x, p.y - 12);
-    c.textAlign = 'left';
+export function panic(pd) {
+  if (pd.state === 'gang' || pd.dead) return;
+  pd.state = 'flee';
+  pd.fear = 6;
+}
+
+export function panicArea(x, y, r) {
+  for (const pd of G.peds) {
+    if (!pd.dead && dist2(x, y, pd.x, pd.y) < r * r) panic(pd);
   }
 }
 
-function SWIRL() { return SWIM[(Math.random() * SWIM.length) | 0]; }
+export function damagePed(pd, n, src) {
+  if (pd.dead) return;
+  pd.hp -= n;
+  burst(pd.x, pd.y, 4, { spMin: 10, spMax: 60, lifeMin: 0.2, lifeMax: 0.5, rMin: 1, rMax: 3, col: '#a11a2a', kind: 'blood' });
+  if (pd.hp <= 0) killPed(pd, src);
+  else if (pd.state !== 'gang') panic(pd);
+}
+
+export function killPed(pd, src) {
+  if (pd.dead) return;
+  pd.dead = true;
+  pd.deadT = 0;
+  pd.vx = 0; pd.vy = 0;
+  burst(pd.x, pd.y, 10, { spMin: 20, spMax: 120, lifeMin: 0.3, lifeMax: 0.8, rMin: 1.5, rMax: 3.5, col: '#a11a2a', kind: 'blood' });
+  play('punch');
+  panicArea(pd.x, pd.y, 320);
+  G.stats.kills++;
+  if (src === 'player') addStars(pd.gang ? 1 : 2);
+}
+
+function updateGangPed(pd, dt, px, py) {
+  const d = dist(pd.x, pd.y, px, py);
+  if (d > 240) {
+    steer(pd, angTo(pd.x, pd.y, px, py), CFG.PED_FLEE_SPEED * 0.8, dt);
+  } else if (d < 120) {
+    steer(pd, angTo(px, py, pd.x, pd.y), CFG.PED_FLEE_SPEED * 0.6, dt); // keep distance
+  } else {
+    pd.vx *= 0.8; pd.vy *= 0.8;
+    pd.ang = angTo(pd.x, pd.y, px, py);
+  }
+  if (pd.shootCd <= 0 && d < 320) gangShoot(pd);
+}
+
+function gangShoot(pd) {
+  pd.shootCd = 1.4 + runRNG.next() * 0.9;
+  const p = G.player;
+  const px = p.car ? p.car.x : p.x, py = p.car ? p.car.y : p.y;
+  const a = angTo(pd.x, pd.y, px, py) + runRNG.range(-0.14, 0.14);
+  G.bullets.push({ x: pd.x + Math.cos(a) * 12, y: pd.y + Math.sin(a) * 12, vx: Math.cos(a) * 500, vy: Math.sin(a) * 500, life: 1.0, from: 'gang', dmg: 7 });
+  G.gunfireT = 3;
+  play('shot');
+}
+
+export function spawnGang(x, y, tag) {
+  const pd = makePed(x, y, { state: 'gang', gang: true, shirt: '#3aa14a' });
+  pd.missionTag = tag || null;
+  pd.home = { x, y };
+  G.peds.push(pd);
+  return pd;
+}

@@ -1,152 +1,30 @@
-// util.js — shared mutable game context (G), seeded RNG, math helpers.
-// G is populated by game.js; every other module only reads/writes fields on it.
-// Keeping it here avoids import cycles entirely.
+// VICE PALMS — small math / geometry helpers plus particle primitives.
 
-// ---------------------------------------------------------------- global ctx
-export const G = {
-  t: 0,                 // total sim time (s)
-  state: 'boot',        // boot | title | playing | paused | wasted | busted | passed | end
-  shot: null,           // staged screenshot scene name
-  seed: 7,
-  muted: false,
+import { G } from './state.js';
+import { runRNG } from './rng.js';
 
-  world: null,          // World (world.js)
-  player: null,         // Player (player.js)
-  police: null,         // Police (police.js)
-  missions: null,       // Missions (missions.js)
-
-  cars: [],             // every Car (traffic + police + parked + player's)
-  peds: [],             // Ped
-  cops: [],             // foot cops (Cop extends Ped-ish plain objects)
-  bullets: [],
-  parts: [],            // particles
-  skids: [],            // tire-mark decals
-  booms: [],            // explosion flashes {x,y,t,r}
-  spikes: [],           // VCPD spike strips {x,y,w,h,life}
-
-  weather: null,        // Weather (weather.js)
-  shops: null,          // Shops (shops.js)
-  helis: null,          // Helis (heli.js)
-  radioName: '',        // shown by the HUD after cycling stations
-  garageData: null,     // stored personal car {type, color}
-  photo: false,         // photo mode: hide the HUD for clean shots
-
-  cam: { x: 0, y: 0, z: 1, shake: 0, flash: 0 },
-  money: 350,
-
-  hud: {
-    sub: '', subT: 0,           // subtitle + remaining time
-    mission: '', missionT: 0,   // top-center mission text
-    passed: 0,                  // mission-passed overlay timer
-    passedName: '',
-    help: 0,                    // context help line timer
-    helpText: '',
-  },
-
-  w: 1280, h: 720,      // canvas logical size
-};
-
-export function say(text, dur = 3.6) {
-  G.hud.sub = text;
-  G.hud.subT = dur;
-}
-
-export function missionText(text, dur = 4.5) {
-  G.hud.mission = text;
-  G.hud.missionT = dur;
-}
-
-export function help(text, dur = 4) {
-  G.hud.helpText = text;
-  G.hud.help = dur;
-}
-
-// ------------------------------------------------------------------- seeded RNG
-// mulberry32 — small, fast, deterministic.
-export class RNG {
-  constructor(seed) {
-    this.s = seed >>> 0;
-    if (this.s === 0) this.s = 0x9e3779b9;
-  }
-  f() {                        // [0,1)
-    let t = this.s += 0x6D2B79F5;
-    t = Math.imul(t ^ t >>> 15, t | 1);
-    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  }
-  range(a, b) { return a + this.f() * (b - a); }
-  int(a, b) { return Math.floor(this.range(a, b + 1)); }
-  pick(arr) { return arr[Math.floor(this.f() * arr.length)]; }
-  chance(p) { return this.f() < p; }
-}
-
-// ------------------------------------------------------------------- math
-export const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
-export const lerp = (a, b, t) => a + (b - a) * t;
 export const TAU = Math.PI * 2;
 
-export function dist2(ax, ay, bx, by) {
-  const dx = bx - ax, dy = by - ay;
-  return dx * dx + dy * dy;
-}
-export function dist(ax, ay, bx, by) { return Math.sqrt(dist2(ax, ay, bx, by)); }
-
-export function angNorm(a) {
-  a %= TAU;
-  if (a > Math.PI) a -= TAU;
-  if (a < -Math.PI) a += TAU;
-  return a;
-}
-export function angLerp(a, b, t) {
-  return a + angNorm(b - a) * clamp(t, 0, 1);
+export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+export function lerp(a, b, t) { return a + (b - a) * t; }
+export function dist(ax, ay, bx, by) { return Math.hypot(bx - ax, by - ay); }
+export function dist2(ax, ay, bx, by) { const dx = bx - ax, dy = by - ay; return dx * dx + dy * dy; }
+export function angTo(ax, ay, bx, by) { return Math.atan2(by - ay, bx - ax); }
+export function normAng(a) { while (a > Math.PI) a -= TAU; while (a < -Math.PI) a += TAU; return a; }
+export function angLerp(a, b, t) { return a + normAng(b - a) * clamp(t, 0, 1); }
+export function moveToward(cur, target, maxStep) {
+  const d = target - cur;
+  return Math.abs(d) <= maxStep ? target : cur + Math.sign(d) * maxStep;
 }
 
-export function len2(x, y) { return Math.sqrt(x * x + y * y); }
-
-// deterministic hash for per-position stability (neon flicker, window lights)
-export function hash2(x, y) {
-  let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1);
-  h ^= h >>> 15; h = Math.imul(h, 0x85ebca6b); h ^= h >>> 13;
-  return (h >>> 0) / 4294967296;
+export function rectHit(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
 }
-
-// ------------------------------------------------------- collision primitives
-// resolve a circle against an axis-aligned rect; returns push-out vector or null
+export function ptInRect(px, py, r) { return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h; }
 export function circleRect(cx, cy, r, rx, ry, rw, rh) {
-  const nx = clamp(cx, rx, rx + rw);
-  const ny = clamp(cy, ry, ry + rh);
-  let dx = cx - nx, dy = cy - ny;
-  const d2 = dx * dx + dy * dy;
-  if (d2 > r * r) return null;
-  if (d2 > 1e-9) {
-    const d = Math.sqrt(d2);
-    return { x: (dx / d) * (r - d), y: (dy / d) * (r - d), d };
-  }
-  // center inside the rect — push out along the shallowest axis
-  const l = cx - rx, rt = rx + rw - cx, tp = cy - ry, bt = ry + rh - cy;
-  const m = Math.min(l, rt, tp, bt);
-  if (m === l) return { x: -(l + r), y: 0, d: l + r };
-  if (m === rt) return { x: rt + r, y: 0, d: rt + r };
-  if (m === tp) return { x: 0, y: -(tp + r), d: tp + r };
-  return { x: 0, y: bt + r, d: bt + r };
+  const nx = clamp(cx, rx, rx + rw), ny = clamp(cy, ry, ry + rh);
+  return dist2(cx, cy, nx, ny) < r * r;
 }
-
-export function rectsOverlap(a, b) {
-  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
-}
-
-export function pointInRect(px, py, r) {
-  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
-}
-
-// keep a hex string, dim it by factor k (0..1) — cheap night shading
-export function shade(hex, k) {
-  const n = parseInt(hex.slice(1), 16);
-  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-  const f = (v) => Math.round(clamp(v * k, 0, 255));
-  return `rgb(${f(r)},${f(g)},${f(b)})`;
-}
-
 export function fmtMoney(n) {
   const s = Math.max(0, Math.floor(n)).toString();
   let out = '';
@@ -156,9 +34,71 @@ export function fmtMoney(n) {
   }
   return '$' + out;
 }
-
-export function fmtTime(sec) {
-  sec = Math.max(0, Math.ceil(sec));
-  const m = Math.floor(sec / 60), s = sec % 60;
+export function fmtTime(t) {
+  t = Math.max(0, t);
+  const m = Math.floor(t / 60), s = Math.floor(t % 60);
   return m + ':' + (s < 10 ? '0' : '') + s;
+}
+export function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+// ---- particles -----------------------------------------------------------
+// G.parts entries: {x,y,vx,vy,life,maxLife,r,col,kind,extra}
+// kind: 'smoke' | 'fire' | 'spark' | 'blood' | 'glass' | 'ring' | 'shell'
+
+export function spawnPart(p) {
+  if (G.parts.length > 900) G.parts.shift();
+  p.maxLife = p.life;
+  G.parts.push(p);
+  return p;
+}
+
+export function burst(x, y, n, opts) {
+  for (let i = 0; i < n; i++) {
+    const a = runRNG.next() * TAU;
+    const sp = runRNG.range(opts.spMin ?? 20, opts.spMax ?? 120);
+    spawnPart({
+      x, y,
+      vx: Math.cos(a) * sp + (opts.vx || 0),
+      vy: Math.sin(a) * sp + (opts.vy || 0),
+      life: runRNG.range(opts.lifeMin ?? 0.3, opts.lifeMax ?? 0.8),
+      r: runRNG.range(opts.rMin ?? 1.5, opts.rMax ?? 4),
+      col: opts.col || '#ffcc66',
+      kind: opts.kind || 'spark',
+      drag: opts.drag,
+    });
+  }
+}
+
+export function smokePuff(x, y, vx, vy, col) {
+  spawnPart({ x, y, vx, vy, life: runRNG.range(0.7, 1.4), r: runRNG.range(4, 9), col: col || 'rgba(90,90,100,0.5)', kind: 'smoke' });
+}
+
+export function explosionAt(x, y, big) {
+  const R = big ? 130 : 100;
+  G.flashes.push({ x, y, r: R, t: 0.5, max: 0.5 });
+  G.shake = Math.min(22, G.shake + (big ? 18 : 12));
+  burst(x, y, big ? 46 : 30, { spMin: 60, spMax: 320, lifeMin: 0.25, lifeMax: 0.9, rMin: 2, rMax: 6, col: '#ffb347', kind: 'fire' });
+  burst(x, y, 16, { spMin: 30, spMax: 140, lifeMin: 0.8, lifeMax: 1.8, rMin: 6, rMax: 14, col: 'rgba(70,70,78,0.55)', kind: 'smoke' });
+  spawnPart({ x, y, vx: 0, vy: 0, life: 0.35, r: 8, col: '#fff1a8', kind: 'ring', extra: { rMax: R } });
+  G.sfx && G.sfx('boom');
+}
+
+export function updateParticles(dt) {
+  const parts = G.parts;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    p.life -= dt;
+    if (p.life <= 0) { parts.splice(i, 1); continue; }
+    if (p.kind === 'ring') { p.r += (p.extra.rMax - p.r) * Math.min(1, dt * 14); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    const drag = p.drag ?? (p.kind === 'smoke' ? 0.6 : 2.2);
+    const f = Math.max(0, 1 - drag * dt);
+    p.vx *= f; p.vy *= f;
+    if (p.kind === 'smoke') p.r += 10 * dt;
+  }
+  for (let i = G.flashes.length - 1; i >= 0; i--) {
+    G.flashes[i].t -= dt;
+    if (G.flashes[i].t <= 0) G.flashes.splice(i, 1);
+  }
+  if (G.shake > 0) G.shake = Math.max(0, G.shake - G.shake * dt * 5.5 - 2 * dt);
 }

@@ -1,53 +1,54 @@
-// input.js — keyboard + mouse, with one-frame "pressed" edges.
+// VICE PALMS — keyboard input with edge detection. Mouse reserved for menus.
 
-export const keys = new Set();     // currently held (KeyboardEvent.code)
-const pressed = new Set();         // pressed this frame
-export const mouse = { x: 640, y: 360, down: false, clicked: false };
-let anyKeyCb = null;
+import { G } from './state.js';
 
-export function onAnyKey(cb) { anyKeyCb = cb; }
+const down = new Set();
+const pressed = new Set();   // consumed once per frame
 
-export function initInput(canvas) {
+const MAP = {
+  up: ['ArrowUp', 'KeyW'],
+  down: ['ArrowDown', 'KeyS'],
+  left: ['ArrowLeft', 'KeyA'],
+  right: ['ArrowRight', 'KeyD'],
+  hand: ['Space'],
+  attack: ['Space', 'KeyJ'],
+  sprint: ['ShiftLeft', 'ShiftRight'],
+  enter: ['Enter', 'NumpadEnter', 'KeyF'],
+  pause: ['Escape', 'KeyP'],
+  horn: ['KeyH'],
+  switch: ['KeyQ'],
+};
+
+const ACTION_OF = new Map();
+for (const [act, keys] of Object.entries(MAP)) for (const k of keys) ACTION_OF.set(k, act);
+
+export function isDown(act) {
+  for (const k of MAP[act]) if (down.has(k)) return true;
+  return false;
+}
+export function wasPressed(act) { return pressed.has(act); }
+export function consumeAll() { pressed.clear(); }
+
+function keyOf(e) { return e.code; }
+
+export function installInput() {
   window.addEventListener('keydown', (e) => {
+    const act = ACTION_OF.get(e.code);
+    if (act && ['up', 'down', 'left', 'right', 'hand', 'attack', 'sprint', 'enter', 'pause', 'horn', 'switch'].includes(act)) e.preventDefault();
     if (e.repeat) return;
-    keys.add(e.code);
-    pressed.add(e.code);
-    if (anyKeyCb) anyKeyCb(e.code);
-    // stop the page from scrolling on arrows / space
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+    down.add(e.code);
+    pressed.add(act);
+    G.userGesture = true;
   });
-  window.addEventListener('keyup', (e) => keys.delete(e.code));
-  window.addEventListener('blur', () => { keys.clear(); mouse.down = false; });
-
-  const toLocal = (e) => {
-    const r = canvas.getBoundingClientRect();
-    mouse.x = (e.clientX - r.left) * (canvas.width / r.width);
-    mouse.y = (e.clientY - r.top) * (canvas.height / r.height);
-  };
-  canvas.addEventListener('mousemove', toLocal);
-  canvas.addEventListener('mousedown', (e) => {
-    toLocal(e);
-    if (e.button === 0) { mouse.down = true; mouse.clicked = true; }
-  });
-  window.addEventListener('mouseup', (e) => { if (e.button === 0) mouse.down = false; });
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  window.addEventListener('keyup', (e) => { down.delete(e.code); });
+  window.addEventListener('blur', () => { down.clear(); });
 }
 
-export function key(code) { return keys.has(code); }
-export function hit(code) { return pressed.has(code); }
-
-// axes for the player on foot: -1..1
-export function moveAxis() {
-  let x = 0, y = 0;
-  if (key('KeyW') || key('ArrowUp')) y -= 1;
-  if (key('KeyS') || key('ArrowDown')) y += 1;
-  if (key('KeyA') || key('ArrowLeft')) x -= 1;
-  if (key('KeyD') || key('ArrowRight')) x += 1;
-  return { x, y };
+// fake-input channel used by shots.js to stage scenes deterministically
+export function injectAction(act) { pressed.add(act); }
+export function injectHold(act, on) {
+  const k = MAP[act] && MAP[act][0];
+  if (!k) return;
+  if (on) down.add(k); else down.delete(k);
 }
-
-// called at the end of every sim frame
-export function endFrame() {
-  pressed.clear();
-  mouse.clicked = false;
-}
+export function clearInput() { down.clear(); pressed.clear(); }
