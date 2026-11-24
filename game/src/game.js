@@ -356,7 +356,7 @@ export class Game {
         this.updatePickups(dt);
         // missions
         this.missions.update(dt, S);
-        // police
+        this.missions.tryGarage(S);        // police
         this.police.update(dt, S);
         // car-vs-car
         this.carPairs();

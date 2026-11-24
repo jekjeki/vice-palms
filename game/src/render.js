@@ -445,6 +445,21 @@ export class Renderer {
     if (b.h >= 6) {
       g.fillStyle = '#323848';
       g.fillRect(b.x0 + bw * 0.3, b.y0 + bh * 0.3, bw * 0.2, bh * 0.2);
+      // rooftop clutter: AC units, water tower, vents
+      const rt = ((b.x0 * 7 + b.y0 * 13) % 3);
+      g.fillStyle = '#3a4052';
+      if (rt === 0) {
+        g.fillRect(b.x0 + bw * 0.15, b.y0 + bh * 0.6, 16, 12);
+        g.fillRect(b.x0 + bw * 0.6, b.y0 + bh * 0.15, 12, 16);
+      } else if (rt === 1) {
+        g.beginPath();
+        g.arc(b.x0 + bw * 0.7, b.y0 + bh * 0.7, 14, 0, TAU);
+        g.fill();
+        g.fillStyle = '#2c3140';
+        g.fillRect(b.x0 + bw * 0.7 - 3, b.y0 + bh * 0.7 - 26, 6, 26);
+      } else {
+        for (let v = 0; v < 3; v++) g.fillRect(b.x0 + 20 + v * 18, b.y0 + bh * 0.5, 7, 14);
+      }
       // antenna
       g.strokeStyle = '#5a6070';
       g.lineWidth = 2;
@@ -601,6 +616,20 @@ export class Renderer {
     if (car.type === 'bus') {
       g.fillStyle = '#101820';
       for (let i = -2; i <= 2; i++) g.fillRect(i * 12 - 2, -W / 2 + 3, 4, W - 6);
+    }
+    if (car.type === 'bike') {
+      // rider hunched over the tank
+      g.fillStyle = '#20202a';
+      g.beginPath();
+      g.ellipse(-2, 0, 9, 5.5, 0, 0, TAU);
+      g.fill();
+      g.fillStyle = '#c8a080';
+      g.beginPath();
+      g.arc(6, 0, 3.4, 0, TAU);
+      g.fill();
+      g.fillStyle = '#0a0a0c';
+      g.fillRect(14, -W / 2 - 1, 6, 2.4);
+      g.fillRect(14, W / 2 - 1.4, 6, 2.4);
     }
     if (car.type === 'limo') {
       g.fillStyle = '#0e1620';
@@ -1005,6 +1034,26 @@ export class Renderer {
     grd.addColorStop(1, 'rgba(0,0,10,0.5)');
     g.fillStyle = grd;
     g.fillRect(0, 0, W, H);
+    this.drawDamageDir();
+  }
+
+  // red arcs pointing at whoever hurt you last
+  drawDamageDir() {
+    const p = ctx.player;
+    if (!p || !p.lastHit || p.lastHit.t <= 0) return;
+    const g = this.g;
+    const src = p.lastHit;
+    const ang = Math.atan2(src.y - p.y, src.x - p.x);
+    const a = Math.min(1, src.t * 2) * 0.7;
+    g.save();
+    g.translate(this.canvas.width / 2, this.canvas.height / 2);
+    g.rotate(ang);
+    g.strokeStyle = `rgba(255,60,70,${a})`;
+    g.lineWidth = 5;
+    g.beginPath();
+    g.arc(0, 0, 120, -0.45, 0.45);
+    g.stroke();
+    g.restore();
   }
 }
 

@@ -57,6 +57,8 @@ window.__game = game;
 
 let last = performance.now();
 let ready = false;
+let fpsAcc = 0, fpsN = 0, fpsShown = 0;
+let showFps = false;
 
 function loop(now) {
   try {
@@ -65,6 +67,25 @@ function loop(now) {
     if (dt > CFG.dtMax) dt = CFG.dtMax;
     if (dt < 0) dt = 0;
     game.frame(dt);
+    // F3 fps counter
+    if (game.input.hit('F3')) {
+      showFps = !showFps;
+      const g2 = canvas.getContext('2d');
+      if (!showFps) {
+        g2.clearRect(0, 0, 90, 26);
+      }
+    }
+    fpsAcc += dt; fpsN++;
+    if (fpsAcc >= 0.5) { fpsShown = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; }
+    if (showFps) {
+      const g2 = canvas.getContext('2d');
+      g2.fillStyle = 'rgba(0,0,0,0.55)';
+      g2.fillRect(0, 0, 84, 24);
+      g2.fillStyle = fpsShown >= 55 ? '#7ae85a' : fpsShown >= 35 ? '#f5c04a' : '#ff5560';
+      g2.font = 'bold 14px monospace';
+      g2.textAlign = 'left';
+      g2.fillText(fpsShown + ' fps', 10, 17);
+    }
   } catch (e) {
     showError('LOOP ERROR: ' + e.message + '\n' + (e.stack || '').split('\n').slice(0, 4).join('\n'));
     // don't spam: stop the loop on hard failure

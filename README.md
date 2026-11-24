@@ -57,6 +57,7 @@ network).
 | M | mute |
 | ESC | pause (save / delete save) |
 | F1 | controls overlay |
+| F3 | fps counter |
 | GAMEPAD | stick move · A handbrake · X jack · Y mute · start pause |
 
 ## Run

@@ -189,6 +189,7 @@ export class Missions {
     this.failMsg = 0;
     this.retryable = true;
     this.rewardFx = 0;
+    this.garageCd = 0;
     this.missionVehicles = [];
   }
 
@@ -386,6 +387,21 @@ export class Missions {
     this.stage = 0;
     this.stageTime = -1;
     // despawn stage spawns lazily (gang members fade via cull)
+  }
+
+  // -------------------------------------------------------------- garage --
+  // The lockup doubles as a save-house: pull the marker to heal + save.
+  tryGarage(S) {
+    if (this.garageCd > 0) this.garageCd -= 0.016;
+    const p = S.player;
+    if (p.inCar) return;
+    if (dist(p.x, p.y, ctx.world.spawns.lockup.x, ctx.world.spawns.lockup.y) > 46) return;
+    if (this.garageCd > 0) return;
+    this.garageCd = 4;
+    p.health = CFG.playerMaxHealth;
+    if (ctx.sfx) ctx.sfx('pickup', p.x, p.y);
+    ctx.subtitle('Rico\'s lockup: patched up and saved.', 2.6);
+    ctx.game.saveGame();
   }
 
   // called by game.js when the player dies/busted during a mission

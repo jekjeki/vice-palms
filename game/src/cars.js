@@ -42,12 +42,16 @@ export const TYPES = {
     name: 'Stretch', w: 23, l: 68, accel: 200, max: 310, grip: 5.6, turn: 1.95, hp: 140,
     colors: ['#101014', '#f0f0f0'],
   },
+  bike: {
+    name: 'PCJ', w: 10, l: 34, accel: 360, max: 545, grip: 9.2, turn: 3.6, hp: 55,
+    colors: ['#c8303a', '#30a8d8', '#e8e8e8', '#303038'],
+  },
 };
 
 export const TYPE_IDS = Object.keys(TYPES);
 
-// civilian-ish mix for traffic
-export const CIV_TYPES = ['sedan', 'sedan', 'sedan', 'taxi', 'van', 'pickup', 'sports', 'bus', 'limo'];
+// civilian-ish mix for traffic (bikes are rare and fast)
+export const CIV_TYPES = ['sedan', 'sedan', 'sedan', 'taxi', 'van', 'pickup', 'sports', 'bus', 'limo', 'bike'];
 
 export function makeCar(typeId, x, y, ang) {
   return new Car(typeId, x, y, ang);

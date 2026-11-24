@@ -35,7 +35,7 @@ export class FootCop {
       this.shootT = 0.9 + Math.random() * 0.4;
       if (ctx.sfx) ctx.sfx('shot', this.x, this.y);
       ctx.game.muzzle(this.x + Math.cos(this.dir) * 14, this.y + Math.sin(this.dir) * 14, this.dir);
-      if (Math.random() < 0.55) p.damage(8, 'cop');
+      if (Math.random() < 0.55) p.damage(8, { x: this.x, y: this.y, kind: 'cop' });
     }
   }
 
@@ -87,7 +87,7 @@ export class PoliceHeli {
       const a = Math.atan2(p.y - this.y, p.x - this.x) + (Math.random() - 0.5) * 0.12;
       if (ctx.sfx) ctx.sfx('shot', this.x, this.y);
       ctx.game.muzzle(this.x, this.y, a);
-      if (Math.random() < 0.42) p.damage(6, 'heli');
+      if (Math.random() < 0.42) p.damage(6, { x: this.x, y: this.y, kind: 'heli' });
     }
   }
 }

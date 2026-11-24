@@ -46,7 +46,7 @@ export class Ped {
         if (this.shootT <= 0 && dPlayer < 380) {
           this.shootT = 1.05 + Math.random() * 0.5;
           if (ctx.sfx) ctx.sfx('shot', this.x, this.y);
-          if (Math.random() < 0.62) p.damage(7, 'gang');
+          if (Math.random() < 0.62) p.damage(7, { x: this.x, y: this.y, kind: 'gang' });
         }
       } else this.state = 'walk';
     } else if (this.state === 'flee') {
@@ -133,7 +133,24 @@ export class Peds {
       this.spawnT = 0.7;
       if (this.count() < CFG.pedTarget) this.spawnNear(cam);
     }
+    // separation: keep pedestrians from stacking on each other
     const list = ctx.pedsList;
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      if (a.dead) continue;
+      for (let j = i + 1; j < list.length; j++) {
+        const b = list[j];
+        if (b.dead) continue;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > 100 || d2 < 1e-4) continue;      // closer than 10u only
+        const d = Math.sqrt(d2);
+        const push = (10 - d) * 0.5;
+        const nx = dx / d, ny = dy / d;
+        if (!a.dead) { a.x -= nx * push; a.y -= ny * push; }
+        b.x += nx * push; b.y += ny * push;
+      }
+    }
     for (let i = list.length - 1; i >= 0; i--) {
       const p = list[i];
       p.update(dt, S);

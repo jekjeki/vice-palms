@@ -38,6 +38,12 @@ export class Player {
       this.inCar.impact(d * 0.9);
       return;
     }
+    // remember where the pain came from (damage-direction HUD arc)
+    if (src && src !== 'explosion' && typeof src === 'object') {
+      this.lastHit = { x: src.x, y: src.y, t: 1.4 };
+    } else {
+      this.lastHit = { x: this.x + Math.cos(this.angle + Math.PI) * 100, y: this.y + Math.sin(this.angle + Math.PI) * 100, t: 1.0 };
+    }
     if (this.armor > 0) {
       const abs = Math.min(this.armor, d * 0.65);
       this.armor -= abs;
@@ -54,6 +60,7 @@ export class Player {
 
   update(dt, S, input) {
     this.hurtT = Math.max(0, this.hurtT - dt);
+    if (this.lastHit) this.lastHit.t -= dt;
     this.shootCd = Math.max(0, this.shootCd - dt);
     this.meleeCd = Math.max(0, this.meleeCd - dt);
     this.jackT = Math.max(0, this.jackT - dt);
