@@ -1,155 +1,184 @@
-// input.js — keyboard + mouse. All handlers no-op safe before canvas focus.
+// Vice Palms — keyboard + mouse + gamepad input with per-frame edge detection.
+// In staged-shot mode `enabled` is false and every query returns false, so the
+// recorder's screenshots are deterministic.
+
+import { KEYS } from './config.js';
+
+const GAME_CODES = new Set([
+  ...KEYS.up, ...KEYS.down, ...KEYS.left, ...KEYS.right, ...KEYS.sprint,
+  ...KEYS.enter, ...KEYS.shoot, ...KEYS.handbrake, ...KEYS.weapon,
+  ...KEYS.pause, ...KEYS.confirm, ...KEYS.mute, ...KEYS.radio, ...KEYS.map, 'Tab',
+]);
+
+// Standard-gamepad button indices.
+const GP = {
+  A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7,
+  BACK: 8, START: 9, L3: 10, R3: 11, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15,
+};
 
 export class Input {
   constructor(canvas) {
     this.canvas = canvas;
-    this.keys = Object.create(null);      // held, by KeyboardEvent.code
-    this.hits = Object.create(null);      // edge triggers, cleared each frame
-    this.mouse = { x: 0, y: 0, wx: 0, wy: 0, down: false, rdown: false };
-    this.anyHit = false;                  // any key/mouse this frame
-    this._lastAny = false;
+    this.enabled = true;
+    this.keys = new Set();
+    this.pressedSet = new Set();
+    this.anyPressedFlag = false;
+    this.mouse = { x: 640, y: 360, down: false, clicked: false };
+    this.onAny = null;
+    this.pad = null;          // last polled gamepad
+    this.gpPrev = new Set();  // buttons held last frame (edge detection)
+    this.gpPressed = new Set();
+    this.gpVibeT = 0;
 
-    const kd = (e) => {
-      if (e.repeat) {
-        // still mark held
-        this.keys[e.code] = true;
-        return;
-      }
-      this.keys[e.code] = true;
-      this.hits[e.code] = true;
-      this.anyHit = true;
-      if (PREVENT.has(e.code)) e.preventDefault();
-      if (this.onGesture) this.onGesture();
-    };
-    const ku = (e) => { this.keys[e.code] = false; };
-    const blur = () => { for (const k in this.keys) this.keys[k] = false; this.mouse.down = false; };
-
-    window.addEventListener('keydown', kd);
-    window.addEventListener('keyup', ku);
-    window.addEventListener('blur', blur);
-
-    const toLocal = (e) => {
-      const r = canvas.getBoundingClientRect();
-      this.mouse.x = (e.clientX - r.left) * (canvas.width / r.width);
-      this.mouse.y = (e.clientY - r.top) * (canvas.height / r.height);
-    };
-    canvas.addEventListener('mousemove', (e) => { toLocal(e); });
-    canvas.addEventListener('mousedown', (e) => {
-      toLocal(e);
-      if (e.button === 0) { this.mouse.down = true; this.hits['MouseL'] = true; }
-      if (e.button === 2) { this.mouse.rdown = true; this.hits['MouseR'] = true; }
-      this.anyHit = true;
-      if (this.onGesture) this.onGesture();
-      e.preventDefault();
+    window.addEventListener('keydown', (e) => {
+      if (GAME_CODES.has(e.code)) e.preventDefault();
+      if (e.repeat) return;
+      if (!this.enabled) return;
+      this.keys.add(e.code);
+      this.pressedSet.add(e.code);
+      this.anyPressedFlag = true;
+      if (this.onAny) this.onAny();
     });
-    canvas.addEventListener('mouseup', (e) => {
+    window.addEventListener('keyup', (e) => {
+      this.keys.delete(e.code);
+    });
+    window.addEventListener('blur', () => {
+      this.keys.clear();
+      this.mouse.down = false;
+    });
+    canvas.addEventListener('mousemove', (e) => {
+      const r = canvas.getBoundingClientRect();
+      this.mouse.x = ((e.clientX - r.left) / r.width) * canvas.width;
+      this.mouse.y = ((e.clientY - r.top) / r.height) * canvas.height;
+    });
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 0 && this.enabled) {
+        this.mouse.down = true;
+        this.mouse.clicked = true;
+        if (this.onAny) this.onAny();
+      }
+    });
+    window.addEventListener('mouseup', (e) => {
       if (e.button === 0) this.mouse.down = false;
-      if (e.button === 2) this.mouse.rdown = false;
     });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-
-    // touch acts as a virtual joystick-ish: move toward tap, tap = action
-    canvas.addEventListener('touchstart', (e) => {
-      const t = e.touches[0];
-      const r = canvas.getBoundingClientRect();
-      this.mouse.x = (t.clientX - r.left) * (canvas.width / r.width);
-      this.mouse.y = (t.clientY - r.top) * (canvas.height / r.height);
-      this.mouse.down = true;
-      this.hits['MouseL'] = true;
-      this.keys['Touch'] = true;
-      this.anyHit = true;
-      if (this.onGesture) this.onGesture();
-      e.preventDefault();
-    }, { passive: false });
-    canvas.addEventListener('touchmove', (e) => {
-      const t = e.touches[0];
-      const r = canvas.getBoundingClientRect();
-      this.mouse.x = (t.clientX - r.left) * (canvas.width / r.width);
-      this.mouse.y = (t.clientY - r.top) * (canvas.height / r.height);
-      e.preventDefault();
-    }, { passive: false });
-    canvas.addEventListener('touchend', (e) => {
-      this.mouse.down = false;
-      this.keys['Touch'] = false;
-      e.preventDefault();
-    }, { passive: false });
+    window.addEventListener('gamepadconnected', (e) => {
+      this.padIndex = e.gamepad.index;
+    });
   }
 
-  // held?
-  key(code) { return !!this.keys[code]; }
+  /** Poll the first connected gamepad and merge it with key state. */
+  pollPad(dt) {
+    this.gpPressed.clear();
+    try {
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      const gp = pads && (pads[this.padIndex] || pads[0]);
+      this.pad = gp || null;
+      if (!gp || !this.enabled) return;
+      for (let i = 0; i < gp.buttons.length; i++) {
+        const down = gp.buttons[i] && (gp.buttons[i].pressed || gp.buttons[i].value > 0.5);
+        if (down && !this.gpPrev.has(i)) {
+          this.gpPressed.add(i);
+          this.anyPressedFlag = true;
+          if (this.onAny) this.onAny();
+        }
+        if (down) this.gpPrev.add(i);
+        else this.gpPrev.delete(i);
+      }
+      if (this.gpVibeT > 0) {
+        this.gpVibeT -= dt;
+        this.vibrate(Math.min(1, this.gpVibeT), 0.4);
+      }
+    } catch { /* no gamepad support */ }
+  }
 
-  // edge-triggered since last endFrame()
-  hit(code) { return !!this.hits[code]; }
+  /** Rumble if the pad supports it. */
+  vibrate(strength, ms) {
+    try {
+      const a = this.pad && this.pad.vibrationActuator;
+      if (a && a.playEffect) {
+        a.playEffect('dual-rumble', {
+          startDelay: 0, duration: ms,
+          weakMagnitude: strength * 0.6, strongMagnitude: strength,
+        });
+      }
+    } catch { /* ignore */ }
+  }
 
-  // Called once per frame BEFORE systems read edges (wires gamepad → keys).
-  pollGamepad() {
-    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-    const pad = pads && (pads[0] || pads[1]);
-    this.pad = pad || null;
-    if (!pad) return;
-    const dz = (v) => Math.abs(v) < 0.22 ? 0 : v;
-    const lx = dz(pad.axes[0] || 0), ly = dz(pad.axes[1] || 0);
-    // synthesize key states (do not clobber real keys)
-    this.padState = this.padState || {};
-    const set = (code, on, edge) => {
-      if (on && !this.padState[code]) { this.keys[code] = true; if (edge) this.hits[code] = true; }
-      else if (!on && this.padState[code]) { this.keys[code] = false; }
-      this.padState[code] = on;
-    };
-    const rt = pad.buttons[7] ? pad.buttons[7].value : 0;
-    const lt = pad.buttons[6] ? pad.buttons[6].value : 0;
-    set('padRight', lx > 0.4 || rt > 0.3 && false, false);
-    // movement mapped to the same codes the KEYMAP expects
-    if (this._gpMode === 'foot') {
-      set('KeyD', lx > 0.35, false);
-      set('KeyA', lx < -0.35, false);
-      set('KeyW', ly < -0.35 || rt > 0.25, false);
-      set('KeyS', ly > 0.35, false);
-    } else {
-      set('KeyD', lx > 0.35 || rt > 0.25, false);
-      set('KeyA', lx < -0.35 || lt > 0.25, false);
-      set('KeyW', ly < -0.35, false);
-      set('KeyS', ly > 0.35, false);
+  /** Gamepad-held state for a logical action. */
+  gpDown(action) {
+    if (!this.pad) return false;
+    const b = this.pad.buttons;
+    switch (action) {
+      case 'up': return b[GP.UP] && b[GP.UP].pressed;
+      case 'down': return b[GP.DOWN] && b[GP.DOWN].pressed;
+      case 'left': return b[GP.LEFT] && b[GP.LEFT].pressed;
+      case 'right': return b[GP.RIGHT] && b[GP.RIGHT].pressed;
+      case 'sprint': return b[GP.L3] && b[GP.L3].pressed;
+      case 'enter': return b[GP.A] && b[GP.A].pressed;
+      case 'shoot': return (b[GP.X] && b[GP.X].pressed) || (b[GP.RT] && b[GP.RT].value > 0.5);
+      case 'handbrake': return b[GP.B] && b[GP.B].pressed;
+      case 'pause': return b[GP.START] && b[GP.START].pressed;
+      default: return false;
     }
-    set('Space', !!pad.buttons[0] && pad.buttons[0].pressed, false);
-    set('KeyF', !!pad.buttons[2] && pad.buttons[2].pressed, true);
-    set('ShiftLeft', !!pad.buttons[10] && pad.buttons[10].pressed, false);
-    set('Escape', !!pad.buttons[9] && pad.buttons[9].pressed, true);
-    set('Enter', !!pad.buttons[0] && pad.buttons[0].pressed, true);
-    set('KeyM', !!pad.buttons[3] && pad.buttons[3].pressed, true);
   }
 
-  // Called once per frame AFTER all systems read edges.
+  /** Left stick vector, deadzoned. */
+  gpStick() {
+    if (!this.pad) return null;
+    const x = this.pad.axes[0] || 0;
+    const y = this.pad.axes[1] || 0;
+    const dead = 0.22;
+    if (Math.abs(x) < dead && Math.abs(y) < dead) return { x: 0, y: 0 };
+    return { x, y };
+  }
+
+  /** True while any of the given codes (or pad action) is held. */
+  down(codes) {
+    if (!this.enabled) return false;
+    for (const c of codes) if (this.keys.has(c)) return true;
+    return false;
+  }
+
+  /** True only on the frame the key went down (keys or pad edge). */
+  pressed(codes) {
+    if (!this.enabled) return false;
+    for (const c of codes) if (this.pressedSet.has(c)) return true;
+    return this.gpPressed.size > 0 && this.gpActionPressed(codes);
+  }
+
+  gpActionPressed(codes) {
+    // map key codes to the pad edge set where a sensible analog exists
+    if (codes === KEYS.enter) return this.gpPressed.has(GP.A);
+    if (codes === KEYS.up) return this.gpPressed.has(GP.UP);
+    if (codes === KEYS.down) return this.gpPressed.has(GP.DOWN);
+    if (codes === KEYS.pause) return this.gpPressed.has(GP.START);
+    if (codes === KEYS.weapon) return this.gpPressed.has(GP.Y);
+    return false;
+  }
+
+  /** True on the frame any key/click/pad input happened (audio unlock). */
+  anyPressed() {
+    return this.anyPressedFlag || this.mouse.clicked;
+  }
+
+  /** Move axes in [-1, 1], y down — keys + left stick merged. */
+  axis() {
+    let x = 0, y = 0;
+    if (this.down(KEYS.left) || this.gpDown('left')) x -= 1;
+    if (this.down(KEYS.right) || this.gpDown('right')) x += 1;
+    if (this.down(KEYS.up) || this.gpDown('up')) y -= 1;
+    if (this.down(KEYS.down) || this.gpDown('down')) y += 1;
+    const st = this.gpStick();
+    if (st && (st.x || st.y)) { x = st.x; y = st.y; }
+    if (x && y && Math.abs(x) > 0.5 && Math.abs(y) > 0.5) { x *= 0.8; y *= 0.8; }
+    return { x, y };
+  }
+
+  /** Called at the very end of each frame. */
   endFrame() {
-    for (const k in this.hits) delete this.hits[k];
-    this.anyHit = false;
-  }
-
-  // world-space mouse using the camera transform (set by renderer each frame)
-  updateWorldMouse(cam) {
-    this.mouse.wx = cam.x + (this.mouse.x - CFG_VIEW_W / 2) / cam.zoom;
-    this.mouse.wy = cam.y + (this.mouse.y - CFG_VIEW_H / 2) / cam.zoom;
+    this.pressedSet.clear();
+    this.mouse.clicked = false;
+    this.anyPressedFlag = false;
   }
 }
-
-// avoid importing config here to keep input dependency-free; the view size is
-// a fixed compile-time constant of the game (see CFG.viewW/viewH).
-const CFG_VIEW_W = 1280;
-const CFG_VIEW_H = 720;
-
-const PREVENT = new Set([
-  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-  'Space', 'Tab', 'Enter', 'Escape',
-  'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyE', 'KeyM',
-]);
-
-export const KEYMAP = {
-  up: ['KeyW', 'ArrowUp'],
-  down: ['KeyS', 'ArrowDown'],
-  left: ['KeyA', 'ArrowLeft'],
-  right: ['KeyD', 'ArrowRight'],
-  sprint: ['ShiftLeft', 'ShiftRight'],
-  horn: ['KeyH'],
-  mute: ['KeyM'],
-  pause: ['Escape', 'KeyP'],
-};

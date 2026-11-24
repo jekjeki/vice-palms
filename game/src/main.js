@@ -1,105 +1,73 @@
-// main.js — boot: canvas, error surface, game loop.
+// Vice Palms — boot + main loop.
 
-import { CFG, ctx } from './config.js';
-import { CFG as _C } from './config.js';
 import { Game } from './game.js';
+import { Render } from './render.js';
+import { drawHUD } from './hud.js';
+import { drawScreens } from './screens.js';
+import { setupShot, SHOT_SIM } from './shots.js';
+import { VIEW_W, VIEW_H } from './config.js';
 
-const canvas = document.getElementById('game');
-canvas.width = CFG.viewW;
-canvas.height = CFG.viewH;
+const canvas = document.getElementById('c');
+const params = new URLSearchParams(location.search);
 
-// surface boot errors on-screen (headless debugging + screenshot sanity)
-function showError(msg) {
-  const g = canvas.getContext('2d');
-  g.fillStyle = 'rgba(10,0,10,0.85)';
-  g.fillRect(0, 0, canvas.width, canvas.height);
-  g.fillStyle = '#ff7080';
-  g.font = 'bold 22px monospace';
-  g.textAlign = 'left';
-  const lines = String(msg).split('\n').slice(0, 12);
-  let y = 60;
-  for (const l of lines) { g.fillText(l, 30, y); y += 26; }
+const opts = {
+  seed: params.has('seed') ? (Number(params.get('seed')) || 7) : 7,
+  shot: params.get('shot') || null,
+};
+
+const game = new Game(canvas, opts);
+const render = new Render(canvas);
+game.setRender(render);
+
+// mute before anything can make a sound
+let startMuted = params.get('mute') === '1';
+try {
+  if (localStorage.getItem('vicepalms.mute') === '1') startMuted = true;
+  if (params.get('mute') === '0') startMuted = false;
+} catch { /* ignore */ }
+if (startMuted) game.audio.setMuted(true);
+
+// staged screenshot mode: deterministic, input disabled
+if (opts.shot) {
+  game.input.enabled = false;
+  setupShot(game, opts.shot);
 }
 
-window.addEventListener('error', (e) => {
-  showError('ERROR: ' + e.message + '\n' + (e.filename || '') + ':' + (e.lineno || 0));
-});
-window.addEventListener('unhandledrejection', (e) => {
-  showError('PROMISE REJECTION: ' + (e.reason && e.reason.message || e.reason));
-});
-
-// keep crisp on HiDPI
-(function fit() {
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  canvas.style.width = '100%';
-  canvas.style.height = '100%';
-  const w = CFG.viewW, h = CFG.viewH;
-  const aspect = w / h;
-  const vw = window.innerWidth, vh = window.innerHeight;
-  let cw = vw, ch = vw / aspect;
-  if (ch > vh) { ch = vh; cw = vh * aspect; }
-  canvas.style.width = cw + 'px';
-  canvas.style.height = ch + 'px';
-  canvas.style.position = 'absolute';
-  canvas.style.left = (vw - cw) / 2 + 'px';
-  canvas.style.top = (vh - ch) / 2 + 'px';
-  canvas.width = Math.round(w * dpr);
-  canvas.height = Math.round(h * dpr);
-})();
-// BUT: the renderer reads canvas.width for the view size — reset to logical size
-// and scale via CSS only, keeping game math in 1280x720 space.
-canvas.width = CFG.viewW;
-canvas.height = CFG.viewH;
-
-const game = new Game(canvas);
-ctx.game = game;
-window.__game = game;
+// audio unlocks on the first gesture
+game.input.onAny = () => game.audio.ensure();
+game.audio.music(true);
 
 let last = performance.now();
-let ready = false;
-let fpsAcc = 0, fpsN = 0, fpsShown = 0;
-let showFps = false;
+let acc = 0;
+let frames = 0;
 
 function loop(now) {
-  try {
-    let dt = (now - last) / 1000;
-    last = now;
-    if (dt > CFG.dtMax) dt = CFG.dtMax;
-    if (dt < 0) dt = 0;
-    game.frame(dt);
-    // F3 fps counter
-    if (game.input.hit('F3')) {
-      showFps = !showFps;
-      const g2 = canvas.getContext('2d');
-      if (!showFps) {
-        g2.clearRect(0, 0, 90, 26);
-      }
-    }
-    fpsAcc += dt; fpsN++;
-    if (fpsAcc >= 0.5) { fpsShown = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; }
-    if (showFps) {
-      const g2 = canvas.getContext('2d');
-      g2.fillStyle = 'rgba(0,0,0,0.55)';
-      g2.fillRect(0, 0, 84, 24);
-      g2.fillStyle = fpsShown >= 55 ? '#7ae85a' : fpsShown >= 35 ? '#f5c04a' : '#ff5560';
-      g2.font = 'bold 14px monospace';
-      g2.textAlign = 'left';
-      g2.fillText(fpsShown + ' fps', 10, 17);
-    }
-  } catch (e) {
-    showError('LOOP ERROR: ' + e.message + '\n' + (e.stack || '').split('\n').slice(0, 4).join('\n'));
-    // don't spam: stop the loop on hard failure
-    return;
+  const real = Math.min(0.6, (now - last) / 1000);
+  last = now;
+
+  // fixed-step catch-up: sim time tracks wall time even in throttled tabs
+  acc += real;
+  let steps = 0;
+  while (acc > 0.0005 && steps < 14) {
+    const dt = Math.min(0.05, acc);
+    game.update(dt);
+    acc -= dt;
+    steps++;
   }
-  if (!ready) {
-    ready = true;
-    window.__ready = true;
+  if (acc > 0.25) acc = 0; // drop the backlog instead of spiraling
+
+  render.draw(game, real);
+  drawHUD(game, render);
+  drawScreens(game, render);
+
+  frames++;
+  if (opts.shot && (game.time >= (SHOT_SIM[opts.shot] || 1.2))) {
+    window.__shotReady = true;
   }
   requestAnimationFrame(loop);
 }
-
 requestAnimationFrame(loop);
 
-document.addEventListener('visibilitychange', () => {
-  last = performance.now();
-});
+// exposed for the play-test harness
+window.game = game;
+window.VIEW = { W: VIEW_W, H: VIEW_H };

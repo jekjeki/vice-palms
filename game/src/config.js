@@ -1,127 +1,182 @@
-// config.js — Vice Palms: global tuning constants + shared context holder.
-// All modules import CFG for numbers and ctx for cross-references that the
-// Game object wires up at construction time.
+// Vice Palms — global configuration and shared constants.
+// All world coordinates live in a 6400x6400 px night city; roads form a 400 px grid.
 
-export const VERSION = '3.0.0';
+export const VIEW_W = 1280;
+export const VIEW_H = 720;
 
-export const CFG = {
-  // ---- map geometry -------------------------------------------------------
-  map: 6400,               // square world size
-  roadEvery: 800,          // grid spacing between road centerlines
-  roadHalf: 45,            // half width of a road
-  sidewalk: 22,            // sidewalk band width around blocks
-  laneOff: 13,             // lane centerline offset from road center
-  waterTop: 350,           // y above which is ocean (north / docks)
-  waterBottom: 6050,       // y below which is ocean (south / beach)
-  beachTop: 5650,          // y above which sand starts
+export const WORLD = 6400;
 
-  // ---- named districts ----------------------------------------------------
-  park:     { x0: 2400, y0: 3200, x1: 3200, y1: 4000 },
-  airfield: { x0: 0,    y0: 1600, x1: 1600, y1: 3200 },
-  docks:    { x0: 3200, y0: 0,    x1: 6400, y1: 1600 },
-  downtown: { x0: 2400, y0: 800,  x1: 4800, y1: 3200 },
+// Road centerline coordinates: 16 per axis, 200 .. 6200.
+export const ROADS = [];
+for (let i = 0; i < 16; i++) ROADS.push(200 + i * 400);
 
-  // ---- player -------------------------------------------------------------
-  playerWalk: 150,
-  playerSprint: 268,
-  playerRadius: 11,
-  playerMaxHealth: 100,
-  playerMaxArmor: 100,
-  startMoney: 250,
-  startAmmo: 16,
-  pistolRange: 640,
-  pistolCooldown: 0.34,
-  pistolDamage: 26,
-  meleeRange: 36,
-  meleeCooldown: 0.45,
-  meleeDamage: 16,
+export const ROAD_W = 88;          // full asphalt width of a road
+export const LANE = 22;            // lane offset from the centerline
+export const SIDEWALK = 20;        // sidewalk band around each block
+export const BORDER_MIN = 70;      // playable clamp
+export const BORDER_MAX = WORLD - 70;
 
-  // ---- carjack / vehicles -------------------------------------------------
-  jackRange: 78,
-  exitSpeed: 140,          // max speed at which you may hop out
-
-  // ---- wanted system ------------------------------------------------------
-  crimeBump: 1.0,          // heat added per minor crime unit
-  heatLevels: [0, 1, 4, 9, 16, 26],   // heat needed for stars 0..5
-  copSpawnInterval: 2.4,
-  maxCruisers: 7,
-  decayBase: 9,            // seconds out-of-sight before a star drops
-  roadblockLevel: 3,
-  roadblockCooldown: 22,
-  bustGrabRange: 34,
-  bustGrabTime: 0.8,
-  bustCarStopTime: 2.6,
-
-  // ---- fees ---------------------------------------------------------------
-  wastedFee: 200,
-  bustedFee: 300,
-
-  // ---- camera -------------------------------------------------------------
-  zoomFoot: 1.18,
-  zoomCar: 0.98,
-  zoomFast: 0.86,
-  camLead: 0.55,           // fraction of velocity used as look-ahead
-
-  // ---- simulation ---------------------------------------------------------
-  dtMax: 0.05,
-  trafficTarget: 22,       // civilian cars near the camera
-  pedTarget: 22,
-  pedRadius: 26,           // despawn radius multiplier (x1000 units)
-  fxMax: 520,
-
-  // ---- render -------------------------------------------------------------
-  viewW: 1280,
-  viewH: 720,
-  minimapSize: 148,
-  minimapScale: 0.085,     // world->minimap px
-
-  // ---- palette ------------------------------------------------------------
-  colors: {
-    water:      '#0b2233',
-    waterDeep:  '#061626',
-    sand:       '#c8a56b',
-    sandWet:    '#b08f56',
-    grass:      '#17301f',
-    grassDark:  '#122618',
-    asphalt:    '#191b21',
-    asphaltWet: '#20242e',
-    line:       '#c9b23c',
-    lineWhite:  '#b9bcc4',
-    sidewalk:   '#2b2e38',
-    lot:        '#23252d',
-    building:   '#15161c',
-    building2:  '#1b1d25',
-    roof:       '#262a35',
-    neonCyan:   '#37e0f0',
-    neonPink:   '#f05ec8',
-    neonViolet: '#a06bf5',
-    neonGold:   '#f5c04a',
-    neonGreen:  '#4ae88a',
-    neonRed:    '#ff5560',
-    palmTrunk:  '#4a3826',
-    palmLeaf:   '#2f7a3d',
-  },
-
-  // neon sign colors used per-building (picked deterministically)
-  neons: ['#37e0f0', '#f05ec8', '#a06bf5', '#f5c04a', '#4ae88a', '#ff5560'],
+// Districts (by block index on the 15x15 block grid).
+export const DIST = {
+  docksRows: 2,          // blocks j <= docksRows are the NORTH DOCKS
+  beachCols: 0,          // blocks i == beachCols are the west beach
+  park: [7, 7],          // park block (i, j)
+  airfield: [12, 11],    // airfield occupies i >= 12 && j >= 11
+  downtownMin: [4, 4],   // downtown tower zone
+  downtownMax: [9, 9],
 };
 
-// Shared context — filled once by Game (game.js) before the first update.
-// Modules read ctx.<thing> lazily inside their methods, never at import time.
-export const ctx = {
-  S: null,          // game state object
-  world: null,      // built world
-  game: null,       // the Game instance
-  audio: null,      // AudioSys
-  player: null,     // Player
-  cars: null,       // all Car instances (traffic + parked + mission)
-  peds: null,       // Peds manager
-  police: null,     // Police manager
-  missions: null,   // Missions manager
-  renderer: null,   // Renderer
-  // function hooks (assigned by game.js):
-  explodeAt: null,   // (x, y, power)
-  subtitle: null,    // (text, dur)
-  crime: null,       // (units, x, y)
-  sfx: null,         // (name, x, y) positional-ish sound
+// Vehicle / actor physics constants.
+export const PHYS = {
+  grip: 9.0,             // lateral velocity damping (1/s), handbrake lowers this
+  drag: 0.55,            // forward speed damping (1/s)
+  carRadiusK: 0.52,      // collision circle radius = w * k
+  carPairK: 0.36,        // car-car collision distance = (l1 + l2) * k
+  impactMin: 110,        // speed above which impacts cause damage
+  impactK: 0.12,         // damage per px/s of impact speed above impactMin
+  fireHp: 18,            // hp below which the car catches fire
+  smokeHp: 45,           // hp below which the engine smokes
+  burnTime: 2.6,         // seconds from catching fire to exploding
+  wreckTime: 9,          // seconds a burning wreck stays before it fades
 };
+
+// Player constants.
+export const PLAYER = {
+  walk: 122,
+  sprint: 208,
+  r: 9,                  // body radius
+  hp: 100,
+  enterDist: 58,         // how close to a car to enter / carjack
+  pistolRate: 0.34,      // seconds between pistol shots
+  fistRate: 0.4,
+  fistRange: 30,
+  fistDmg: 22,
+  bulletSpeed: 980,
+  bulletLife: 0.55,
+  pistolDmg: 34,
+};
+
+// Police / wanted constants.
+export const POLICE = {
+  thresholds: [0, 1, 4, 10, 20, 34],  // heat needed for 1..5 stars
+  heatMax: 44,
+  decayRate: 0.55,        // heat per second while unseen
+  sightRange: 720,        // cop within this range keeps heat pinned
+  maxCruisers: (w) => Math.min(w + 1, 6),
+  cruiserRate: 4.5,       // seconds between pursuit spawns
+  roadblockAt: 3,         // wanted level for roadblocks
+  roadblockRate: 22,
+  copShootRate: 1.05,
+  copRange: 460,
+  bustDist: 30,
+  bustTime: 1.1,
+  wastedFee: 300,
+  bustedFee: 200,
+};
+
+// Traffic / peds population targets.
+export const CROWD = {
+  trafficMax: 14,
+  pedMax: 11,
+  spawnDist: 900,
+  despawnDist: 1250,
+};
+
+// Effects.
+export const FX = {
+  boomRadius: 130,
+  boomDmg: 130,
+  flashDecay: 2.3,
+  shakeDecay: 5.5,
+};
+
+// Palette — synthwave night.
+export const COLORS = {
+  sky: '#0a0c14',
+  asphalt: '#191d26',
+  roadLine: '#8a8f9c',
+  sidewalk: '#262b37',
+  sand: '#8a744a',
+  water: '#0b2740',
+  waterLit: '#12405e',
+  grass: '#14301f',
+  dirt: '#3a3226',
+  lot: '#20242e',
+  buildingCols: ['#232a3d', '#2a2340', '#1f2d3a', '#2d2438', '#243044', '#2b2b47', '#1e2a3e'],
+  roofCols: ['#31394f', '#3a3054', '#2c3c4c', '#41314a', '#304058', '#393957', '#2a3850'],
+  neon: ['#ff2d78', '#23e6ff', '#ff9f2d', '#a8ff2d', '#b06bff', '#ffd12d'],
+  headlight: 'rgba(255,236,170,',
+  taillight: 'rgba(255,64,48,',
+  hp: '#ff4d6d',
+  armor: '#4db8ff',
+  money: '#7dffa8',
+  gold: '#ffd12d',
+  cop: '#2b4a8f',
+  copLight: '#4d7bff',
+};
+
+// Weapons: fists + three guns. rate = seconds between shots.
+export const WEAPONS = [
+  { id: 0, name: 'FISTS', rate: 0.4, dmg: 22, range: 30, pellets: 1, spread: 0, auto: false, melee: true },
+  { id: 1, name: 'PISTOL', rate: 0.34, dmg: 34, range: 0.55, pellets: 1, spread: 0.05, auto: false },
+  { id: 2, name: 'SMG', rate: 0.09, dmg: 16, range: 0.38, pellets: 1, spread: 0.13, auto: true },
+  { id: 3, name: 'SHOTGUN', rate: 0.82, dmg: 13, range: 0.24, pellets: 6, spread: 0.26, auto: false },
+];
+
+export const SHOPS = {
+  sprayPrice: 100,
+  smgPrice: 250,
+  shotgunPrice: 420,
+  smgAmmoPrice: 150,
+  armorPrice: 150,
+  healthPrice: 80,
+};
+
+// Rain cycle (seconds per phase before rolling to the next).
+export const WEATHER = {
+  phases: ['clear', 'drizzle', 'storm', 'drizzle'],
+  durations: [95, 55, 65, 55],
+  gripLoss: 0.18,          // grip multiplier = 1 - intensity * gripLoss
+  thunderRate: 0.05,       // chance per second during a storm
+};
+
+// Palm Metro: an elevated ring line around the inner city.
+export const TRAIN = {
+  ring: [1, 14],           // road indices bounding the ring
+  offset: 30,              // rail offset from road centerline
+  speed: 240,
+  stationPause: 5,
+  segments: 4,
+  segLength: 66,
+};
+
+// Police helicopter (4+ stars).
+export const HELI = {
+  hp: 130,
+  speed: 320,
+  lightR: 120,
+  heatRate: 0.16,          // heat per second while the player is caught in the light
+  burstRate: 2.3,          // seconds between door-gun bursts at 5 stars
+  respawnDelay: 26,
+};
+
+// Keyboard bindings (KeyboardEvent.code).
+export const KEYS = {
+  up: ['KeyW', 'ArrowUp'],
+  down: ['KeyS', 'ArrowDown'],
+  left: ['KeyA', 'ArrowLeft'],
+  right: ['KeyD', 'ArrowRight'],
+  sprint: ['ShiftLeft', 'ShiftRight'],
+  enter: ['KeyF'],
+  shoot: ['Space', 'KeyJ'],
+  handbrake: ['Space'],
+  weapon: ['KeyQ'],
+  pause: ['Escape', 'KeyP'],
+  confirm: ['Enter'],
+  mute: ['KeyM'],
+  radio: ['KeyN'],
+  map: ['Tab'],
+};
+
+// Save data.
+export const SAVE_KEY = 'vicepalms.v3';

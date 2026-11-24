@@ -1,428 +1,392 @@
-// missions.js — 6 chained story missions (Rico returns to Vice Palms) +
-// 3 side missions. Marker-driven, staged, with timers, fail/retry, payouts.
+// Vice Palms — missions: 6 chained story missions (Rico returns to Vice Palms)
+// plus 3 repeatable side missions, rampage pick-ups and the shop markers.
 
-import { CFG, ctx, VERSION } from './config.js';
-import { clamp, dist, fmtMoney, TAU } from './util.js';
-import { makeCar, TYPES } from './cars.js';
+import { PLAYER } from './config.js';
+import { randRoadPoint } from './world.js';
+import { spawnMissionCar } from './traffic.js';
+import { dist, fmtMoney, fmtTime } from './util.js';
+import { makeCar } from './cars.js';
+import { makePed } from './peds.js';
 
-// --------------------------------------------------------------- helpers ---
-function G(x, y, label) { return { x, y, label }; }
-
-// stage factories
-const st = {
-  goto: (x, y, text, opts = {}) => ({ type: 'goto', x, y, r: opts.r || 46, text, ...opts }),
-  drive: (x, y, text, opts = {}) => ({ type: 'drive', x, y, r: opts.r || 52, text, ...opts }),
-  collect: (points, text, opts = {}) => ({ type: 'collect', points, text, ...opts }),
-  kill: (x, y, n, text, opts = {}) => ({ type: 'kill', x, y, n, text, ...opts }),
-  survive: (x, y, time, text, opts = {}) => ({ type: 'survive', x, y, time, text, ...opts }),
-  escape: (text, opts = {}) => ({ type: 'escape', text, ...opts }),
-};
-
-// -------------------------------------------------------------- missions ---
-// Story: Rico returns to Vice Palms after the events upstate.
-export const STORY = [
-  {
-    id: 'm1', title: 'Welcome Back, Rico',
-    giver: G(2600, 3905, 'Rico — diner'),
-    payout: 500,
-    intro: 'RICO: "Long time, cousin. The docks smell like trouble again. Grab a car."',
-    stages: [
-      st.goto(3305, 1685, 'Meet the contact at the docks gate', {}),
-      st.collect([[5150, 760], [5480, 290], [4620, 900]], 'Collect the 3 crates around the docks'),
-      st.drive(2215, 4415, 'Deliver the crates to the lockup', { needVehicle: true }),
-    ],
-    outro: 'RICO: "Clean run. The Palms missed you."',
-  },
-  {
-    id: 'm2', title: "Rico's Ride",
-    giver: G(2215, 4415, 'Lockup'),
-    payout: 800,
-    intro: 'RICO: "A collector wants a Banshee. There\'s one rusting at the airfield."',
-    stages: [
-      st.goto(950, 2250, 'Steal the Banshee from the airfield', {}),
-      st.escape('Shake the security response', {}),
-      st.drive(3610, 1330, 'Deliver the Banshee to the downtown garage', { needVehicle: true }),
-    ],
-    onStart: () => {
-      // spawn the mission Banshee at the airfield pad
-      const car = makeCar('sports', 950, 2250, 0);
-      car.color = '#e8d830';
-      car.tag = 'm2-banshee';
-      ctx.cars.push(car);
+export function makeMissions() {
+  const m = {
+    storyIdx: 0,
+    active: null,
+    banner: null,
+    coolT: 0,
+    finale: false,
+    rampage: null,       // { n, t, kills, pay }
+    shopCool: 0,
+    sprayCool: 0,
+    onTargetDown(game, car) {
+      if (m.active && m.active.def.steps[m.active.stepIdx].type === 'destroy') {
+        m.active.down++;
+      }
     },
-    outro: 'RICO: "Purists, I swear. Cash is cash."',
+  };
+  return m;
+}
+
+// ------------------------------------------------------------------ story
+
+const STORY = [
+  {
+    id: 'welcome', name: 'WELCOME BACK', giver: 'safehouse', pay: 750,
+    brief: 'Rico: Vaas is gone but Vice Palms still owes me. Grab my package from the dock office.',
+    steps: [
+      { type: 'goto', to: 'dockoffice', r: 66, sub: 'Pick up the package at the dock office.' },
+      { type: 'goto', to: 'parkstage', r: 66, timer: 85, sub: 'Drop the package at the park stage. Clock is running.' },
+      { type: 'goto', to: 'safehouse', r: 66, sub: 'Rico: Bring it home. Word travels fast in this town.' },
+    ],
   },
   {
-    id: 'm3', title: 'Beach Party Crash',
-    giver: G(3610, 1330, 'Garage'),
-    payout: 700,
-    intro: 'RICO: "Some cargo washed up on the beach. Beachgoers first, collectors second. Deal with the crew guarding it."',
-    stages: [
-      st.goto(4030, 5900, 'Go to the beach stash', {}),
-      st.kill(4030, 5900, 4, 'Take out the 4 stash guards'),
+    id: 'groves', name: 'PALM GROVE RUN', giver: 'safehouse', pay: 1000,
+    brief: 'Rico: Three growers left drops around town. Collect them before the heat wakes up.',
+    steps: [
+      { type: 'collect', n: 3, sub: 'Collect the drops — follow the yellow blips.' },
+      { type: 'goto', to: 'safehouse', r: 66, sub: 'Bring everything back to the safehouse.' },
     ],
-    outro: 'RICO: "Brutal. Efficient. Very family."',
   },
   {
-    id: 'm4', title: 'Courier Heat',
-    giver: G(4030, 5850, 'Beach stash'),
-    payout: 900,
-    intro: 'RICO: "One last package runs tonight. The docks to the tower. Cops are twitchy — move fast."',
-    stages: [
-      st.goto(5480, 290, 'Pick up the package on the pier', { time: 70 }),
-      st.drive(3040, 1010, 'Deliver to the tower — keep it rolling', { needVehicle: true, time: 95 }),
+    id: 'dockside', name: 'DOCKSIDE DEAL', giver: 'dockoffice', pay: 1400,
+    brief: 'Rico: The Curlies are moving my product off my own pier. Wreck their runners.',
+    steps: [
+      { type: 'destroy', n: 2, at: 'dockoffice', sub: 'Destroy the rival runners at the docks.' },
+      { type: 'lose', sub: 'That called the cops. Lose the heat.' },
+      { type: 'goto', to: 'safehouse', r: 66, sub: 'Meet Rico at the safehouse.' },
     ],
-    onStart: () => { ctx.police.forceLevel(2); },
-    onEnd: () => { ctx.police.clearForced(); },
-    outro: 'RICO: "The tower pays through the nose for punctuality."',
   },
   {
-    id: 'm5', title: 'Break the Blockade',
-    giver: G(3040, 1010, 'Tower'),
-    payout: 1200,
-    intro: 'RICO: "The Palms PD locked the whole harbor. Break their blockade and vanish. Make it loud."',
-    stages: [
-      st.goto(4000, 900, 'Get to the harbor mouth', { needVehicle: true }),
-      st.escape('Lose the heat — duck the roadblocks', {}),
+    id: 'airfield', name: 'AIRFIELD RUN', giver: 'parkstage', pay: 1600,
+    brief: 'Rico: A payplane lands at Palm Airfield with a case for Vaas. Beat it there.',
+    steps: [
+      { type: 'goto', to: 'airfieldtower', r: 84, timer: 100, sub: 'Reach the airfield tower before the case changes hands.' },
+      { type: 'lose', sub: 'The tower called it in. Lose the heat.' },
     ],
-    onStart: () => { ctx.police.forceLevel(3); },
-    onEnd: () => { ctx.police.clearForced(); },
-    outro: 'RICO: "They will write about that one. The good kind of story."',
   },
   {
-    id: 'm6', title: "Rico's Payback",
-    giver: G(2215, 4415, 'Lockup'),
-    payout: 3000,
-    intro: 'RICO: "Everything ends where it started. The airfield. Hold the line 60 seconds and the Palms are ours."',
-    stages: [
-      st.goto(700, 2760, 'Reach the airfield control tower', {}),
-      st.survive(700, 2760, 60, 'Hold the airfield — survive the wave'),
+    id: 'neon', name: 'NEON TRAILS', giver: 'airfieldtower', pay: 2000,
+    brief: 'Rico: Someone talked. The informant is bolting downtown in a pink Cheetah. Total it.',
+    steps: [
+      { type: 'destroy', n: 1, at: 'airfieldtower', car: 'sports', flee: true, sub: "The informant's Cheetah is running. Wreck it." },
     ],
-    outro: 'RICO: "Vice Palms is ours, cousin. TO BE CONTINUED…"',
-    final: true,
+  },
+  {
+    id: 'palmsfall', name: 'PALMS FALL', giver: 'safehouse', pay: 3000,
+    brief: 'Rico: One last score — Vaas himself is at the pier. This ends tonight.',
+    steps: [
+      { type: 'goto', to: 'dockoffice', r: 84, sub: 'Meet Rico at the pier.' },
+      { type: 'survive', t: 40, sub: 'Hold the pier against the Curlies.' },
+      { type: 'destroy', n: 1, at: 'dockoffice', car: 'limo', flee: true, sub: "Vaas is running for the ship in a limo. Wreck it." },
+    ],
   },
 ];
 
-// side missions (independent, repeatable after finish? — once each)
-export const SIDE = [
+const SIDE = [
   {
-    id: 's1', title: 'Beach Sweep', side: true,
-    giver: G(4620, 5850, 'Beach clean-up board'),
-    payout: 300,
-    intro: 'BOARD: "Glass and gulls everywhere. Grab the 6 litter bags before the tide — 90 seconds."',
-    stages: [
-      st.collect([[4500, 5760], [4900, 5820], [5250, 5750], [4700, 5950], [5400, 5900], [4300, 5900]],
-        'Collect the 6 litter bags on the beach', { time: 90 }),
-    ],
-    outro: 'BOARD: "The Palms sparkle again. Small money, good karma."',
+    id: 'taxi', name: 'VICE CAB', letter: 'T', col: '#ffd12d', giver: 'taxistand', pay: 450,
+    brief: 'Vice Cab: Fares are waiting. Three drops, no dents.',
+    steps: [], // generated at start
   },
   {
-    id: 's2', title: 'Dock Sweep', side: true,
-    giver: G(5300, 1700, 'Foreman'),
-    payout: 350,
-    intro: 'FOREMAN: "Night shift walked off with my inventory. Recover 4 crates in 75 seconds."',
-    stages: [
-      st.collect([[5150, 760], [5480, 290], [4620, 900], [5900, 800]],
-        'Recover the 4 crates in the docks', { time: 75 }),
+    id: 'wreck', name: 'WRECKING CREW', letter: 'W', col: '#ff9f2d', giver: 'wreckyard', pay: 900,
+    brief: 'Yard boss: Three beaters need scrapping. They will not come quietly.',
+    steps: [
+      { type: 'destroy', n: 3, at: 'wreckyard', car: 'sedan', flee: true, sub: 'Scrap the three marked beaters.' },
     ],
-    outro: 'FOREMAN: "Union dues: paid. Gratitude: implied."',
   },
   {
-    id: 's3', title: 'Airfield Sprint', side: true,
-    giver: G(950, 2200, 'Runway club hut'),
-    payout: 600,
-    intro: 'CLUB: "Midnight time trial. 5 checkpoints, 80 seconds. Bring something fast."',
-    stages: [
-      st.collect([[400, 2400], [1100, 2400], [1400, 2800], [700, 2900], [900, 2350]],
-        'Hit the 5 checkpoints on the runway', { time: 80, needVehicle: true }),
+    id: 'airmail', name: 'AIR MAIL', letter: 'A', col: '#23e6ff', giver: 'airmail', pay: 700,
+    brief: 'Dispatcher: Hot cargo for Palm Airfield. No detours, no questions.',
+    steps: [
+      { type: 'goto', to: 'airfieldtower', r: 84, timer: 75, sub: 'Deliver the cargo to the airfield tower.' },
     ],
-    outro: 'CLUB: "Clean lines, cousin. The club approves."',
-  },
-  {
-    id: 's4', title: 'Neon Run', side: true,
-    giver: G(3040, 1010, 'Tower concierge'),
-    payout: 500,
-    intro: 'CONCIERGE: "The strip lights go out in 70 seconds. Tag all 5 neon corners before they do."',
-    stages: [
-      st.collect([[2500, 900], [4700, 900], [4700, 3100], [2500, 3100], [3600, 2000]],
-        'Tag the 5 neon corners of downtown', { time: 70 }),
-    ],
-    outro: 'CONCIERGE: "All corners lit. The strip will remember tonight."',
-  },
-  {
-    id: 's5', title: 'Pier Prowler', side: true,
-    giver: G(4300, 420, 'Pier night watch'),
-    payout: 450,
-    intro: 'WATCH: "Crates keep washing against the pier legs. Bring me 3 before the tide takes them — 80 seconds."',
-    stages: [
-      st.collect([[4500, 300], [5450, 300], [4300, 320]],
-        'Collect the 3 beached crates on the piers', { time: 80 }),
-    ],
-    outro: 'WATCH: "Good haul. The sea pays in salvage, cousin."',
-  },
-  {
-    id: 's6', title: 'Ferry Flare', side: true,
-    giver: G(5450, 300, 'Harbormaster skiff'),
-    payout: 550,
-    intro: 'HARBORMASTER: "The night ferry lost power. Grab 2 flares and hold the pier head for 30 seconds while it limps in."',
-    stages: [
-      st.collect([[4520, 300], [5380, 300]], 'Grab the 2 flares from the pier heads', { time: 60 }),
-      st.survive(5450, 300, 30, 'Hold the pier head while the ferry docks'),
-    ],
-    outro: 'HARBORMASTER: "She docked clean. The crew drinks on you tonight."',
   },
 ];
 
-// ---------------------------------------------------------------- manager --
-export class Missions {
-  constructor() {
-    this.storyIdx = 0;               // next story mission to offer
-    this.sideIdx = 0;                // next side mission to offer
-    this.done = new Set();           // completed ids
-    this.active = null;              // mission def currently running
-    this.stage = 0;
-    this.stageTime = -1;             // countdown, -1 = no timer
-    this.collectLeft = [];
-    this.killTargets = [];
-    this.surviveT = 0;
-    this.banner = null;              // {title, sub, t}
-    this.failMsg = 0;
-    this.retryable = true;
-    this.rewardFx = 0;
-    this.garageCd = 0;
-    this.missionVehicles = [];
+// ------------------------------------------------------------------ runtime
+
+export function updateMissions(game, dt) {
+  const M = game.missions;
+  M.coolT -= dt;
+  M.shopCool -= dt;
+  M.sprayCool -= dt;
+  if (M.banner) {
+    M.banner.t -= dt;
+    if (M.banner.t <= 0) M.banner = null;
   }
 
-  // all defs not yet done, in offering order (story first)
-  available() {
-    const out = [];
-    if (this.storyIdx < STORY.length) out.push(STORY[this.storyIdx]);
-    if (this.sideIdx < SIDE.length) out.push(SIDE[this.sideIdx]);
+  // ---- rampage mode
+  if (M.rampage) {
+    const R = M.rampage;
+    R.t -= dt;
+    if (R.kills >= R.n) {
+      game.player.money += R.pay;
+      game.banner('RAMPAGE COMPLETE!', fmtMoney(R.pay), '#ff9f2d');
+      game.audio.jingle(true);
+      M.rampage = null;
+    } else if (R.t <= 0) {
+      game.banner('RAMPAGE FAILED', 'The gang scattered', '#ff4d6d');
+      M.rampage = null;
+    } else {
+      // keep the pressure on: a fresh gang member wanders in now and then
+      if (game.frame % 90 === 0 && game.peds.filter((q) => q.kind === 'gang').length < 7) {
+        const pt = randRoadPoint(game.world, Math.random, game.player.x, game.player.y, 260, 600);
+        game.peds.push(makePed(pt.x, pt.y, 'gang'));
+      }
+      return; // no new missions while rampaging
+    }
+  }
+
+  // ---- shops: auto-purchase markers
+  const sp = game.world.spawns;
+  const p = game.player;
+  if (M.shopCool <= 0 && !p.inCar && dist(p.x, p.y, sp.ammu.x, sp.ammu.y) < 34) {
+    game.playerShop();
+    M.shopCool = 1.4;
+  }
+  if (M.sprayCool <= 0 && p.inCar && dist(p.x, p.y, sp.spray.x, sp.spray.y) < 40) {
+    game.playerSpray();
+    M.sprayCool = 1.6;
+  }
+
+  if (!M.active) {
+    // walking into a marker starts a mission (or a rampage)
+    const mk = activeMarkers(game);
+    for (const k of mk) {
+      if (dist(game.player.x, game.player.y, k.x, k.y) < 34) {
+        if (k.rampage) {
+          startRampage(game);
+        } else if (k.def) {
+          startMission(game, k.def, k.side);
+        }
+        break;
+      }
+    }
+    return;
+  }
+
+  const A = M.active;
+  const step = A.def.steps[A.stepIdx];
+
+  // timers
+  if (step.timer !== undefined && step.type === 'goto') {
+    A.timer -= dt;
+    if (A.timer <= 0) { failMission(game, 'Out of time'); return; }
+  }
+  if (step.type === 'survive') {
+    A.timer -= dt;
+    A.waveT -= dt;
+    if (A.waveT <= 0) {
+      A.waveT = 11;
+      const c = makeCar('cruiser', game.player.x + rand(-380, 380), game.player.y + rand(-380, 380), 0, 'police');
+      c.ai = { mode: 'chase' };
+      game.cars.push(c);
+    }
+    if (A.timer <= 0) nextStep(game);
+    return;
+  }
+  if (step.type === 'goto') {
+    const t = A.target;
+    if (t && dist(game.player.x, game.player.y, t.x, t.y) < step.r) nextStep(game);
+    return;
+  }
+  if (step.type === 'collect') {
+    const left = game.pickups.filter((p) => p.tag === 'mission').length;
+    if (left === 0) nextStep(game);
+    return;
+  }
+  if (step.type === 'destroy') {
+    if (A.down >= step.n) nextStep(game);
+    return;
+  }
+  if (step.type === 'lose') {
+    if (game.police.wanted === 0) nextStep(game);
+    return;
+  }
+}
+
+function rand(a, b) { return a + Math.random() * (b - a); }
+
+/** A rampage: knock down 10 Curlies in 45 seconds for cash. */
+export function startRampage(game) {
+  const M = game.missions;
+  if (M.rampage || M.active) return;
+  M.rampage = { n: 10, t: 45, kills: 0, pay: 500 };
+  for (let k = 0; k < 6; k++) {
+    const pt = randRoadPoint(game.world, Math.random, game.player.x, game.player.y, 120, 420);
+    game.peds.push(makePed(pt.x, pt.y, 'gang'));
+  }
+  game.banner('RAMPAGE!', 'Waste 10 Curlies in 45 seconds', '#ff4d6d');
+  game.audio.jingle(false);
+}
+
+function nextStep(game) {
+  const A = game.missions.active;
+  A.stepIdx++;
+  A.down = 0;
+  if (A.stepIdx >= A.def.steps.length) {
+    passMission(game);
+    return;
+  }
+  beginStep(game, A);
+}
+
+function beginStep(game, A) {
+  const step = A.def.steps[A.stepIdx];
+  A.timer = step.timer !== undefined ? step.timer : 0;
+  A.target = null;
+  game.subtitle(step.sub, 4.2);
+
+  if (step.type === 'goto') {
+    A.target = step.target ? { ...step.target } : { ...game.world.spawns[step.to] };
+    game.audio.blip(520, 0.1, 'triangle', 0.12);
+  } else if (step.type === 'collect') {
+    for (let k = 0; k < step.n; k++) {
+      const pt = randRoadPoint(game.world, Math.random, game.player.x, game.player.y, 650, 1600);
+      game.pickups.push({ x: pt.x, y: pt.y, kind: 'cash', val: 0, tag: 'mission', t: 0 });
+    }
+  } else if (step.type === 'destroy') {
+    const sp = game.world.spawns[step.at];
+    for (let k = 0; k < step.n; k++) {
+      const type = step.car || 'sedan';
+      const c = spawnMissionCar(game, sp.x + rand(-160, 160), sp.y + rand(-160, 160), type, step.flee ? 'flee' : 'chase');
+      c.color = A.side ? '#8f5f3a' : (type === 'limo' ? '#15151b' : '#ff2d78');
+      if (type === 'limo') c.color = '#15151b';
+    }
+  } else if (step.type === 'lose') {
+    if (game.police.wanted === 0) game.addCrime(1.6);
+  } else if (step.type === 'survive') {
+    A.waveT = 0.5;
+    game.addCrime(2.5);
+  }
+}
+
+export function startMission(game, def, isSide) {
+  const M = game.missions;
+  if (M.active || M.coolT > 0) return;
+  // taxi generates its route on the fly
+  if (def.id === 'taxi') {
+    def = { ...def, steps: [] };
+    for (let k = 0; k < 3; k++) {
+      const pt = randRoadPoint(game.world, Math.random, game.player.x, game.player.y, 500, 1700);
+      def.steps.push({ type: 'goto', to: null, target: pt, r: 56, timer: 48, sub: 'Fare ' + (k + 1) + ' of 3 — get them there!' });
+    }
+  }
+  M.active = { def, side: isSide, stepIdx: -1, down: 0, timer: 0, waveT: 0, target: null };
+  game.banner(def.name, def.brief, '#ffd12d');
+  game.audio.jingle(true);
+  // stepIdx -1 means "briefing shown, begin first step next frame"
+  M.active.stepIdx = 0;
+  beginStep(game, M.active);
+}
+
+export function passMission(game) {
+  const M = game.missions;
+  const A = M.active;
+  const pay = A.def.pay;
+  game.player.money += pay;
+  game.stats.moneyEarned += pay;
+  game.stats.missionsDone++;
+  M.coolT = 2;
+  if (!A.side) {
+    M.storyIdx = Math.min(M.storyIdx + 1, STORY.length);
+    if (M.storyIdx >= STORY.length) {
+      M.finale = true;
+      game.banner('VICE PALMS SAVED', 'Rico: The city is ours again, kid. ' + fmtMoney(pay), '#7dffa8', 6);
+      game.subtitle('The story is complete — side missions stay open.', 6);
+    } else {
+      game.banner('MISSION PASSED!', A.def.name + ' — ' + fmtMoney(pay), '#7dffa8');
+    }
+  } else {
+    game.banner('JOB DONE!', A.def.name + ' — ' + fmtMoney(pay), '#7dffa8');
+  }
+  game.audio.jingle(true);
+  M.active = null;
+  cleanup(game);
+  game.save();
+}
+
+export function failMission(game, why) {
+  const M = game.missions;
+  if (!M.active) return;
+  game.banner('MISSION FAILED', why || 'Try again at the marker', '#ff4d6d');
+  game.audio.jingle(false);
+  M.coolT = 2;
+  M.active = null;
+  cleanup(game);
+}
+
+function cleanup(game) {
+  for (let i = game.cars.length - 1; i >= 0; i--) {
+    const c = game.cars[i];
+    if (c.tag === 'mission' && !c.dead) game.cars.splice(i, 1);
+    else if (c.tag === 'mission') game.cars.splice(i, 1);
+  }
+  for (let i = game.pickups.length - 1; i >= 0; i--) {
+    if (game.pickups[i].tag === 'mission') game.pickups.splice(i, 1);
+  }
+  game.police.blocks.length = 0;
+}
+
+// ------------------------------------------------------------------ markers
+
+/**
+ * Every active mission marker: the story giver (gold, R) while the story is
+ * unfinished, plus side-job givers, the shops and rampage pick-ups.
+ */
+export function activeMarkers(game) {
+  const M = game.missions;
+  const out = [];
+  if (M.rampage) return out;
+  if (M.active) {
+    const step = M.active.def.steps[M.active.stepIdx];
+    if (step.type === 'goto' && M.active.target) {
+      out.push({ x: M.active.target.x, y: M.active.target.y, letter: '!', col: '#23e6ff' });
+    }
     return out;
   }
-
-  giverMarkers() {
-    const out = [];
-    if (!this.active) {
-      for (const m of this.available()) out.push({ x: m.giver.x, y: m.giver.y, kind: 'giver' });
-    }
-    return out;
+  if (M.coolT > 0) return out;
+  if (M.storyIdx < STORY.length) {
+    const sp = game.world.spawns[STORY[M.storyIdx].giver];
+    out.push({ x: sp.x, y: sp.y, letter: 'R', col: '#ffd12d', def: STORY[M.storyIdx], side: false });
   }
-
-  objectiveMarkers() {
-    if (!this.active) return [];
-    const s = this.active.stages[this.stage];
-    const out = [];
-    if (!s) return out;
-    if (s.type === 'goto' || s.type === 'drive') {
-      out.push({ x: s.x, y: s.y, kind: 'obj' });
-    } else if (s.type === 'collect') {
-      for (const p of this.collectLeft) out.push({ x: p[0], y: p[1], kind: 'obj' });
-    } else if (s.type === 'kill') {
-      out.push({ x: s.x, y: s.y, kind: 'obj' });
-    } else if (s.type === 'survive') {
-      out.push({ x: s.x, y: s.y, kind: 'obj' });
-    }
-    return out;
+  for (const s of SIDE) {
+    const sp = game.world.spawns[s.giver];
+    out.push({ x: sp.x, y: sp.y, letter: s.letter, col: s.col, def: s, side: true });
   }
-
-  tryStart(S) {
-    if (this.active) return;
-    const p = S.player;
-    for (const m of this.available()) {
-      if (dist(p.x, p.y, m.giver.x, m.giver.y) < 42) {
-        this.begin(m, S);
-        return;
-      }
+  // shops
+  out.push({ x: game.world.spawns.ammu.x, y: game.world.spawns.ammu.y, letter: 'G', col: '#a8ff2d' });
+  out.push({ x: game.world.spawns.spray.x, y: game.world.spawns.spray.y, letter: 'S', col: '#b06bff' });
+  // rampage pick-ups
+  if (!M.rampage) {
+    for (const key of ['rampage1', 'rampage2']) {
+      const sp = game.world.spawns[key];
+      out.push({ x: sp.x, y: sp.y, letter: '☠', col: '#ff4d6d', rampage: key });
     }
   }
+  return out;
+}
 
-  begin(m, S) {
-    this.active = m;
-    this.stage = 0;
-    this.retryable = true;
-    ctx.subtitle(m.title, 2.6);
-    ctx.subtitle(m.intro, 5.5);
-    if (m.onStart) m.onStart();
-    this.enterStage(0, S);
+/** HUD line describing the current objective. */
+export function objectiveText(game) {
+  const M = game.missions;
+  if (M.rampage) {
+    const R = M.rampage;
+    return 'RAMPAGE: ' + R.kills + '/' + R.n + ' — ' + Math.ceil(R.t) + 's';
   }
-
-  enterStage(i, S) {
-    this.stage = i;
-    const s = this.active.stages[i];
-    if (!s) { this.complete(S); return; }
-    if (s.time !== undefined) this.stageTime = s.time;
-    else this.stageTime = -1;
-    if (s.type === 'collect') this.collectLeft = s.points.slice();
-    if (s.type === 'kill') {
-      this.killTargets = ctx.peds.spawnGang(s.x, s.y, s.n);
-    }
-    if (s.type === 'survive') {
-      this.surviveT = s.time;
-      ctx.peds.spawnGang(s.x, s.y, 4);
-      ctx.police.forceLevel(2);
-    }
-    if (s.type === 'escape') {
-      // make sure there is some heat to escape
-      if (ctx.police.level === 0) ctx.police.forceLevel(Math.max(2, this.active.stageHeat || 2));
-      if (this.active.id === 'm2') ctx.police.forceLevel(2);
-      if (this.active.id === 'm5') ctx.police.forceLevel(3);
-    }
-    if (s.text) ctx.subtitle(s.text, 3.2);
+  if (!M.active) {
+    if (M.storyIdx >= STORY.length) return 'Story complete — side work stays open';
+    return 'Story: ' + STORY[M.storyIdx].name;
   }
-
-  update(dt, S) {
-    if (this.banner) {
-      this.banner.t -= dt;
-      if (this.banner.t <= 0) this.banner = null;
-    }
-    this.rewardFx = Math.max(0, this.rewardFx - dt);
-    this.failMsg = Math.max(0, this.failMsg - dt);
-
-    this.tryStart(S);
-
-    if (!this.active) return;
-    const s = this.active.stages[this.stage];
-    if (!s) return;
-
-    // stage timer
-    if (this.stageTime >= 0) {
-      this.stageTime -= dt;
-      if (this.stageTime <= 0) { this.fail('Out of time.', S); return; }
-    }
-
-    const p = S.player;
-
-    switch (s.type) {
-      case 'goto': {
-        if (dist(p.x, p.y, s.x, s.y) < s.r) this.nextStage(S);
-        break;
-      }
-      case 'drive': {
-        if (p.inCar && dist(p.x, p.y, s.x, s.y) < s.r) {
-          if (s.needVehicle) this.nextStage(S);
-          else this.nextStage(S);
-        }
-        break;
-      }
-      case 'collect': {
-        for (let i = this.collectLeft.length - 1; i >= 0; i--) {
-          const c = this.collectLeft[i];
-          if (dist(p.x, p.y, c[0], c[1]) < 40) {
-            this.collectLeft.splice(i, 1);
-            if (ctx.sfx) ctx.sfx('pickup', c[0], c[1]);
-            if (this.collectLeft.length === 0) this.nextStage(S);
-          }
-        }
-        break;
-      }
-      case 'kill': {
-        let alive = 0;
-        for (const g of this.killTargets) if (!g.dead) alive++;
-        if (alive === 0) this.nextStage(S);
-        break;
-      }
-      case 'survive': {
-        this.surviveT -= dt;
-        // top up gangs / heat
-        if (Math.random() < dt * 0.35) ctx.peds.spawnGang(s.x, s.y, 1);
-        if (this.surviveT <= 0) {
-          ctx.police.clearForced();
-          this.nextStage(S);
-        }
-        break;
-      }
-      case 'escape': {
-        if (ctx.police.level === 0) {
-          if (this.active.onEnd) this.active.onEnd();
-          this.nextStage(S);
-        }
-        break;
-      }
-    }
+  const step = M.active.def.steps[M.active.stepIdx];
+  let txt = step.sub;
+  if (step.timer !== undefined && step.type === 'goto') txt += '  [' + fmtTime(M.active.timer) + ']';
+  if (step.type === 'survive') txt += '  [' + Math.ceil(M.active.timer) + 's]';
+  if (step.type === 'destroy') txt += '  (' + M.active.down + '/' + step.n + ')';
+  if (step.type === 'collect') {
+    const left = game.pickups.filter((p) => p.tag === 'mission').length;
+    txt += '  (' + (step.n - left) + '/' + step.n + ')';
   }
-
-  nextStage(S) {
-    if (this.active.onEnd && this.stage === this.active.stages.length - 1) {
-      // mission-scoped forced heat gets cleared by specific stages already
-    }
-    if (this.stage + 1 >= this.active.stages.length) this.complete(S);
-    else this.enterStage(this.stage + 1, S);
-  }
-
-  complete(S) {
-    const m = this.active;
-    if (!m) return;
-    const payout = m.payout;
-    S.money += payout;
-    S.stats.earned += payout;
-    S.stats.missions++;
-    this.done.add(m.id);
-    if (!m.side) this.storyIdx++;
-    else this.sideIdx++;
-    this.banner = { title: 'MISSION PASSED!', sub: m.title + '  —  ' + fmtMoney(payout), t: 5, dur: 5 };
-    this.rewardFx = 3;
-    if (ctx.sfx) ctx.sfx('mission', S.player.x, S.player.y);
-    ctx.subtitle(m.outro, 5);
-    if (m.final) {
-      this.banner = { title: 'VICE PALMS IS YOURS', sub: 'The story continues…  —  ' + fmtMoney(payout), t: 8, dur: 8 };
-    }
-    // cleanup mission vehicles
-    for (const c of this.missionVehicles) c.tag = null;
-    this.missionVehicles.length = 0;
-    this.active = null;
-    this.stage = 0;
-    this.stageTime = -1;
-  }
-
-  fail(reason, S) {
-    const m = this.active;
-    if (!m) return;
-    if (m.onEnd) m.onEnd();
-    if (m.id === 'm6') ctx.police.clearForced();
-    ctx.subtitle('MISSION FAILED — ' + reason, 4);
-    ctx.subtitle('Return to the marker to retry.', 3.5);
-    this.failMsg = 6;
-    this.active = null;
-    this.stage = 0;
-    this.stageTime = -1;
-    // despawn stage spawns lazily (gang members fade via cull)
-  }
-
-  // -------------------------------------------------------------- garage --
-  // The lockup doubles as a save-house: pull the marker to heal + save.
-  tryGarage(S) {
-    if (this.garageCd > 0) this.garageCd -= 0.016;
-    const p = S.player;
-    if (p.inCar) return;
-    if (dist(p.x, p.y, ctx.world.spawns.lockup.x, ctx.world.spawns.lockup.y) > 46) return;
-    if (this.garageCd > 0) return;
-    this.garageCd = 4;
-    p.health = CFG.playerMaxHealth;
-    if (ctx.sfx) ctx.sfx('pickup', p.x, p.y);
-    ctx.subtitle('Rico\'s lockup: patched up and saved.', 2.6);
-    ctx.game.saveGame();
-  }
-
-  // called by game.js when the player dies/busted during a mission
-  abort(S) {
-    if (!this.active) return;
-    if (this.active.onEnd) this.active.onEnd();
-    this.active = null;
-    this.stage = 0;
-    this.stageTime = -1;
-    this.collectLeft = [];
-  }
-
-  // ------------------------------------------------------------- save/load --
-  saveData() {
-    return { storyIdx: this.storyIdx, sideIdx: this.sideIdx, done: [...this.done] };
-  }
-
-  loadData(d) {
-    if (!d) return;
-    this.storyIdx = d.storyIdx | 0;
-    this.sideIdx = d.sideIdx | 0;
-    this.done = new Set(d.done || []);
-  }
+  return txt;
 }

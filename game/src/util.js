@@ -1,114 +1,110 @@
-// util.js — math, RNG, geometry helpers. No side effects at import.
+// Vice Palms — small math / formatting helpers shared by every module.
 
-// ---------------------------------------------------------------- RNG ----
-// mulberry32: small, fast, deterministic. worldgen + staged shots use it.
-export function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function rng() {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+export function clamp(v, a, b) {
+  return v < a ? a : v > b ? b : v;
 }
 
-// hash of two ints -> [0,1). Used for per-block determinism.
-export function hash2(a, b) {
-  let h = (Math.imul(a, 374761393) + Math.imul(b, 668265263)) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177) | 0;
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+export function lerp(a, b, t) {
+  return a + (b - a) * t;
 }
 
-// ------------------------------------------------------------- math ------
-export const TAU = Math.PI * 2;
+/** Frame-rate independent exponential smoothing factor. */
+export function damp(k, dt) {
+  return 1 - Math.exp(-k * dt);
+}
 
-export function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
-export function lerp(a, b, t) { return a + (b - a) * t; }
-export function dist(ax, ay, bx, by) { return Math.hypot(bx - ax, by - ay); }
-export function dist2(ax, ay, bx, by) { const dx = bx - ax, dy = by - ay; return dx * dx + dy * dy; }
+export function dist2(x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  return dx * dx + dy * dy;
+}
 
-export function angNorm(a) {
-  while (a > Math.PI) a -= TAU;
-  while (a < -Math.PI) a += TAU;
+export function dist(x1, y1, x2, y2) {
+  return Math.sqrt(dist2(x1, y1, x2, y2));
+}
+
+export function len(x, y) {
+  return Math.sqrt(x * x + y * y);
+}
+
+/** Wrap an angle difference into [-PI, PI]. */
+export function angDiff(a) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
   return a;
 }
-export function angLerp(a, b, t) {
-  return a + angNorm(b - a) * t;
+
+/** Rotate angle a toward angle b by at most max radians. */
+export function angLerp(a, b, max) {
+  const d = angDiff(b - a);
+  return a + clamp(d, -max, max);
 }
 
-export function pick(rng, arr) { return arr[(rng() * arr.length) | 0]; }
-export function picki(arr, i) { return arr[i % arr.length]; }
+export function ptInRect(x, y, r) {
+  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+}
 
-export function shuffle(rng, arr) {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = (rng() * (i + 1)) | 0;
-    const t = a[i]; a[i] = a[j]; a[j] = t;
-  }
-  return a;
+export function rectOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+/** Closest point of rect r to (x, y) plus the distance to it. */
+export function closestOnRect(x, y, r) {
+  const cx = clamp(x, r.x, r.x + r.w);
+  const cy = clamp(y, r.y, r.y + r.h);
+  return { x: cx, y: cy, d: dist(x, y, cx, cy) };
 }
 
 export function fmtMoney(n) {
-  const s = Math.max(0, Math.round(n)).toString();
-  let out = '';
-  for (let i = 0; i < s.length; i++) {
-    if (i > 0 && (s.length - i) % 3 === 0) out += ',';
-    out += s[i];
-  }
-  return '$' + out;
+  const v = Math.max(0, Math.round(n));
+  return '$' + v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-export function fmtTime(sec) {
-  sec = Math.max(0, Math.ceil(sec));
-  const m = (sec / 60) | 0, s = sec % 60;
-  return m + ':' + (s < 10 ? '0' : '') + s;
+export function fmtTime(s) {
+  const t = Math.max(0, Math.ceil(s));
+  const m = (t / 60) | 0;
+  const ss = t % 60;
+  return m + ':' + String(ss).padStart(2, '0');
 }
 
-// ---------------------------------------------------------- geometry -----
-export function pointInRect(px, py, r) {
-  return px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1;
+/** Pick a random element (rng is a mulberry-style fn returning [0,1)). */
+export function choice(rng, arr) {
+  return arr[(rng() * arr.length) | 0];
 }
 
-export function rectsOverlap(a, b) {
-  return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+/** Draw rounded-rect path on a context (no fill/stroke). */
+export function rrPath(ctx, x, y, w, h, r) {
+  const rad = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rad, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rad);
+  ctx.arcTo(x + w, y + h, x, y + h, rad);
+  ctx.arcTo(x, y + h, x, y, rad);
+  ctx.arcTo(x, y, x + w, y, rad);
+  ctx.closePath();
 }
 
-// Circle vs AABB. Returns push vector {x,y,depth} to move the circle out,
-// or null when not touching.
-export function circleRectPush(px, py, r, rect) {
-  const cx = clamp(px, rect.x0, rect.x1);
-  const cy = clamp(py, rect.y0, rect.y1);
-  const dx = px - cx, dy = py - cy;
-  const d2 = dx * dx + dy * dy;
-  if (d2 >= r * r) return null;
-  if (d2 > 1e-9) {
-    const d = Math.sqrt(d2);
-    const depth = r - d;
-    return { x: (dx / d) * depth, y: (dy / d) * depth, depth };
-  }
-  // center inside the rect: push out through the nearest face
-  const l = px - rect.x0, rr = rect.x1 - px, t = py - rect.y0, b = rect.y1 - py;
-  const m = Math.min(l, rr, t, b);
-  if (m === l) return { x: -(l + r), y: 0, depth: l + r };
-  if (m === rr) return { x: rr + r, y: 0, depth: rr + r };
-  if (m === t) return { x: 0, y: -(t + r), depth: t + r };
-  return { x: 0, y: b + r, depth: b + r };
+/** Shade a #rrggbb color by factor f (1 = unchanged, <1 darker, >1 lighter). */
+export function shade(hex, f) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = clamp(Math.round(((n >> 16) & 255) * f), 0, 255);
+  const g = clamp(Math.round(((n >> 8) & 255) * f), 0, 255);
+  const b = clamp(Math.round((n & 255) * f), 0, 255);
+  return 'rgb(' + r + ',' + g + ',' + b + ')';
 }
 
-// distance from point to a rect's edge (0 when inside)
-export function rectDist(px, py, r) {
-  const dx = Math.max(r.x0 - px, 0, px - r.x1);
-  const dy = Math.max(r.y0 - py, 0, py - r.y1);
-  return Math.hypot(dx, dy);
+/** rgba() string from a #rrggbb color and alpha. */
+export function rgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
 }
 
-// axis-aligned bounding rect of a circle
-export function circleAABB(x, y, r) {
-  return { x0: x - r, y0: y - r, x1: x + r, y1: y + r };
+/** Text with a hard drop shadow, the HUD workhorse. */
+export function shadowText(ctx, txt, x, y, size, col, align, font, shadowCol) {
+  ctx.font = (font || 'bold ') + size + 'px "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = shadowCol || 'rgba(0,0,0,0.75)';
+  ctx.fillText(txt, x + 2, y + 2);
+  ctx.fillStyle = col;
+  ctx.fillText(txt, x, y);
 }
-
-// ------------------------------------------------------------- misc ------
-let _uid = 1;
-export function uid() { return _uid++; }
-
-export function nowSec() { return performance.now() / 1000; }

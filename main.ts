@@ -1,24 +1,26 @@
-// main.ts — build the make.fun dossier: stage game/ + screenshots/ into out/,
-// then hand the staged dir to the vendored buildDossier. Node 22 stdlib.
-
-import { cp, mkdir, writeFile, rm } from 'node:fs/promises';
+// Vice Palms — build step: stage game/ + screenshots/ into MAKEFUN_OUTPUT_DIR, write dossier.json.
+import { mkdirSync, cpSync, existsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const out = process.env.MAKEFUN_OUTPUT_DIR || '/output';
+const out = resolve(process.env.MAKEFUN_OUTPUT_DIR || '/output');
+mkdirSync(out, { recursive: true });
+cpSync('game', join(out, 'game'), { recursive: true });
+if (existsSync('screenshots')) cpSync('screenshots', join(out, 'screenshots'), { recursive: true });
 
-await rm(out, { recursive: true, force: true });
-await mkdir(out, { recursive: true });
-await cp(resolve('game'), join(out, 'game'), { recursive: true });
-await cp(resolve('screenshots'), join(out, 'screenshots'), { recursive: true });
-
-const dossier = buildDossier(out, {
+const caps = {
   text_max_bytes: 163840,
   screenshots: { max: 4, max_bytes: 262144 },
   game_max_files: 993,
   game_max_bytes: 50331648,
   game_path_max_bytes: 1000,
-});
+};
 
-await writeFile(join(out, 'dossier.json'), dossier);
-console.log(`dossier written: ${join(out, 'dossier.json')} (${dossier.length} bytes)`);
+try {
+  const dossier = buildDossier(out, caps);
+  writeFileSync(join(out, 'dossier.json'), dossier);
+  console.log(`dossier.json written → ${out}`);
+} catch (e) {
+  console.error('dossier failed:', e instanceof Error ? e.message : e);
+  process.exit(1);
+}

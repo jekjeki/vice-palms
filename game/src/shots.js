@@ -1,137 +1,89 @@
-// shots.js — deterministic staged scenes for the 4 required screenshots.
-// URL: ?shot=start|play|end|chaos&seed=N (audio handled by ?mute=1 → audio.js)
+// Vice Palms — deterministic staged scenes for the four bounty screenshots.
+// Loaded via ?shot=start|play|end|chaos&seed=N; main.js disables input and
+// flips window.__shotReady once the scene has settled.
 
-import { CFG, ctx } from './config.js';
-import { clamp, dist, mulberry32, TAU } from './util.js';
 import { makeCar } from './cars.js';
-import { Ped } from './peds.js';
-import { nearestRoadPoint } from './world.js';
+import { ROADS, LANE } from './config.js';
+import { spawnTraffic, spawnMissionCar } from './traffic.js';
+import { makePed } from './peds.js';
 
-export function currentShot() {
-  try {
-    const p = new URLSearchParams(location.search);
-    const s = p.get('shot');
-    if (!s) return null;
-    const seed = parseInt(p.get('seed') || '7', 10) || 7;
-    return { shot: s, seed };
-  } catch { return null; }
-}
+export const SHOT_FRAMES = { start: 50, play: 85, end: 60, chaos: 95 };
 
-// Called by Game after wiring ctx. Returns true if a shot scenario was set.
-export function setupShot(game, info) {
-  if (!info) return false;
-  const S = game.S;
-  const rng = mulberry32(info.seed * 7919 + 11);
-  const w = ctx.world;
+/** Simulated seconds each scene needs before it looks right. */
+export const SHOT_SIM = { start: 0.35, play: 1.1, end: 0.7, chaos: 1.18 };
 
-  switch (info.shot) {
+export function setupShot(game, name) {
+  switch (name) {
     case 'start':
-      // stay on the title screen; the world simulates underneath as ambience
-      S.mode = 'title';
-      S.money = 1250;
-      // gentle pre-baked traffic for the backdrop
-      for (let i = 0; i < 8; i++) {
-        const pt = nearestRoadPoint(w, 3200 + (rng() - 0.5) * 2400, 2400 + (rng() - 0.5) * 2400);
-        const car = makeCar(['sedan', 'taxi', 'sports', 'van'][(rng() * 4) | 0], pt.x, pt.y, 0);
-        car.angle = [0, Math.PI / 2, Math.PI, -Math.PI / 2][pt.dir];
-        car.driver = 'traffic';
-        car.ai = 'traffic';
-        car.aiState = { dir: pt.dir, node: null, stuck: 0 };
-        const d = [0, 1, 2, 3][pt.dir];
-        const dd = [[1, 0], [0, 1], [-1, 0], [0, -1]][pt.dir];
-        const ni = { i: clamp(Math.round((pt.x + dd[0] * 800) / CFG.roadEvery), 0, 8), j: clamp(Math.round((pt.y + dd[1] * 800) / CFG.roadEvery), 1, 7) };
-        car.aiState.node = ni;
-        ctx.cars.push(car);
-      }
-      for (let i = 0; i < 10; i++) {
-        ctx.pedsList.push(new Ped(2200 + rng() * 2200, 3000 + rng() * 1800));
-      }
-      return true;
+      // title screen over the living city (already the default state)
+      game.screens.mode = 'title';
+      break;
 
     case 'play': {
-      S.mode = 'play';
-      S.money = 2450;
-      S.player.ammo = 24;
-      ctx.weapons.give('pistol', 24);
-      // player sports car cruising downtown
-      const car = makeCar('sports', 2640, 2400 + CFG.laneOff, 0);
-      car.color = '#d8308a';
-      car.driver = 'player';
-      ctx.cars.push(car);
-      S.player.inCar = car;
-      car.vx = 150; car.vy = 0;
-      // nearby traffic + peds
-      for (let i = 0; i < 9; i++) {
-        const pt = nearestRoadPoint(w, car.x + (rng() - 0.5) * 1800, car.y + (rng() - 0.5) * 1200);
-        const t2 = makeCar(['sedan', 'taxi', 'bus', 'van'][(rng() * 4) | 0], pt.x, pt.y, 0);
-        t2.angle = [0, Math.PI / 2, Math.PI, -Math.PI / 2][pt.dir];
-        t2.driver = 'traffic';
-        t2.ai = 'traffic';
-        const dd = [[1, 0], [0, 1], [-1, 0], [0, -1]][pt.dir];
-        t2.aiState = { dir: pt.dir, node: { i: clamp(Math.round((pt.x + dd[0] * 800) / CFG.roadEvery), 0, 8), j: clamp(Math.round((pt.y + dd[1] * 800) / CFG.roadEvery), 1, 7) }, stuck: 0 };
-        ctx.cars.push(t2);
-      }
-      for (let i = 0; i < 14; i++) {
-        ctx.pedsList.push(new Ped(1900 + rng() * 2000, 1800 + rng() * 1400));
-      }
-      ctx.subtitle('Ocean Drive, midnight — the Palms at their best.', 6);
-      return true;
+      game.screens.mode = 'playing';
+      game.newGame();
+      // the player hurls a pink Cheetah down a downtown boulevard
+      const car = makeCar('sports', 2620, ROADS[7] + LANE, 0, 'player', '#ff2d78');
+      car.speed = 240;
+      game.cars.push(car);
+      game.player.inCar = car;
+      game.player.x = car.x;
+      game.player.y = car.y;
+      game.cam.x = car.x;
+      game.cam.y = car.y;
+      game.subtitle('Rico: Cruise down Ocean Ave — I hate waiting.', 5);
+      break;
     }
 
     case 'end': {
-      S.mode = 'play';
-      S.money = 4180;
-      // completed-mission banner over a beach scene
-      S.player.x = 4150; S.player.y = 5960;
-      S.player.ammo = 30;
-      ctx.weapons.give('pistol', 30);
-      ctx.weapons.give('shotgun', 16);
-      S.missions.banner = { title: 'MISSION PASSED!', sub: "Rico's Ride  —  $800", t: 60, dur: 60 };
-      S.missions.rewardFx = 60;
-      for (let i = 0; i < 10; i++) {
-        ctx.pedsList.push(new Ped(3600 + rng() * 900, 5700 + rng() * 320));
-      }
-      // parked cars along the beach road
-      for (let i = 0; i < 4; i++) {
-        const car = makeCar(['sedan', 'pickup'][(rng() * 2) | 0], 3700 + i * 220, 5600 + CFG.laneOff, 0);
-        ctx.cars.push(car);
-      }
-      // celebratory sparks
-      for (let i = 0; i < 30; i++) {
-        S.fx.push({ type: 'spark', x: 3800 + rng() * 500, y: 5700 + rng() * 200, vx: (rng() - 0.5) * 60, vy: -rng() * 90, life: 0.8 + rng(), life0: 1.6, size: 2 });
-      }
-      return true;
+      game.screens.mode = 'playing';
+      game.newGame();
+      const sp = game.world.spawns.safehouse;
+      game.player.x = sp.x + 14;
+      game.player.y = sp.y + 26;
+      game.cam.x = sp.x;
+      game.cam.y = sp.y;
+      game.player.money = 4250;
+      game.missions.storyIdx = 3;
+      game.missions.banner = { txt: 'MISSION PASSED!', sub: 'AIRFIELD RUN — $1,600', col: '#7dffa8', t: 9 };
+      break;
     }
 
     case 'chaos': {
-      S.mode = 'play';
-      S.money = 990;
-      // burning getaway sedan, 4 stars, cruisers swarming
-      const car = makeCar('sedan', 3200, 2400 + CFG.laneOff, 0);
-      car.color = '#8a2f3b';
-      car.driver = 'player';
-      ctx.cars.push(car);
-      S.player.inCar = car;
-      car.impact(car.maxHp * 0.72);      // heavy smoke + close to fire
-      S.player.ammo = 40;
-      ctx.weapons.give('pistol', 40);
-      ctx.weapons.give('smg', 90);
-      ctx.police.forceLevel(4);
-      // cruisers inbound
-      for (let i = 0; i < 4; i++) {
-        const a = (i / 4) * TAU;
-        const c2 = makeCar('police', car.x + Math.cos(a) * 420, car.y + Math.sin(a) * 420, a + Math.PI);
-        c2.driver = 'police';
-        c2.ai = 'police';
-        c2.aiState = { mode: 'pursuit' };
-        c2.siren = true;
-        ctx.cars.push(c2);
+      game.screens.mode = 'playing';
+      game.newGame();
+      // a cruiser already burning on Ocean Ave, two more on the way
+      const py = ROADS[7] + LANE;
+      const burn = makeCar('cruiser', 2900, py, 0.3, 'police');
+      burn.color = '#e8e8ee';
+      burn.onFire = true;
+      burn.burnT = 1.6;
+      burn.hp = 12;
+      game.cars.push(burn);
+      const c1 = makeCar('cruiser', 2760, py - LANE * 2, 0, 'police');
+      c1.ai = { mode: 'chase', stuckT: 0, revT: 0 };
+      const c2 = makeCar('cruiser', 3120, py + LANE * 2, Math.PI, 'police');
+      c2.ai = { mode: 'chase', stuckT: 0, revT: 0 };
+      game.cars.push(c1, c2);
+      // a couple of fleeing bystanders
+      for (let k = 0; k < 4; k++) {
+        const p = makePed(2900 + (Math.random() - 0.5) * 260, py + 60 + Math.random() * 60, 'civ');
+        p.state = 'flee';
+        p.t = 6;
+        game.peds.push(p);
       }
-      // an explosion going off nearby
-      ctx.explodeAt(3420, 2560, 1.1);
-      ctx.subtitle('HEAT 4 — lose them or kiss the pavement.', 5);
-      return true;
+      game.player.x = 2900;
+      game.player.y = py - 64;
+      game.player.weapon = 1;
+      game.player.ammo = { 1: 40, 2: 0, 3: 0 };
+      game.cam.x = 2900;
+      game.cam.y = py - 40;
+      game.addCrime(24); // four stars
+      game.subtitle('They just keep coming…', 4);
+      break;
     }
+
+    default:
+      game.screens.mode = 'title';
   }
-  return false;
 }
